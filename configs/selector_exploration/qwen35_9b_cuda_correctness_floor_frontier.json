@@ -1,0 +1,76 @@
+{
+  "suite_root": "benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite",
+  "feature_set_id": "runtime_safe",
+  "dense_control": {
+    "enabled": true,
+    "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl",
+    "correct_example_weight": 2.0,
+    "incorrect_example_weight": 0.5
+  },
+  "strategies": [
+    {
+      "strategy_id": "linear_softmax_compression_weighted",
+      "result_id": "linear_softmax_compression_weighted_dense_control",
+      "params": {
+        "dense_control_weighting": true
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p95_dense_control",
+      "params": {
+        "dense_control_weighting": true,
+        "calibration_min_target_accuracy": 0.95,
+        "calibration_min_safe_prediction_rate": 0.95
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p90_dense_control",
+      "params": {
+        "dense_control_weighting": true,
+        "calibration_min_target_accuracy": 0.90,
+        "calibration_min_safe_prediction_rate": 0.90
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p85_dense_control",
+      "params": {
+        "dense_control_weighting": true,
+        "calibration_min_target_accuracy": 0.85,
+        "calibration_min_safe_prediction_rate": 0.85
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p80_dense_control",
+      "params": {
+        "dense_control_weighting": true,
+        "calibration_min_target_accuracy": 0.80,
+        "calibration_min_safe_prediction_rate": 0.80
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p75_dense_control",
+      "params": {
+        "dense_control_weighting": true,
+        "calibration_min_target_accuracy": 0.75,
+        "calibration_min_safe_prediction_rate": 0.75
+      }
+    },
+    {
+      "strategy_id": "linear_softmax_compression_calibrated",
+      "result_id": "linear_softmax_compression_floor_0p70_dense_control",
+      "params": {
+        "dense_control_weighting": true,
+        "calibration_min_target_accuracy": 0.70,
+        "calibration_min_safe_prediction_rate": 0.70
+      }
+    }
+  ],
+  "serving_smoke": {
+    "enabled": false
+  }
+}

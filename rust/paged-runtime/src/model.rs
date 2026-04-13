@@ -37,6 +37,7 @@ pub enum RuntimeMode {
     PagedControl,
     DotCacheExperimental,
     TorchControl,
+    MegakernelControl,
 }
 
 impl RuntimeMode {
@@ -46,6 +47,7 @@ impl RuntimeMode {
             Self::PagedControl => "paged_control",
             Self::DotCacheExperimental => "dotcache_experimental",
             Self::TorchControl => "torch_control",
+            Self::MegakernelControl => "megakernel_control",
         }
     }
 }
@@ -69,10 +71,13 @@ impl std::str::FromStr for RuntimeMode {
             "torch" | "torch_control" | "aten_control" | "native_torch" => {
                 Ok(Self::TorchControl)
             }
+            "megakernel" | "megakernel_control" | "luce_control" | "luce_megakernel" => {
+                Ok(Self::MegakernelControl)
+            }
             other => Err(crate::RuntimeError::External {
                 context: "runtime_mode",
                 message: format!(
-                    "unsupported runtime mode `{other}`, expected dense_control, paged_control, dotcache_experimental, or torch_control"
+                    "unsupported runtime mode `{other}`, expected dense_control, paged_control, dotcache_experimental, torch_control, or megakernel_control"
                 ),
             }),
         }
@@ -213,6 +218,10 @@ mod tests {
         assert_eq!(
             "torch_control".parse::<RuntimeMode>().unwrap(),
             RuntimeMode::TorchControl
+        );
+        assert_eq!(
+            "megakernel_control".parse::<RuntimeMode>().unwrap(),
+            RuntimeMode::MegakernelControl
         );
     }
 

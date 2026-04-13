@@ -27,6 +27,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--snapshot-glob", default=None)
     parser.add_argument("--manifest-path", default=None)
     parser.add_argument("--block-size", type=int, default=16)
+    parser.add_argument("--full-attention-check-interval", type=int, default=1)
+    parser.add_argument("--full-attention-mass-eps", type=float, default=1e-3)
+    parser.add_argument("--full-attention-value-eps", type=float, default=1e-3)
+    parser.add_argument("--full-attention-min-processed-blocks", type=int, default=1)
     parser.add_argument("--key-centroid-count", type=int, default=1)
     parser.add_argument("--region-residual-caps", action="store_true")
     parser.add_argument("--residual-cluster-count", type=int, default=0)
@@ -136,6 +140,8 @@ def _build_summary(records: list[dict[str, object]]) -> dict[str, object]:
             "avg_selected_token_count": 0.0,
             "avg_full_block_count": 0.0,
             "avg_full_token_count": 0.0,
+            "avg_streaming_processed_block_count": 0.0,
+            "avg_streaming_first_stop_block_count": 0.0,
         }
 
     def _avg(field: str) -> float:
@@ -164,6 +170,20 @@ def _build_summary(records: list[dict[str, object]]) -> dict[str, object]:
         "avg_streaming_checkpoint_count": _avg("streaming_checkpoint_count")
         if "streaming_checkpoint_count" in records[0]
         else 0.0,
+        "avg_streaming_processed_block_count": _avg("streaming_processed_block_count")
+        if "streaming_processed_block_count" in records[0]
+        else 0.0,
+        "avg_streaming_first_stop_block_count": float(
+            sum(
+                float(record["streaming_first_certified_stop_block_count"])
+                for record in records
+                if record.get("streaming_first_certified_stop_block_count") is not None
+            )
+            / max(
+                sum(1 for record in records if record.get("streaming_first_certified_stop_block_count") is not None),
+                1,
+            )
+        ),
         "avg_streaming_max_abs_error": _avg("streaming_max_abs_error")
         if "streaming_max_abs_error" in records[0]
         else 0.0,
@@ -278,6 +298,11 @@ def main() -> None:
     )
     config = PersistentServingConfig(
         block_size=int(args.block_size),
+        enable_early_exit=True,
+        full_attention_check_interval=max(int(args.full_attention_check_interval), 1),
+        full_attention_mass_eps=float(args.full_attention_mass_eps),
+        full_attention_value_eps=float(args.full_attention_value_eps),
+        full_attention_min_processed_blocks=max(int(args.full_attention_min_processed_blocks), 1),
         full_attention_region_residual_caps=bool(args.region_residual_caps),
         full_attention_residual_cluster_count=int(args.residual_cluster_count),
         full_attention_key_centroid_count=int(args.key_centroid_count),
@@ -388,6 +413,10 @@ def main() -> None:
     payload = {
         "config": {
             "block_size": int(config.block_size),
+            "full_attention_check_interval": int(config.full_attention_check_interval),
+            "full_attention_mass_eps": float(config.full_attention_mass_eps),
+            "full_attention_value_eps": float(config.full_attention_value_eps),
+            "full_attention_min_processed_blocks": int(config.full_attention_min_processed_blocks),
             "region_residual_caps": bool(config.full_attention_region_residual_caps),
             "residual_cluster_count": int(config.full_attention_residual_cluster_count),
             "key_centroid_count": int(config.full_attention_key_centroid_count),

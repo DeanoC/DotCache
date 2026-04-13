@@ -564,10 +564,13 @@ impl CandleCausalLm {
                             page_backend,
                         }
                     }
-                    RuntimeMode::TorchControl => {
+                    RuntimeMode::TorchControl | RuntimeMode::MegakernelControl => {
                         return Err(RuntimeError::External {
                             context: "candle_model",
-                            message: "TorchControl is delegated through the external Python harness and is not a Candle runtime mode".to_string(),
+                            message: format!(
+                                "{} is delegated through an external control harness and is not a Candle runtime mode",
+                                runtime_mode
+                            ),
                         });
                     }
                 };
@@ -637,10 +640,13 @@ impl CandleCausalLm {
                             page_backend,
                         }
                     }
-                    RuntimeMode::TorchControl => {
+                    RuntimeMode::TorchControl | RuntimeMode::MegakernelControl => {
                         return Err(RuntimeError::External {
                             context: "candle_model",
-                            message: "TorchControl is delegated through the external Python harness and is not a Candle runtime mode".to_string(),
+                            message: format!(
+                                "{} is delegated through an external control harness and is not a Candle runtime mode",
+                                runtime_mode
+                            ),
                         });
                     }
                 };
@@ -717,10 +723,13 @@ impl CandleCausalLm {
                             page_backend,
                         }
                     }
-                    RuntimeMode::TorchControl => {
+                    RuntimeMode::TorchControl | RuntimeMode::MegakernelControl => {
                         return Err(RuntimeError::External {
                             context: "candle_model",
-                            message: "TorchControl is delegated through the external Python harness and is not a Candle runtime mode".to_string(),
+                            message: format!(
+                                "{} is delegated through an external control harness and is not a Candle runtime mode",
+                                runtime_mode
+                            ),
                         });
                     }
                 };

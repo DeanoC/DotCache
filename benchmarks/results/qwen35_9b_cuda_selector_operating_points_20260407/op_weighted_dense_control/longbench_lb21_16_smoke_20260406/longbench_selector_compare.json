@@ -1,0 +1,609 @@
+{
+  "confidence_rows": [
+    {
+      "ci_high": 0.0005516365398420573,
+      "ci_low": -0.0005464497651171854,
+      "comparison_case": "exact",
+      "delta_metric": "systems_minus_external_dataset_macro_official_score",
+      "loss_datasets": 4,
+      "max_prompt_tokens": 4096,
+      "mean_delta": 1.8636549074028754e-06,
+      "n_datasets": 21,
+      "tie_datasets": 13,
+      "win_datasets": 4
+    },
+    {
+      "ci_high": 0.0,
+      "ci_low": 0.0,
+      "comparison_case": "quality",
+      "delta_metric": "systems_minus_external_dataset_macro_official_score",
+      "loss_datasets": 0,
+      "max_prompt_tokens": 4096,
+      "mean_delta": 0.0,
+      "n_datasets": 21,
+      "tie_datasets": 21,
+      "win_datasets": 0
+    },
+    {
+      "ci_high": 0.0003265153458090685,
+      "ci_low": -0.0006079294777528953,
+      "comparison_case": "exact",
+      "delta_metric": "systems_minus_external_dataset_macro_official_score",
+      "loss_datasets": 4,
+      "max_prompt_tokens": 8192,
+      "mean_delta": -0.000121558592583565,
+      "n_datasets": 21,
+      "tie_datasets": 14,
+      "win_datasets": 3
+    },
+    {
+      "ci_high": 0.0,
+      "ci_low": 0.0,
+      "comparison_case": "quality",
+      "delta_metric": "systems_minus_external_dataset_macro_official_score",
+      "loss_datasets": 0,
+      "max_prompt_tokens": 8192,
+      "mean_delta": 0.0,
+      "n_datasets": 21,
+      "tie_datasets": 21,
+      "win_datasets": 0
+    }
+  ],
+  "parity_rows": [],
+  "rows": [
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 34.039055390117326,
+      "mean_effective_bytes_per_token": 19327.297602149538,
+      "mean_exact_match": 0.09523809523809523,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "mean_qa_f1": 0.23706243428236554,
+      "mean_teacher_forced_logit_rmse": 0.0,
+      "mean_teacher_forced_perplexity_ratio": 1.0,
+      "n_rows": 42,
+      "p95_decode_ms_per_step": 34.039055390117326,
+      "worst_dataset_official_score": null
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 826.2769235442059,
+      "mean_effective_bytes_per_token": 19327.297602149538,
+      "mean_exact_match": 0.047619047619047616,
+      "mean_matches_dense_output": 0.23809523809523808,
+      "mean_official_score": 0.32326045473808684,
+      "mean_qa_f1": 0.09542278704942862,
+      "mean_teacher_forced_logit_rmse": 0.4655190333724022,
+      "mean_teacher_forced_perplexity_ratio": 1.1862179736868415,
+      "n_rows": 42,
+      "p95_decode_ms_per_step": 826.2769235442059,
+      "worst_dataset_official_score": 0.0
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 104.63674508602718,
+      "mean_effective_bytes_per_token": 51593.76788318801,
+      "mean_exact_match": 0.047619047619047616,
+      "mean_matches_dense_output": 0.23809523809523808,
+      "mean_official_score": 0.32326231839299424,
+      "mean_qa_f1": 0.09542278704942862,
+      "mean_teacher_forced_logit_rmse": 0.4459933042526245,
+      "mean_teacher_forced_perplexity_ratio": 1.1804987281067423,
+      "n_rows": 42,
+      "p95_decode_ms_per_step": 104.63674508602718,
+      "worst_dataset_official_score": 0.0
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 103.0233167107637,
+      "mean_effective_bytes_per_token": 51593.76788318801,
+      "mean_exact_match": 0.047619047619047616,
+      "mean_matches_dense_output": 0.23809523809523808,
+      "mean_official_score": 0.32326231839299424,
+      "mean_qa_f1": 0.09542278704942862,
+      "mean_teacher_forced_logit_rmse": 0.4459933042526245,
+      "mean_teacher_forced_perplexity_ratio": 1.1804987281067423,
+      "n_rows": 42,
+      "p95_decode_ms_per_step": 103.0233167107637,
+      "worst_dataset_official_score": 0.0
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 32.64288999298853,
+      "mean_effective_bytes_per_token": 19195.974250267576,
+      "mean_exact_match": 0.11904761904761904,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "mean_qa_f1": 0.26181689339971687,
+      "mean_teacher_forced_logit_rmse": 0.0,
+      "mean_teacher_forced_perplexity_ratio": 1.0,
+      "n_rows": 42,
+      "p95_decode_ms_per_step": 32.64288999298853,
+      "worst_dataset_official_score": null
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 1273.6516951895983,
+      "mean_effective_bytes_per_token": 19195.974250267576,
+      "mean_exact_match": 0.07142857142857142,
+      "mean_matches_dense_output": 0.2619047619047619,
+      "mean_official_score": 0.34089190080601006,
+      "mean_qa_f1": 0.114784542971994,
+      "mean_teacher_forced_logit_rmse": 0.4581603152411325,
+      "mean_teacher_forced_perplexity_ratio": 1.1504036342578363,
+      "n_rows": 42,
+      "p95_decode_ms_per_step": 1273.6516951895983,
+      "worst_dataset_official_score": 0.0
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 128.26961101485213,
+      "mean_effective_bytes_per_token": 46638.58497222863,
+      "mean_exact_match": 0.07142857142857142,
+      "mean_matches_dense_output": 0.2619047619047619,
+      "mean_official_score": 0.3407703422134265,
+      "mean_qa_f1": 0.114784542971994,
+      "mean_teacher_forced_logit_rmse": 0.4382974718298231,
+      "mean_teacher_forced_perplexity_ratio": 1.1437631249645939,
+      "n_rows": 42,
+      "p95_decode_ms_per_step": 128.26961101485213,
+      "worst_dataset_official_score": 0.0
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 132.8630203352823,
+      "mean_effective_bytes_per_token": 46638.58497222863,
+      "mean_exact_match": 0.07142857142857142,
+      "mean_matches_dense_output": 0.2619047619047619,
+      "mean_official_score": 0.3407703422134265,
+      "mean_qa_f1": 0.114784542971994,
+      "mean_teacher_forced_logit_rmse": 0.4382974718298231,
+      "mean_teacher_forced_perplexity_ratio": 1.1437631249645939,
+      "n_rows": 42,
+      "p95_decode_ms_per_step": 132.8630203352823,
+      "worst_dataset_official_score": 0.0
+    }
+  ],
+  "task_family_rows": [
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 33.730741053659585,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 4,
+      "task_family": "classification"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 33.66651924443431,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 4,
+      "task_family": "code"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 32.871696348593105,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 2,
+      "task_family": "counting"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 33.49825187853338,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 18,
+      "task_family": "qa"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 31.740481267821878,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 4,
+      "task_family": "retrieval"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 36.437743361047744,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 10,
+      "task_family": "summarization"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 912.2440169503534,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.5,
+      "n_rows": 4,
+      "task_family": "classification"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 841.3673212035064,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.22486532126323777,
+      "n_rows": 4,
+      "task_family": "code"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 928.8248685843428,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.125,
+      "n_rows": 2,
+      "task_family": "counting"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 792.4355338963899,
+      "mean_matches_dense_output": 0.3888888888888889,
+      "mean_official_score": 0.2989141745087771,
+      "n_rows": 18,
+      "task_family": "qa"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 873.1761536410155,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.875,
+      "n_rows": 4,
+      "task_family": "retrieval"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 807.4991474373443,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.15470226727887074,
+      "n_rows": 10,
+      "task_family": "summarization"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 108.6620518071868,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.5,
+      "n_rows": 4,
+      "task_family": "classification"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 104.35807051544543,
+      "mean_matches_dense_output": 0.25,
+      "mean_official_score": 0.22471139498754403,
+      "n_rows": 4,
+      "task_family": "code"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 109.39739913737867,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.125,
+      "n_rows": 2,
+      "task_family": "counting"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 104.41373572449953,
+      "mean_matches_dense_output": 0.3888888888888889,
+      "mean_official_score": 0.29920620860926694,
+      "n_rows": 18,
+      "task_family": "qa"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 102.86193500238976,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.875,
+      "n_rows": 4,
+      "task_family": "retrieval"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 103.29730229973043,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.15424600375887762,
+      "n_rows": 10,
+      "task_family": "summarization"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 108.94360255224456,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.5,
+      "n_rows": 4,
+      "task_family": "classification"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 111.23680693526694,
+      "mean_matches_dense_output": 0.25,
+      "mean_official_score": 0.22471139498754403,
+      "n_rows": 4,
+      "task_family": "code"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 109.5252154773334,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.125,
+      "n_rows": 2,
+      "task_family": "counting"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 100.03425913717727,
+      "mean_matches_dense_output": 0.3888888888888889,
+      "mean_official_score": 0.29920620860926694,
+      "n_rows": 18,
+      "task_family": "qa"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 103.08793814123526,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.875,
+      "n_rows": 4,
+      "task_family": "retrieval"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 4096,
+      "mean_decode_ms_per_step": 101.42388159132305,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.15424600375887762,
+      "n_rows": 10,
+      "task_family": "summarization"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 33.05083658597141,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 4,
+      "task_family": "classification"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 32.68153196768253,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 4,
+      "task_family": "code"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 32.94245630968362,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 2,
+      "task_family": "counting"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 32.541901033033575,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 18,
+      "task_family": "qa"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 31.895867120671454,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 4,
+      "task_family": "retrieval"
+    },
+    {
+      "comparison_case": "dense",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 32.88493057942451,
+      "mean_matches_dense_output": 1.0,
+      "mean_official_score": null,
+      "n_rows": 10,
+      "task_family": "summarization"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 1429.2221673858876,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.3333333333333333,
+      "n_rows": 4,
+      "task_family": "classification"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 1060.6035351411265,
+      "mean_matches_dense_output": 0.25,
+      "mean_official_score": 0.3779265457530337,
+      "n_rows": 4,
+      "task_family": "code"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 1638.9540777890943,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.125,
+      "n_rows": 2,
+      "task_family": "counting"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 1267.81156556791,
+      "mean_matches_dense_output": 0.3888888888888889,
+      "mean_official_score": 0.34206184575511994,
+      "n_rows": 18,
+      "task_family": "qa"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 1351.3595893902461,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.875,
+      "n_rows": 4,
+      "task_family": "retrieval"
+    },
+    {
+      "comparison_case": "exact",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 1203.011369449352,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.15653070939147964,
+      "n_rows": 10,
+      "task_family": "summarization"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 136.85094121683505,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.3333333333333333,
+      "n_rows": 4,
+      "task_family": "classification"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 115.34541961736977,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.37777261947734,
+      "n_rows": 4,
+      "task_family": "code"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 144.43617663831293,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.125,
+      "n_rows": 2,
+      "task_family": "counting"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 128.36403834505276,
+      "mean_matches_dense_output": 0.3888888888888889,
+      "mean_official_score": 0.3417760148037112,
+      "n_rows": 18,
+      "task_family": "qa"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 131.38328245836686,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.875,
+      "n_rows": 4,
+      "task_family": "retrieval"
+    },
+    {
+      "comparison_case": "quality",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 125.35800459659268,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.1565962295254419,
+      "n_rows": 10,
+      "task_family": "summarization"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 139.76626155999838,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.3333333333333333,
+      "n_rows": 4,
+      "task_family": "classification"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 116.7937878126395,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.37777261947734,
+      "n_rows": 4,
+      "task_family": "code"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 148.00384640936198,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.125,
+      "n_rows": 2,
+      "task_family": "counting"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 134.56679315876897,
+      "mean_matches_dense_output": 0.3888888888888889,
+      "mean_official_score": 0.3417760148037112,
+      "n_rows": 18,
+      "task_family": "qa"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 132.05378178206635,
+      "mean_matches_dense_output": 0.5,
+      "mean_official_score": 0.875,
+      "n_rows": 4,
+      "task_family": "retrieval"
+    },
+    {
+      "comparison_case": "systems",
+      "max_prompt_tokens": 8192,
+      "mean_decode_ms_per_step": 130.75815597864747,
+      "mean_matches_dense_output": 0.0,
+      "mean_official_score": 0.1565962295254419,
+      "n_rows": 10,
+      "task_family": "summarization"
+    }
+  ]
+}

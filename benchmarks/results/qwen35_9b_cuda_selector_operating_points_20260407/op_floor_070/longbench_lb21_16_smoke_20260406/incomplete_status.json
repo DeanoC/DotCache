@@ -1,0 +1,7 @@
+{
+  "detail": "run stopped by user request before this point started",
+  "pack": "longbench_lb21_16_smoke_20260406",
+  "point_id": "op_floor_070",
+  "shards": {},
+  "state": "missing"
+}

@@ -1,0 +1,2513 @@
+{
+  "config": {
+    "calibration": {
+      "binary_thresholds": [
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7
+      ],
+      "bytes_weight": 1.0,
+      "correctness_weight": 1.0,
+      "fraction": 0.25,
+      "linear_offsets": [
+        -1.5,
+        -1.0,
+        -0.5,
+        0.0,
+        0.5,
+        1.0,
+        1.5
+      ],
+      "min_safe_prediction_rate": 1.0,
+      "min_target_accuracy": 0.999,
+      "seed": 0
+    },
+    "dense_control": {
+      "correct_example_weight": 2.0,
+      "enabled": true,
+      "incorrect_example_weight": 0.5,
+      "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl"
+    },
+    "distillation": {
+      "teacher_epochs": 120,
+      "teacher_feature_set_id": "research_extended",
+      "teacher_hidden_dim": 16,
+      "teacher_learning_rate": 0.01,
+      "teacher_seed": 0,
+      "teacher_temperature": 1.0,
+      "teacher_weight": 0.5
+    },
+    "feature_set_id": "runtime_safe",
+    "report_axes": [
+      "min_family_safe_prediction_rate",
+      "min_family_target_accuracy",
+      "mean_predicted_total_bytes",
+      "mean_safe_bytes_regret"
+    ],
+    "serving_smoke": {
+      "command_template": [
+        "bash",
+        "scripts/run_qwen35_0p8b_task_selector_compare.sh",
+        "{output_dir}",
+        "{artifact_path}",
+        "--profiles",
+        "exact",
+        "quality",
+        "--warmup-runs",
+        "0",
+        "--measured-runs",
+        "1",
+        "--max-new-tokens-retrieval",
+        "16",
+        "--max-new-tokens-reasoning",
+        "16",
+        "--max-new-tokens-instruction",
+        "8"
+      ],
+      "enabled": false
+    },
+    "strategies": [
+      {
+        "params": {
+          "dense_control_weighting": true
+        },
+        "result_id": "linear_softmax_compression_weighted_dense_control",
+        "strategy_id": "linear_softmax_compression_weighted"
+      },
+      {
+        "params": {
+          "calibration_min_safe_prediction_rate": 0.95,
+          "calibration_min_target_accuracy": 0.95,
+          "dense_control_weighting": true
+        },
+        "result_id": "linear_softmax_compression_floor_0p95_dense_control",
+        "strategy_id": "linear_softmax_compression_calibrated"
+      },
+      {
+        "params": {
+          "calibration_min_safe_prediction_rate": 0.9,
+          "calibration_min_target_accuracy": 0.9,
+          "dense_control_weighting": true
+        },
+        "result_id": "linear_softmax_compression_floor_0p90_dense_control",
+        "strategy_id": "linear_softmax_compression_calibrated"
+      },
+      {
+        "params": {
+          "calibration_min_safe_prediction_rate": 0.85,
+          "calibration_min_target_accuracy": 0.85,
+          "dense_control_weighting": true
+        },
+        "result_id": "linear_softmax_compression_floor_0p85_dense_control",
+        "strategy_id": "linear_softmax_compression_calibrated"
+      },
+      {
+        "params": {
+          "calibration_min_safe_prediction_rate": 0.8,
+          "calibration_min_target_accuracy": 0.8,
+          "dense_control_weighting": true
+        },
+        "result_id": "linear_softmax_compression_floor_0p80_dense_control",
+        "strategy_id": "linear_softmax_compression_calibrated"
+      },
+      {
+        "params": {
+          "calibration_min_safe_prediction_rate": 0.75,
+          "calibration_min_target_accuracy": 0.75,
+          "dense_control_weighting": true
+        },
+        "result_id": "linear_softmax_compression_floor_0p75_dense_control",
+        "strategy_id": "linear_softmax_compression_calibrated"
+      },
+      {
+        "params": {
+          "calibration_min_safe_prediction_rate": 0.7,
+          "calibration_min_target_accuracy": 0.7,
+          "dense_control_weighting": true
+        },
+        "result_id": "linear_softmax_compression_floor_0p70_dense_control",
+        "strategy_id": "linear_softmax_compression_calibrated"
+      }
+    ],
+    "suite_root": "benchmarks/results/qwen35_selector_qwen35_9b_suite_20260401/suite",
+    "weighted_selector": {
+      "class_balance": 0.5,
+      "l2": 0.001,
+      "learning_rate": 0.2,
+      "reference_candidate": "M3/affine/4/float16",
+      "safe_bytes_weight": 1.0,
+      "steps": 400,
+      "target_candidate": "M3/affine/4/float16",
+      "unsafe_error_weight": 0.5
+    }
+  },
+  "report_axes": [
+    "min_family_safe_prediction_rate",
+    "min_family_target_accuracy",
+    "mean_predicted_total_bytes",
+    "mean_safe_bytes_regret"
+  ],
+  "strategies": [
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 4854.4638671875,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_weighted_dense_control/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_compression_weighted",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 146,
+          "group_name": "prompt_family",
+          "group_value": "cache",
+          "mean_predicted_total_bytes": 5874.7958984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 164,
+          "group_name": "prompt_family",
+          "group_value": "instruction",
+          "mean_predicted_total_bytes": 4815.39794921875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 297,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 5100.8349609375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 206,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 3871.791259765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "dense_control_summary": {
+          "correct_example_weight": 2.0,
+          "dense_group_count": 6,
+          "enabled": true,
+          "incorrect_example_weight": 0.5,
+          "matched_correct_examples": 114,
+          "matched_examples": 162,
+          "matched_incorrect_examples": 48,
+          "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl",
+          "unmatched_examples": 350
+        },
+        "dense_control_weighting": true,
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 20,
+          "mean_predicted_total_bytes": 5944.25,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "cache_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 126,
+          "mean_predicted_total_bytes": 5805.34130859375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_cache_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 114,
+          "mean_predicted_total_bytes": 4848.9560546875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_instruction_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 141,
+          "mean_predicted_total_bytes": 4917.26953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 131,
+          "mean_predicted_total_bytes": 4502.748046875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "family_retrieval_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 15,
+          "mean_predicted_total_bytes": 5650.0,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "reasoning_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 9,
+          "mean_predicted_total_bytes": 3186.77783203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 70,
+          "mean_predicted_total_bytes": 5026.10009765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_arithmetic_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 50,
+          "mean_predicted_total_bytes": 4781.83984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_constraints_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 71,
+          "mean_predicted_total_bytes": 4809.9716796875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 66,
+          "mean_predicted_total_bytes": 3925.848388671875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "split_name": "variant_memo_holdout",
+          "target_accuracy": 1.0
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_weighted_dense_control/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax_compression_weighted_dense_control",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 149,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 5161.99267578125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 68,
+          "group_name": "prompt_variant",
+          "group_value": "bandwidth",
+          "mean_predicted_total_bytes": 6715.6318359375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 100,
+          "group_name": "prompt_variant",
+          "group_value": "constraints",
+          "mean_predicted_total_bytes": 4781.83984375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 64,
+          "group_name": "prompt_variant",
+          "group_value": "formatting",
+          "mean_predicted_total_bytes": 4901.390625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 78,
+          "group_name": "prompt_variant",
+          "group_value": "locality",
+          "mean_predicted_total_bytes": 4516.25146484375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 148,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 5198.09228515625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 139,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 3850.851318359375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        },
+        {
+          "example_count": 67,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3238.011474609375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 1.0,
+          "target_accuracy": 1.0
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3752.701416015625,
+        "mean_safe_bytes_regret": 87.74356079101562,
+        "mean_safe_prediction_rate": 0.6832969188690186,
+        "mean_target_accuracy": 0.6667681336402893,
+        "min_family_safe_prediction_rate": 0.6270174980163574,
+        "min_family_target_accuracy": 0.6182456016540527,
+        "min_variant_safe_prediction_rate": 0.609375,
+        "min_variant_target_accuracy": 0.4961538314819336
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p95_dense_control/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_compression_calibrated",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 146,
+          "group_name": "prompt_family",
+          "group_value": "cache",
+          "mean_predicted_total_bytes": 5087.544921875,
+          "mean_safe_bytes_regret": 106.93670654296875,
+          "safe_prediction_rate": 0.7384920716285706,
+          "target_accuracy": 0.7265872955322266
+        },
+        {
+          "example_count": 164,
+          "group_name": "prompt_family",
+          "group_value": "instruction",
+          "mean_predicted_total_bytes": 3474.33984375,
+          "mean_safe_bytes_regret": 80.45714569091797,
+          "safe_prediction_rate": 0.6270174980163574,
+          "target_accuracy": 0.6182456016540527
+        },
+        {
+          "example_count": 297,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3805.283203125,
+          "mean_safe_bytes_regret": 33.52381134033203,
+          "safe_prediction_rate": 0.6414790153503418,
+          "target_accuracy": 0.6379579305648804
+        },
+        {
+          "example_count": 206,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2978.2705078125,
+          "mean_safe_bytes_regret": 152.09877014160156,
+          "safe_prediction_rate": 0.7397769093513489,
+          "target_accuracy": 0.6976508498191833
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "calibration": {
+          "best": {
+            "logit_offset": -1.5,
+            "mean_predicted_total_bytes": 3799.2578125,
+            "mean_safe_bytes_regret": 206.0487823486328,
+            "predicted_candidate_histogram": {
+              "M0/affine/4": 84,
+              "M3/affine/4/float16": 44
+            },
+            "safe_prediction_rate": 0.640625,
+            "target_accuracy": 0.6171875,
+            "target_candidate": "M3/affine/4/float16"
+          },
+          "calibration_objective": "constraint",
+          "evaluations": [
+            {
+              "logit_offset": -1.5,
+              "mean_predicted_total_bytes": 3799.2578125,
+              "mean_safe_bytes_regret": 206.0487823486328,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 84,
+                "M3/affine/4/float16": 44
+              },
+              "safe_prediction_rate": 0.640625,
+              "target_accuracy": 0.6171875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -1.0,
+              "mean_predicted_total_bytes": 4173.2578125,
+              "mean_safe_bytes_regret": 263.032958984375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 73,
+                "M3/affine/4/float16": 55
+              },
+              "safe_prediction_rate": 0.7109375,
+              "target_accuracy": 0.671875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -0.5,
+              "mean_predicted_total_bytes": 4404.2578125,
+              "mean_safe_bytes_regret": 301.71429443359375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 65,
+                "M3/affine/4/float16": 63
+              },
+              "safe_prediction_rate": 0.765625,
+              "target_accuracy": 0.71875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.0,
+              "mean_predicted_total_bytes": 4899.2578125,
+              "mean_safe_bytes_regret": 418.5946044921875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 47,
+                "M3/affine/4/float16": 81
+              },
+              "safe_prediction_rate": 0.8671875,
+              "target_accuracy": 0.78125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.5,
+              "mean_predicted_total_bytes": 5328.2578125,
+              "mean_safe_bytes_regret": 691.862060546875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 34,
+                "M3/affine/4/float16": 94
+              },
+              "safe_prediction_rate": 0.90625,
+              "target_accuracy": 0.7578125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.0,
+              "mean_predicted_total_bytes": 5647.2578125,
+              "mean_safe_bytes_regret": 807.8688354492188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 23,
+                "M3/affine/4/float16": 105
+              },
+              "safe_prediction_rate": 0.953125,
+              "target_accuracy": 0.765625,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.5,
+              "mean_predicted_total_bytes": 5801.2578125,
+              "mean_safe_bytes_regret": 885.6774291992188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 16,
+                "M3/affine/4/float16": 112
+              },
+              "safe_prediction_rate": 0.96875,
+              "target_accuracy": 0.7421875,
+              "target_candidate": "M3/affine/4/float16"
+            }
+          ],
+          "min_safe_prediction_rate": 0.95,
+          "min_target_accuracy": 0.95,
+          "target_candidate": "M3/affine/4/float16",
+          "used_feasible_subset": false
+        },
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "dense_control_summary": {
+          "correct_example_weight": 2.0,
+          "dense_group_count": 6,
+          "enabled": true,
+          "incorrect_example_weight": 0.5,
+          "matched_correct_examples": 114,
+          "matched_examples": 162,
+          "matched_incorrect_examples": 48,
+          "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl",
+          "unmatched_examples": 350
+        },
+        "dense_control_weighting": true,
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 20,
+          "mean_predicted_total_bytes": 5733.0498046875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.85,
+          "split_name": "cache_layer23_holdout",
+          "target_accuracy": 0.85
+        },
+        {
+          "example_count": 126,
+          "mean_predicted_total_bytes": 4442.03955078125,
+          "mean_safe_bytes_regret": 213.8734130859375,
+          "safe_prediction_rate": 0.626984126984127,
+          "split_name": "family_cache_holdout",
+          "target_accuracy": 0.6031746031746031
+        },
+        {
+          "example_count": 114,
+          "mean_predicted_total_bytes": 3490.359619140625,
+          "mean_safe_bytes_regret": 160.91429138183594,
+          "safe_prediction_rate": 0.6140350877192983,
+          "split_name": "family_instruction_holdout",
+          "target_accuracy": 0.5964912280701754
+        },
+        {
+          "example_count": 141,
+          "mean_predicted_total_bytes": 3389.439697265625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.5886524822695035,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.5886524822695035
+        },
+        {
+          "example_count": 131,
+          "mean_predicted_total_bytes": 3137.740478515625,
+          "mean_safe_bytes_regret": 104.29629516601562,
+          "safe_prediction_rate": 0.6183206106870229,
+          "split_name": "family_retrieval_holdout",
+          "target_accuracy": 0.6030534351145038
+        },
+        {
+          "example_count": 15,
+          "mean_predicted_total_bytes": 4992.93310546875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.8,
+          "split_name": "reasoning_layer23_holdout",
+          "target_accuracy": 0.8
+        },
+        {
+          "example_count": 9,
+          "mean_predicted_total_bytes": 2873.888916015625,
+          "mean_safe_bytes_regret": 352.0,
+          "safe_prediction_rate": 0.8888888888888888,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 0.7777777777777778
+        },
+        {
+          "example_count": 70,
+          "mean_predicted_total_bytes": 3416.95703125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.5857142857142857,
+          "split_name": "variant_arithmetic_holdout",
+          "target_accuracy": 0.5857142857142857
+        },
+        {
+          "example_count": 50,
+          "mean_predicted_total_bytes": 3458.320068359375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.64,
+          "split_name": "variant_constraints_holdout",
+          "target_accuracy": 0.64
+        },
+        {
+          "example_count": 71,
+          "mean_predicted_total_bytes": 3421.802734375,
+          "mean_safe_bytes_regret": 134.09524536132812,
+          "safe_prediction_rate": 0.5915492957746479,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.5774647887323944
+        },
+        {
+          "example_count": 66,
+          "mean_predicted_total_bytes": 2923.181884765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7121212121212122,
+          "split_name": "variant_memo_holdout",
+          "target_accuracy": 0.7121212121212122
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p95_dense_control/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax_compression_floor_0p95_dense_control",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 149,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3932.7861328125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.6497354507446289,
+          "target_accuracy": 0.6497354507446289
+        },
+        {
+          "example_count": 68,
+          "group_name": "prompt_variant",
+          "group_value": "bandwidth",
+          "mean_predicted_total_bytes": 5970.2783203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7979021072387695,
+          "target_accuracy": 0.7979021072387695
+        },
+        {
+          "example_count": 100,
+          "group_name": "prompt_variant",
+          "group_value": "constraints",
+          "mean_predicted_total_bytes": 3430.16015625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.6299999952316284,
+          "target_accuracy": 0.6299999952316284
+        },
+        {
+          "example_count": 64,
+          "group_name": "prompt_variant",
+          "group_value": "formatting",
+          "mean_predicted_total_bytes": 3559.390625,
+          "mean_safe_bytes_regret": 288.8205261230469,
+          "safe_prediction_rate": 0.609375,
+          "target_accuracy": 0.578125
+        },
+        {
+          "example_count": 78,
+          "group_name": "prompt_variant",
+          "group_value": "locality",
+          "mean_predicted_total_bytes": 3640.85498046875,
+          "mean_safe_bytes_regret": 201.14285278320312,
+          "safe_prediction_rate": 0.6529175043106079,
+          "target_accuracy": 0.6317907571792603
+        },
+        {
+          "example_count": 148,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3939.926513671875,
+          "mean_safe_bytes_regret": 44.69841384887695,
+          "safe_prediction_rate": 0.6721439361572266,
+          "target_accuracy": 0.6674491763114929
+        },
+        {
+          "example_count": 139,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2899.994140625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7604617476463318,
+          "target_accuracy": 0.7604617476463318
+        },
+        {
+          "example_count": 67,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3097.21142578125,
+          "mean_safe_bytes_regret": 828.2352905273438,
+          "safe_prediction_rate": 0.7615385055541992,
+          "target_accuracy": 0.4961538314819336
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 3752.701416015625,
+        "mean_safe_bytes_regret": 87.74356079101562,
+        "mean_safe_prediction_rate": 0.6832969188690186,
+        "mean_target_accuracy": 0.6667681336402893,
+        "min_family_safe_prediction_rate": 0.6270174980163574,
+        "min_family_target_accuracy": 0.6182456016540527,
+        "min_variant_safe_prediction_rate": 0.609375,
+        "min_variant_target_accuracy": 0.4961538314819336
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p90_dense_control/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_compression_calibrated",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 146,
+          "group_name": "prompt_family",
+          "group_value": "cache",
+          "mean_predicted_total_bytes": 5087.544921875,
+          "mean_safe_bytes_regret": 106.93670654296875,
+          "safe_prediction_rate": 0.7384920716285706,
+          "target_accuracy": 0.7265872955322266
+        },
+        {
+          "example_count": 164,
+          "group_name": "prompt_family",
+          "group_value": "instruction",
+          "mean_predicted_total_bytes": 3474.33984375,
+          "mean_safe_bytes_regret": 80.45714569091797,
+          "safe_prediction_rate": 0.6270174980163574,
+          "target_accuracy": 0.6182456016540527
+        },
+        {
+          "example_count": 297,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 3805.283203125,
+          "mean_safe_bytes_regret": 33.52381134033203,
+          "safe_prediction_rate": 0.6414790153503418,
+          "target_accuracy": 0.6379579305648804
+        },
+        {
+          "example_count": 206,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 2978.2705078125,
+          "mean_safe_bytes_regret": 152.09877014160156,
+          "safe_prediction_rate": 0.7397769093513489,
+          "target_accuracy": 0.6976508498191833
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "calibration": {
+          "best": {
+            "logit_offset": -1.5,
+            "mean_predicted_total_bytes": 3799.2578125,
+            "mean_safe_bytes_regret": 206.0487823486328,
+            "predicted_candidate_histogram": {
+              "M0/affine/4": 84,
+              "M3/affine/4/float16": 44
+            },
+            "safe_prediction_rate": 0.640625,
+            "target_accuracy": 0.6171875,
+            "target_candidate": "M3/affine/4/float16"
+          },
+          "calibration_objective": "constraint",
+          "evaluations": [
+            {
+              "logit_offset": -1.5,
+              "mean_predicted_total_bytes": 3799.2578125,
+              "mean_safe_bytes_regret": 206.0487823486328,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 84,
+                "M3/affine/4/float16": 44
+              },
+              "safe_prediction_rate": 0.640625,
+              "target_accuracy": 0.6171875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -1.0,
+              "mean_predicted_total_bytes": 4173.2578125,
+              "mean_safe_bytes_regret": 263.032958984375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 73,
+                "M3/affine/4/float16": 55
+              },
+              "safe_prediction_rate": 0.7109375,
+              "target_accuracy": 0.671875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -0.5,
+              "mean_predicted_total_bytes": 4404.2578125,
+              "mean_safe_bytes_regret": 301.71429443359375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 65,
+                "M3/affine/4/float16": 63
+              },
+              "safe_prediction_rate": 0.765625,
+              "target_accuracy": 0.71875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.0,
+              "mean_predicted_total_bytes": 4899.2578125,
+              "mean_safe_bytes_regret": 418.5946044921875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 47,
+                "M3/affine/4/float16": 81
+              },
+              "safe_prediction_rate": 0.8671875,
+              "target_accuracy": 0.78125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.5,
+              "mean_predicted_total_bytes": 5328.2578125,
+              "mean_safe_bytes_regret": 691.862060546875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 34,
+                "M3/affine/4/float16": 94
+              },
+              "safe_prediction_rate": 0.90625,
+              "target_accuracy": 0.7578125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.0,
+              "mean_predicted_total_bytes": 5647.2578125,
+              "mean_safe_bytes_regret": 807.8688354492188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 23,
+                "M3/affine/4/float16": 105
+              },
+              "safe_prediction_rate": 0.953125,
+              "target_accuracy": 0.765625,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.5,
+              "mean_predicted_total_bytes": 5801.2578125,
+              "mean_safe_bytes_regret": 885.6774291992188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 16,
+                "M3/affine/4/float16": 112
+              },
+              "safe_prediction_rate": 0.96875,
+              "target_accuracy": 0.7421875,
+              "target_candidate": "M3/affine/4/float16"
+            }
+          ],
+          "min_safe_prediction_rate": 0.9,
+          "min_target_accuracy": 0.9,
+          "target_candidate": "M3/affine/4/float16",
+          "used_feasible_subset": false
+        },
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "dense_control_summary": {
+          "correct_example_weight": 2.0,
+          "dense_group_count": 6,
+          "enabled": true,
+          "incorrect_example_weight": 0.5,
+          "matched_correct_examples": 114,
+          "matched_examples": 162,
+          "matched_incorrect_examples": 48,
+          "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl",
+          "unmatched_examples": 350
+        },
+        "dense_control_weighting": true,
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 20,
+          "mean_predicted_total_bytes": 5733.0498046875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.85,
+          "split_name": "cache_layer23_holdout",
+          "target_accuracy": 0.85
+        },
+        {
+          "example_count": 126,
+          "mean_predicted_total_bytes": 4442.03955078125,
+          "mean_safe_bytes_regret": 213.8734130859375,
+          "safe_prediction_rate": 0.626984126984127,
+          "split_name": "family_cache_holdout",
+          "target_accuracy": 0.6031746031746031
+        },
+        {
+          "example_count": 114,
+          "mean_predicted_total_bytes": 3490.359619140625,
+          "mean_safe_bytes_regret": 160.91429138183594,
+          "safe_prediction_rate": 0.6140350877192983,
+          "split_name": "family_instruction_holdout",
+          "target_accuracy": 0.5964912280701754
+        },
+        {
+          "example_count": 141,
+          "mean_predicted_total_bytes": 3389.439697265625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.5886524822695035,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.5886524822695035
+        },
+        {
+          "example_count": 131,
+          "mean_predicted_total_bytes": 3137.740478515625,
+          "mean_safe_bytes_regret": 104.29629516601562,
+          "safe_prediction_rate": 0.6183206106870229,
+          "split_name": "family_retrieval_holdout",
+          "target_accuracy": 0.6030534351145038
+        },
+        {
+          "example_count": 15,
+          "mean_predicted_total_bytes": 4992.93310546875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.8,
+          "split_name": "reasoning_layer23_holdout",
+          "target_accuracy": 0.8
+        },
+        {
+          "example_count": 9,
+          "mean_predicted_total_bytes": 2873.888916015625,
+          "mean_safe_bytes_regret": 352.0,
+          "safe_prediction_rate": 0.8888888888888888,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 0.7777777777777778
+        },
+        {
+          "example_count": 70,
+          "mean_predicted_total_bytes": 3416.95703125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.5857142857142857,
+          "split_name": "variant_arithmetic_holdout",
+          "target_accuracy": 0.5857142857142857
+        },
+        {
+          "example_count": 50,
+          "mean_predicted_total_bytes": 3458.320068359375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.64,
+          "split_name": "variant_constraints_holdout",
+          "target_accuracy": 0.64
+        },
+        {
+          "example_count": 71,
+          "mean_predicted_total_bytes": 3421.802734375,
+          "mean_safe_bytes_regret": 134.09524536132812,
+          "safe_prediction_rate": 0.5915492957746479,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.5774647887323944
+        },
+        {
+          "example_count": 66,
+          "mean_predicted_total_bytes": 2923.181884765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7121212121212122,
+          "split_name": "variant_memo_holdout",
+          "target_accuracy": 0.7121212121212122
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p90_dense_control/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax_compression_floor_0p90_dense_control",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 149,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3932.7861328125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.6497354507446289,
+          "target_accuracy": 0.6497354507446289
+        },
+        {
+          "example_count": 68,
+          "group_name": "prompt_variant",
+          "group_value": "bandwidth",
+          "mean_predicted_total_bytes": 5970.2783203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7979021072387695,
+          "target_accuracy": 0.7979021072387695
+        },
+        {
+          "example_count": 100,
+          "group_name": "prompt_variant",
+          "group_value": "constraints",
+          "mean_predicted_total_bytes": 3430.16015625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.6299999952316284,
+          "target_accuracy": 0.6299999952316284
+        },
+        {
+          "example_count": 64,
+          "group_name": "prompt_variant",
+          "group_value": "formatting",
+          "mean_predicted_total_bytes": 3559.390625,
+          "mean_safe_bytes_regret": 288.8205261230469,
+          "safe_prediction_rate": 0.609375,
+          "target_accuracy": 0.578125
+        },
+        {
+          "example_count": 78,
+          "group_name": "prompt_variant",
+          "group_value": "locality",
+          "mean_predicted_total_bytes": 3640.85498046875,
+          "mean_safe_bytes_regret": 201.14285278320312,
+          "safe_prediction_rate": 0.6529175043106079,
+          "target_accuracy": 0.6317907571792603
+        },
+        {
+          "example_count": 148,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 3939.926513671875,
+          "mean_safe_bytes_regret": 44.69841384887695,
+          "safe_prediction_rate": 0.6721439361572266,
+          "target_accuracy": 0.6674491763114929
+        },
+        {
+          "example_count": 139,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 2899.994140625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7604617476463318,
+          "target_accuracy": 0.7604617476463318
+        },
+        {
+          "example_count": 67,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3097.21142578125,
+          "mean_safe_bytes_regret": 828.2352905273438,
+          "safe_prediction_rate": 0.7615385055541992,
+          "target_accuracy": 0.4961538314819336
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 4060.941650390625,
+        "mean_safe_bytes_regret": 179.75027465820312,
+        "mean_safe_prediction_rate": 0.7393319606781006,
+        "mean_target_accuracy": 0.7009189128875732,
+        "min_family_safe_prediction_rate": 0.6270174980163574,
+        "min_family_target_accuracy": 0.6182456016540527,
+        "min_variant_safe_prediction_rate": 0.609375,
+        "min_variant_target_accuracy": 0.578125
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p85_dense_control/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_compression_calibrated",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 146,
+          "group_name": "prompt_family",
+          "group_value": "cache",
+          "mean_predicted_total_bytes": 5087.544921875,
+          "mean_safe_bytes_regret": 106.93670654296875,
+          "safe_prediction_rate": 0.7384920716285706,
+          "target_accuracy": 0.7265872955322266
+        },
+        {
+          "example_count": 164,
+          "group_name": "prompt_family",
+          "group_value": "instruction",
+          "mean_predicted_total_bytes": 3474.33984375,
+          "mean_safe_bytes_regret": 80.45714569091797,
+          "safe_prediction_rate": 0.6270174980163574,
+          "target_accuracy": 0.6182456016540527
+        },
+        {
+          "example_count": 297,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 4142.41015625,
+          "mean_safe_bytes_regret": 89.3968276977539,
+          "safe_prediction_rate": 0.7154226899147034,
+          "target_accuracy": 0.7013381719589233
+        },
+        {
+          "example_count": 206,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 3658.982666015625,
+          "mean_safe_bytes_regret": 414.9593505859375,
+          "safe_prediction_rate": 0.8466470837593079,
+          "target_accuracy": 0.7383632659912109
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "calibration": {
+          "best": {
+            "logit_offset": -1.5,
+            "mean_predicted_total_bytes": 3799.2578125,
+            "mean_safe_bytes_regret": 206.0487823486328,
+            "predicted_candidate_histogram": {
+              "M0/affine/4": 84,
+              "M3/affine/4/float16": 44
+            },
+            "safe_prediction_rate": 0.640625,
+            "target_accuracy": 0.6171875,
+            "target_candidate": "M3/affine/4/float16"
+          },
+          "calibration_objective": "constraint",
+          "evaluations": [
+            {
+              "logit_offset": -1.5,
+              "mean_predicted_total_bytes": 3799.2578125,
+              "mean_safe_bytes_regret": 206.0487823486328,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 84,
+                "M3/affine/4/float16": 44
+              },
+              "safe_prediction_rate": 0.640625,
+              "target_accuracy": 0.6171875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -1.0,
+              "mean_predicted_total_bytes": 4173.2578125,
+              "mean_safe_bytes_regret": 263.032958984375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 73,
+                "M3/affine/4/float16": 55
+              },
+              "safe_prediction_rate": 0.7109375,
+              "target_accuracy": 0.671875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -0.5,
+              "mean_predicted_total_bytes": 4404.2578125,
+              "mean_safe_bytes_regret": 301.71429443359375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 65,
+                "M3/affine/4/float16": 63
+              },
+              "safe_prediction_rate": 0.765625,
+              "target_accuracy": 0.71875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.0,
+              "mean_predicted_total_bytes": 4899.2578125,
+              "mean_safe_bytes_regret": 418.5946044921875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 47,
+                "M3/affine/4/float16": 81
+              },
+              "safe_prediction_rate": 0.8671875,
+              "target_accuracy": 0.78125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.5,
+              "mean_predicted_total_bytes": 5328.2578125,
+              "mean_safe_bytes_regret": 691.862060546875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 34,
+                "M3/affine/4/float16": 94
+              },
+              "safe_prediction_rate": 0.90625,
+              "target_accuracy": 0.7578125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.0,
+              "mean_predicted_total_bytes": 5647.2578125,
+              "mean_safe_bytes_regret": 807.8688354492188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 23,
+                "M3/affine/4/float16": 105
+              },
+              "safe_prediction_rate": 0.953125,
+              "target_accuracy": 0.765625,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.5,
+              "mean_predicted_total_bytes": 5801.2578125,
+              "mean_safe_bytes_regret": 885.6774291992188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 16,
+                "M3/affine/4/float16": 112
+              },
+              "safe_prediction_rate": 0.96875,
+              "target_accuracy": 0.7421875,
+              "target_candidate": "M3/affine/4/float16"
+            }
+          ],
+          "min_safe_prediction_rate": 0.85,
+          "min_target_accuracy": 0.85,
+          "target_candidate": "M3/affine/4/float16",
+          "used_feasible_subset": false
+        },
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "dense_control_summary": {
+          "correct_example_weight": 2.0,
+          "dense_group_count": 6,
+          "enabled": true,
+          "incorrect_example_weight": 0.5,
+          "matched_correct_examples": 114,
+          "matched_examples": 162,
+          "matched_incorrect_examples": 48,
+          "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl",
+          "unmatched_examples": 350
+        },
+        "dense_control_weighting": true,
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": false,
+      "per_split_metrics": [
+        {
+          "example_count": 20,
+          "mean_predicted_total_bytes": 5733.0498046875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.85,
+          "split_name": "cache_layer23_holdout",
+          "target_accuracy": 0.85
+        },
+        {
+          "example_count": 126,
+          "mean_predicted_total_bytes": 4442.03955078125,
+          "mean_safe_bytes_regret": 213.8734130859375,
+          "safe_prediction_rate": 0.626984126984127,
+          "split_name": "family_cache_holdout",
+          "target_accuracy": 0.6031746031746031
+        },
+        {
+          "example_count": 114,
+          "mean_predicted_total_bytes": 3490.359619140625,
+          "mean_safe_bytes_regret": 160.91429138183594,
+          "safe_prediction_rate": 0.6140350877192983,
+          "split_name": "family_instruction_holdout",
+          "target_accuracy": 0.5964912280701754
+        },
+        {
+          "example_count": 141,
+          "mean_predicted_total_bytes": 3389.439697265625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.5886524822695035,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.5886524822695035
+        },
+        {
+          "example_count": 131,
+          "mean_predicted_total_bytes": 5179.8779296875,
+          "mean_safe_bytes_regret": 892.8780517578125,
+          "safe_prediction_rate": 0.9389312977099237,
+          "split_name": "family_retrieval_holdout",
+          "target_accuracy": 0.7251908396946565
+        },
+        {
+          "example_count": 15,
+          "mean_predicted_total_bytes": 4992.93310546875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.8,
+          "split_name": "reasoning_layer23_holdout",
+          "target_accuracy": 0.8
+        },
+        {
+          "example_count": 9,
+          "mean_predicted_total_bytes": 2873.888916015625,
+          "mean_safe_bytes_regret": 352.0,
+          "safe_prediction_rate": 0.8888888888888888,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 0.7777777777777778
+        },
+        {
+          "example_count": 70,
+          "mean_predicted_total_bytes": 3416.95703125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.5857142857142857,
+          "split_name": "variant_arithmetic_holdout",
+          "target_accuracy": 0.5857142857142857
+        },
+        {
+          "example_count": 50,
+          "mean_predicted_total_bytes": 3458.320068359375,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.64,
+          "split_name": "variant_constraints_holdout",
+          "target_accuracy": 0.64
+        },
+        {
+          "example_count": 71,
+          "mean_predicted_total_bytes": 4770.31005859375,
+          "mean_safe_bytes_regret": 357.5873107910156,
+          "safe_prediction_rate": 0.8873239436619719,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.8309859154929577
+        },
+        {
+          "example_count": 66,
+          "mean_predicted_total_bytes": 2923.181884765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7121212121212122,
+          "split_name": "variant_memo_holdout",
+          "target_accuracy": 0.7121212121212122
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p85_dense_control/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax_compression_floor_0p85_dense_control",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 149,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 3932.7861328125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.6497354507446289,
+          "target_accuracy": 0.6497354507446289
+        },
+        {
+          "example_count": 68,
+          "group_name": "prompt_variant",
+          "group_value": "bandwidth",
+          "mean_predicted_total_bytes": 5970.2783203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7979021072387695,
+          "target_accuracy": 0.7979021072387695
+        },
+        {
+          "example_count": 100,
+          "group_name": "prompt_variant",
+          "group_value": "constraints",
+          "mean_predicted_total_bytes": 3430.16015625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.6299999952316284,
+          "target_accuracy": 0.6299999952316284
+        },
+        {
+          "example_count": 64,
+          "group_name": "prompt_variant",
+          "group_value": "formatting",
+          "mean_predicted_total_bytes": 3559.390625,
+          "mean_safe_bytes_regret": 288.8205261230469,
+          "safe_prediction_rate": 0.609375,
+          "target_accuracy": 0.578125
+        },
+        {
+          "example_count": 78,
+          "group_name": "prompt_variant",
+          "group_value": "locality",
+          "mean_predicted_total_bytes": 3640.85498046875,
+          "mean_safe_bytes_regret": 201.14285278320312,
+          "safe_prediction_rate": 0.6529175043106079,
+          "target_accuracy": 0.6317907571792603
+        },
+        {
+          "example_count": 148,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 4389.42919921875,
+          "mean_safe_bytes_regret": 119.19577026367188,
+          "safe_prediction_rate": 0.770735502243042,
+          "target_accuracy": 0.7519561648368835
+        },
+        {
+          "example_count": 139,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 3582.660888671875,
+          "mean_safe_bytes_regret": 386.0645446777344,
+          "safe_prediction_rate": 0.836219310760498,
+          "target_accuracy": 0.7402597069740295
+        },
+        {
+          "example_count": 67,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 4115.3037109375,
+          "mean_safe_bytes_regret": 1015.6065673828125,
+          "safe_prediction_rate": 0.9692307710647583,
+          "target_accuracy": 0.6499999761581421
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 4647.31005859375,
+        "mean_safe_bytes_regret": 382.8066101074219,
+        "mean_safe_prediction_rate": 0.8402166366577148,
+        "mean_target_accuracy": 0.7290208339691162,
+        "min_family_safe_prediction_rate": 0.7384920716285706,
+        "min_family_target_accuracy": 0.6247076392173767,
+        "min_variant_safe_prediction_rate": 0.6529175043106079,
+        "min_variant_target_accuracy": 0.36153846979141235
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p80_dense_control/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_compression_calibrated",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 146,
+          "group_name": "prompt_family",
+          "group_value": "cache",
+          "mean_predicted_total_bytes": 5087.544921875,
+          "mean_safe_bytes_regret": 106.93670654296875,
+          "safe_prediction_rate": 0.7384920716285706,
+          "target_accuracy": 0.7265872955322266
+        },
+        {
+          "example_count": 164,
+          "group_name": "prompt_family",
+          "group_value": "instruction",
+          "mean_predicted_total_bytes": 4560.228515625,
+          "mean_safe_bytes_regret": 286.4170227050781,
+          "safe_prediction_rate": 0.8717544078826904,
+          "target_accuracy": 0.7903509140014648
+        },
+        {
+          "example_count": 297,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 4885.35498046875,
+          "mean_safe_bytes_regret": 343.2880554199219,
+          "safe_prediction_rate": 0.852251410484314,
+          "target_accuracy": 0.777807354927063
+        },
+        {
+          "example_count": 206,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 4094.479736328125,
+          "mean_safe_bytes_regret": 683.6710815429688,
+          "safe_prediction_rate": 0.8709614872932434,
+          "target_accuracy": 0.6247076392173767
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "calibration": {
+          "best": {
+            "logit_offset": -1.5,
+            "mean_predicted_total_bytes": 3799.2578125,
+            "mean_safe_bytes_regret": 206.0487823486328,
+            "predicted_candidate_histogram": {
+              "M0/affine/4": 84,
+              "M3/affine/4/float16": 44
+            },
+            "safe_prediction_rate": 0.640625,
+            "target_accuracy": 0.6171875,
+            "target_candidate": "M3/affine/4/float16"
+          },
+          "calibration_objective": "constraint",
+          "evaluations": [
+            {
+              "logit_offset": -1.5,
+              "mean_predicted_total_bytes": 3799.2578125,
+              "mean_safe_bytes_regret": 206.0487823486328,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 84,
+                "M3/affine/4/float16": 44
+              },
+              "safe_prediction_rate": 0.640625,
+              "target_accuracy": 0.6171875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -1.0,
+              "mean_predicted_total_bytes": 4173.2578125,
+              "mean_safe_bytes_regret": 263.032958984375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 73,
+                "M3/affine/4/float16": 55
+              },
+              "safe_prediction_rate": 0.7109375,
+              "target_accuracy": 0.671875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -0.5,
+              "mean_predicted_total_bytes": 4404.2578125,
+              "mean_safe_bytes_regret": 301.71429443359375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 65,
+                "M3/affine/4/float16": 63
+              },
+              "safe_prediction_rate": 0.765625,
+              "target_accuracy": 0.71875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.0,
+              "mean_predicted_total_bytes": 4899.2578125,
+              "mean_safe_bytes_regret": 418.5946044921875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 47,
+                "M3/affine/4/float16": 81
+              },
+              "safe_prediction_rate": 0.8671875,
+              "target_accuracy": 0.78125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.5,
+              "mean_predicted_total_bytes": 5328.2578125,
+              "mean_safe_bytes_regret": 691.862060546875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 34,
+                "M3/affine/4/float16": 94
+              },
+              "safe_prediction_rate": 0.90625,
+              "target_accuracy": 0.7578125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.0,
+              "mean_predicted_total_bytes": 5647.2578125,
+              "mean_safe_bytes_regret": 807.8688354492188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 23,
+                "M3/affine/4/float16": 105
+              },
+              "safe_prediction_rate": 0.953125,
+              "target_accuracy": 0.765625,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.5,
+              "mean_predicted_total_bytes": 5801.2578125,
+              "mean_safe_bytes_regret": 885.6774291992188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 16,
+                "M3/affine/4/float16": 112
+              },
+              "safe_prediction_rate": 0.96875,
+              "target_accuracy": 0.7421875,
+              "target_candidate": "M3/affine/4/float16"
+            }
+          ],
+          "min_safe_prediction_rate": 0.8,
+          "min_target_accuracy": 0.8,
+          "target_candidate": "M3/affine/4/float16",
+          "used_feasible_subset": false
+        },
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "dense_control_summary": {
+          "correct_example_weight": 2.0,
+          "dense_group_count": 6,
+          "enabled": true,
+          "incorrect_example_weight": 0.5,
+          "matched_correct_examples": 114,
+          "matched_examples": 162,
+          "matched_incorrect_examples": 48,
+          "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl",
+          "unmatched_examples": 350
+        },
+        "dense_control_weighting": true,
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 20,
+          "mean_predicted_total_bytes": 5733.0498046875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.85,
+          "split_name": "cache_layer23_holdout",
+          "target_accuracy": 0.85
+        },
+        {
+          "example_count": 126,
+          "mean_predicted_total_bytes": 4442.03955078125,
+          "mean_safe_bytes_regret": 213.8734130859375,
+          "safe_prediction_rate": 0.626984126984127,
+          "split_name": "family_cache_holdout",
+          "target_accuracy": 0.6031746031746031
+        },
+        {
+          "example_count": 114,
+          "mean_predicted_total_bytes": 4873.65771484375,
+          "mean_safe_bytes_regret": 505.7864074707031,
+          "safe_prediction_rate": 0.9035087719298246,
+          "split_name": "family_instruction_holdout",
+          "target_accuracy": 0.7807017543859649
+        },
+        {
+          "example_count": 141,
+          "mean_predicted_total_bytes": 5516.41845703125,
+          "mean_safe_bytes_regret": 776.4705810546875,
+          "safe_prediction_rate": 0.9645390070921985,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.7659574468085106
+        },
+        {
+          "example_count": 131,
+          "mean_predicted_total_bytes": 4921.923828125,
+          "mean_safe_bytes_regret": 799.4576416015625,
+          "safe_prediction_rate": 0.9007633587786259,
+          "split_name": "family_retrieval_holdout",
+          "target_accuracy": 0.7175572519083969
+        },
+        {
+          "example_count": 15,
+          "mean_predicted_total_bytes": 4992.93310546875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.8,
+          "split_name": "reasoning_layer23_holdout",
+          "target_accuracy": 0.8
+        },
+        {
+          "example_count": 9,
+          "mean_predicted_total_bytes": 4438.33349609375,
+          "mean_safe_bytes_regret": 1251.5555419921875,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 0.4444444444444444
+        },
+        {
+          "example_count": 70,
+          "mean_predicted_total_bytes": 4261.75732421875,
+          "mean_safe_bytes_regret": 239.09434509277344,
+          "safe_prediction_rate": 0.7571428571428571,
+          "split_name": "variant_arithmetic_holdout",
+          "target_accuracy": 0.7142857142857143
+        },
+        {
+          "example_count": 50,
+          "mean_predicted_total_bytes": 4246.7998046875,
+          "mean_safe_bytes_regret": 67.04762268066406,
+          "safe_prediction_rate": 0.84,
+          "split_name": "variant_constraints_holdout",
+          "target_accuracy": 0.8
+        },
+        {
+          "example_count": 71,
+          "mean_predicted_total_bytes": 4770.31005859375,
+          "mean_safe_bytes_regret": 357.5873107910156,
+          "safe_prediction_rate": 0.8873239436619719,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.8309859154929577
+        },
+        {
+          "example_count": 66,
+          "mean_predicted_total_bytes": 2923.181884765625,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7121212121212122,
+          "split_name": "variant_memo_holdout",
+          "target_accuracy": 0.7121212121212122
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p80_dense_control/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax_compression_floor_0p80_dense_control",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 149,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 4918.38623046875,
+          "mean_safe_bytes_regret": 307.46282958984375,
+          "safe_prediction_rate": 0.8354496955871582,
+          "target_accuracy": 0.7544973492622375
+        },
+        {
+          "example_count": 68,
+          "group_name": "prompt_variant",
+          "group_value": "bandwidth",
+          "mean_predicted_total_bytes": 5970.2783203125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.7979021072387695,
+          "target_accuracy": 0.7979021072387695
+        },
+        {
+          "example_count": 100,
+          "group_name": "prompt_variant",
+          "group_value": "constraints",
+          "mean_predicted_total_bytes": 4542.47998046875,
+          "mean_safe_bytes_regret": 278.39337158203125,
+          "safe_prediction_rate": 0.8799999952316284,
+          "target_accuracy": 0.800000011920929
+        },
+        {
+          "example_count": 64,
+          "group_name": "prompt_variant",
+          "group_value": "formatting",
+          "mean_predicted_total_bytes": 4901.390625,
+          "mean_safe_bytes_regret": 518.73681640625,
+          "safe_prediction_rate": 0.890625,
+          "target_accuracy": 0.765625
+        },
+        {
+          "example_count": 78,
+          "group_name": "prompt_variant",
+          "group_value": "locality",
+          "mean_predicted_total_bytes": 3640.85498046875,
+          "mean_safe_bytes_regret": 201.14285278320312,
+          "safe_prediction_rate": 0.6529175043106079,
+          "target_accuracy": 0.6317907571792603
+        },
+        {
+          "example_count": 148,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 5103.34423828125,
+          "mean_safe_bytes_regret": 409.078125,
+          "safe_prediction_rate": 0.8928012251853943,
+          "target_accuracy": 0.8082941174507141
+        },
+        {
+          "example_count": 139,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 4107.8671875,
+          "mean_safe_bytes_regret": 638.0337524414062,
+          "safe_prediction_rate": 0.883838415145874,
+          "target_accuracy": 0.6652236580848694
+        },
+        {
+          "example_count": 67,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 4326.50390625,
+          "mean_safe_bytes_regret": 1395.4285888671875,
+          "safe_prediction_rate": 0.9307692050933838,
+          "target_accuracy": 0.36153846979141235
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 4673.71142578125,
+        "mean_safe_bytes_regret": 321.9799499511719,
+        "mean_safe_prediction_rate": 0.8648302555084229,
+        "mean_target_accuracy": 0.7810396552085876,
+        "min_family_safe_prediction_rate": 0.7703508734703064,
+        "min_family_target_accuracy": 0.7241113185882568,
+        "min_variant_safe_prediction_rate": 0.75,
+        "min_variant_target_accuracy": 0.35384616255760193
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p75_dense_control/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_compression_calibrated",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 146,
+          "group_name": "prompt_family",
+          "group_value": "cache",
+          "mean_predicted_total_bytes": 5706.6181640625,
+          "mean_safe_bytes_regret": 301.55706787109375,
+          "safe_prediction_rate": 0.8757936358451843,
+          "target_accuracy": 0.8269841074943542
+        },
+        {
+          "example_count": 164,
+          "group_name": "prompt_family",
+          "group_value": "instruction",
+          "mean_predicted_total_bytes": 4045.4443359375,
+          "mean_safe_bytes_regret": 147.79420471191406,
+          "safe_prediction_rate": 0.7703508734703064,
+          "target_accuracy": 0.7284210920333862
+        },
+        {
+          "example_count": 297,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 4839.2373046875,
+          "mean_safe_bytes_regret": 210.51577758789062,
+          "safe_prediction_rate": 0.8661062121391296,
+          "target_accuracy": 0.8270730972290039
+        },
+        {
+          "example_count": 206,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 4183.25048828125,
+          "mean_safe_bytes_regret": 600.3379516601562,
+          "safe_prediction_rate": 0.9188063740730286,
+          "target_accuracy": 0.7241113185882568
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "calibration": {
+          "best": {
+            "logit_offset": 0.0,
+            "mean_predicted_total_bytes": 4899.2578125,
+            "mean_safe_bytes_regret": 418.5946044921875,
+            "predicted_candidate_histogram": {
+              "M0/affine/4": 47,
+              "M3/affine/4/float16": 81
+            },
+            "safe_prediction_rate": 0.8671875,
+            "target_accuracy": 0.78125,
+            "target_candidate": "M3/affine/4/float16"
+          },
+          "calibration_objective": "constraint",
+          "evaluations": [
+            {
+              "logit_offset": -1.5,
+              "mean_predicted_total_bytes": 3799.2578125,
+              "mean_safe_bytes_regret": 206.0487823486328,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 84,
+                "M3/affine/4/float16": 44
+              },
+              "safe_prediction_rate": 0.640625,
+              "target_accuracy": 0.6171875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -1.0,
+              "mean_predicted_total_bytes": 4173.2578125,
+              "mean_safe_bytes_regret": 263.032958984375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 73,
+                "M3/affine/4/float16": 55
+              },
+              "safe_prediction_rate": 0.7109375,
+              "target_accuracy": 0.671875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -0.5,
+              "mean_predicted_total_bytes": 4404.2578125,
+              "mean_safe_bytes_regret": 301.71429443359375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 65,
+                "M3/affine/4/float16": 63
+              },
+              "safe_prediction_rate": 0.765625,
+              "target_accuracy": 0.71875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.0,
+              "mean_predicted_total_bytes": 4899.2578125,
+              "mean_safe_bytes_regret": 418.5946044921875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 47,
+                "M3/affine/4/float16": 81
+              },
+              "safe_prediction_rate": 0.8671875,
+              "target_accuracy": 0.78125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.5,
+              "mean_predicted_total_bytes": 5328.2578125,
+              "mean_safe_bytes_regret": 691.862060546875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 34,
+                "M3/affine/4/float16": 94
+              },
+              "safe_prediction_rate": 0.90625,
+              "target_accuracy": 0.7578125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.0,
+              "mean_predicted_total_bytes": 5647.2578125,
+              "mean_safe_bytes_regret": 807.8688354492188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 23,
+                "M3/affine/4/float16": 105
+              },
+              "safe_prediction_rate": 0.953125,
+              "target_accuracy": 0.765625,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.5,
+              "mean_predicted_total_bytes": 5801.2578125,
+              "mean_safe_bytes_regret": 885.6774291992188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 16,
+                "M3/affine/4/float16": 112
+              },
+              "safe_prediction_rate": 0.96875,
+              "target_accuracy": 0.7421875,
+              "target_candidate": "M3/affine/4/float16"
+            }
+          ],
+          "min_safe_prediction_rate": 0.75,
+          "min_target_accuracy": 0.75,
+          "target_candidate": "M3/affine/4/float16",
+          "used_feasible_subset": true
+        },
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "dense_control_summary": {
+          "correct_example_weight": 2.0,
+          "dense_group_count": 6,
+          "enabled": true,
+          "incorrect_example_weight": 0.5,
+          "matched_correct_examples": 114,
+          "matched_examples": 162,
+          "matched_incorrect_examples": 48,
+          "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl",
+          "unmatched_examples": 350
+        },
+        "dense_control_weighting": true,
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 20,
+          "mean_predicted_total_bytes": 6155.4501953125,
+          "mean_safe_bytes_regret": 296.4210510253906,
+          "safe_prediction_rate": 0.95,
+          "split_name": "cache_layer23_holdout",
+          "target_accuracy": 0.9
+        },
+        {
+          "example_count": 126,
+          "mean_predicted_total_bytes": 5257.78564453125,
+          "mean_safe_bytes_regret": 306.69305419921875,
+          "safe_prediction_rate": 0.8015873015873016,
+          "split_name": "family_cache_holdout",
+          "target_accuracy": 0.753968253968254
+        },
+        {
+          "example_count": 114,
+          "mean_predicted_total_bytes": 4182.0087890625,
+          "mean_safe_bytes_regret": 221.48313903808594,
+          "safe_prediction_rate": 0.7807017543859649,
+          "split_name": "family_instruction_holdout",
+          "target_accuracy": 0.7368421052631579
+        },
+        {
+          "example_count": 141,
+          "mean_predicted_total_bytes": 4947.22705078125,
+          "mean_safe_bytes_regret": 421.2913513183594,
+          "safe_prediction_rate": 0.900709219858156,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.8156028368794326
+        },
+        {
+          "example_count": 131,
+          "mean_predicted_total_bytes": 4406.01513671875,
+          "mean_safe_bytes_regret": 494.70269775390625,
+          "safe_prediction_rate": 0.8473282442748091,
+          "split_name": "family_retrieval_holdout",
+          "target_accuracy": 0.7480916030534351
+        },
+        {
+          "example_count": 15,
+          "mean_predicted_total_bytes": 5556.13330078125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.9333333333333333,
+          "split_name": "reasoning_layer23_holdout",
+          "target_accuracy": 0.9333333333333333
+        },
+        {
+          "example_count": 9,
+          "mean_predicted_total_bytes": 3812.5556640625,
+          "mean_safe_bytes_regret": 625.7777709960938,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 0.6666666666666666
+        },
+        {
+          "example_count": 70,
+          "mean_predicted_total_bytes": 4261.75732421875,
+          "mean_safe_bytes_regret": 239.09434509277344,
+          "safe_prediction_rate": 0.7571428571428571,
+          "split_name": "variant_arithmetic_holdout",
+          "target_accuracy": 0.7142857142857143
+        },
+        {
+          "example_count": 50,
+          "mean_predicted_total_bytes": 3908.8798828125,
+          "mean_safe_bytes_regret": 74.10526275634766,
+          "safe_prediction_rate": 0.76,
+          "split_name": "variant_constraints_holdout",
+          "target_accuracy": 0.72
+        },
+        {
+          "example_count": 71,
+          "mean_predicted_total_bytes": 4591.8310546875,
+          "mean_safe_bytes_regret": 181.6774139404297,
+          "safe_prediction_rate": 0.8732394366197183,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.8450704225352113
+        },
+        {
+          "example_count": 66,
+          "mean_predicted_total_bytes": 4331.181640625,
+          "mean_safe_bytes_regret": 680.5333251953125,
+          "safe_prediction_rate": 0.9090909090909091,
+          "split_name": "variant_memo_holdout",
+          "target_accuracy": 0.7575757575757576
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p75_dense_control/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax_compression_floor_0p75_dense_control",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 149,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 4861.76806640625,
+          "mean_safe_bytes_regret": 228.6928253173828,
+          "safe_prediction_rate": 0.8486772179603577,
+          "target_accuracy": 0.8010582327842712
+        },
+        {
+          "example_count": 68,
+          "group_name": "prompt_variant",
+          "group_value": "bandwidth",
+          "mean_predicted_total_bytes": 6549.232421875,
+          "mean_safe_bytes_regret": 88.0,
+          "safe_prediction_rate": 0.9363636374473572,
+          "target_accuracy": 0.9181817770004272
+        },
+        {
+          "example_count": 100,
+          "group_name": "prompt_variant",
+          "group_value": "constraints",
+          "mean_predicted_total_bytes": 3965.199951171875,
+          "mean_safe_bytes_regret": 151.2147979736328,
+          "safe_prediction_rate": 0.75,
+          "target_accuracy": 0.7000000476837158
+        },
+        {
+          "example_count": 64,
+          "group_name": "prompt_variant",
+          "group_value": "formatting",
+          "mean_predicted_total_bytes": 4307.390625,
+          "mean_safe_bytes_regret": 216.61538696289062,
+          "safe_prediction_rate": 0.8125,
+          "target_accuracy": 0.78125
+        },
+        {
+          "example_count": 78,
+          "group_name": "prompt_variant",
+          "group_value": "locality",
+          "mean_predicted_total_bytes": 4461.0078125,
+          "mean_safe_bytes_regret": 681.8616333007812,
+          "safe_prediction_rate": 0.8018108606338501,
+          "target_accuracy": 0.7022132873535156
+        },
+        {
+          "example_count": 148,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 5138.59912109375,
+          "mean_safe_bytes_regret": 192.55914306640625,
+          "safe_prediction_rate": 0.9248826503753662,
+          "target_accuracy": 0.8920187950134277
+        },
+        {
+          "example_count": 139,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 4145.45458984375,
+          "mean_safe_bytes_regret": 473.8031921386719,
+          "safe_prediction_rate": 0.9393939971923828,
+          "target_accuracy": 0.8008658289909363
+        },
+        {
+          "example_count": 67,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 4055.734619140625,
+          "mean_safe_bytes_regret": 1276.86279296875,
+          "safe_prediction_rate": 0.892307698726654,
+          "target_accuracy": 0.35384616255760193
+        }
+      ]
+    },
+    {
+      "aggregate_metrics": {
+        "mean_predicted_total_bytes": 4329.93994140625,
+        "mean_safe_bytes_regret": 184.2953338623047,
+        "mean_safe_prediction_rate": 0.8068037629127502,
+        "mean_target_accuracy": 0.7637889385223389,
+        "min_family_safe_prediction_rate": 0.667719304561615,
+        "min_family_target_accuracy": 0.6545614004135132,
+        "min_variant_safe_prediction_rate": 0.6700000166893005,
+        "min_variant_target_accuracy": 0.3461538553237915
+      },
+      "artifact_capable": true,
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p70_dense_control/selector_artifact.json",
+      "base_strategy_id": "linear_softmax_compression_calibrated",
+      "calibration_mode": "global",
+      "family_breakdown": [
+        {
+          "example_count": 146,
+          "group_name": "prompt_family",
+          "group_value": "cache",
+          "mean_predicted_total_bytes": 5530.6181640625,
+          "mean_safe_bytes_regret": 153.34652709960938,
+          "safe_prediction_rate": 0.8507936000823975,
+          "target_accuracy": 0.8269841074943542
+        },
+        {
+          "example_count": 164,
+          "group_name": "prompt_family",
+          "group_value": "instruction",
+          "mean_predicted_total_bytes": 3581.05126953125,
+          "mean_safe_bytes_regret": 82.28571319580078,
+          "safe_prediction_rate": 0.667719304561615,
+          "target_accuracy": 0.6545614004135132
+        },
+        {
+          "example_count": 297,
+          "group_name": "prompt_family",
+          "group_value": "reasoning",
+          "mean_predicted_total_bytes": 4507.34033203125,
+          "mean_safe_bytes_regret": 115.53803253173828,
+          "safe_prediction_rate": 0.796980082988739,
+          "target_accuracy": 0.7774508595466614
+        },
+        {
+          "example_count": 206,
+          "group_name": "prompt_family",
+          "group_value": "retrieval",
+          "mean_predicted_total_bytes": 3792.212158203125,
+          "mean_safe_bytes_regret": 364.6106872558594,
+          "safe_prediction_rate": 0.8832986354827881,
+          "target_accuracy": 0.7762613296508789
+        }
+      ],
+      "feature_set_id": "runtime_safe",
+      "model_summary": {
+        "calibration": {
+          "best": {
+            "logit_offset": -0.5,
+            "mean_predicted_total_bytes": 4404.2578125,
+            "mean_safe_bytes_regret": 301.71429443359375,
+            "predicted_candidate_histogram": {
+              "M0/affine/4": 65,
+              "M3/affine/4/float16": 63
+            },
+            "safe_prediction_rate": 0.765625,
+            "target_accuracy": 0.71875,
+            "target_candidate": "M3/affine/4/float16"
+          },
+          "calibration_objective": "constraint",
+          "evaluations": [
+            {
+              "logit_offset": -1.5,
+              "mean_predicted_total_bytes": 3799.2578125,
+              "mean_safe_bytes_regret": 206.0487823486328,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 84,
+                "M3/affine/4/float16": 44
+              },
+              "safe_prediction_rate": 0.640625,
+              "target_accuracy": 0.6171875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -1.0,
+              "mean_predicted_total_bytes": 4173.2578125,
+              "mean_safe_bytes_regret": 263.032958984375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 73,
+                "M3/affine/4/float16": 55
+              },
+              "safe_prediction_rate": 0.7109375,
+              "target_accuracy": 0.671875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": -0.5,
+              "mean_predicted_total_bytes": 4404.2578125,
+              "mean_safe_bytes_regret": 301.71429443359375,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 65,
+                "M3/affine/4/float16": 63
+              },
+              "safe_prediction_rate": 0.765625,
+              "target_accuracy": 0.71875,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.0,
+              "mean_predicted_total_bytes": 4899.2578125,
+              "mean_safe_bytes_regret": 418.5946044921875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 47,
+                "M3/affine/4/float16": 81
+              },
+              "safe_prediction_rate": 0.8671875,
+              "target_accuracy": 0.78125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 0.5,
+              "mean_predicted_total_bytes": 5328.2578125,
+              "mean_safe_bytes_regret": 691.862060546875,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 34,
+                "M3/affine/4/float16": 94
+              },
+              "safe_prediction_rate": 0.90625,
+              "target_accuracy": 0.7578125,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.0,
+              "mean_predicted_total_bytes": 5647.2578125,
+              "mean_safe_bytes_regret": 807.8688354492188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 23,
+                "M3/affine/4/float16": 105
+              },
+              "safe_prediction_rate": 0.953125,
+              "target_accuracy": 0.765625,
+              "target_candidate": "M3/affine/4/float16"
+            },
+            {
+              "logit_offset": 1.5,
+              "mean_predicted_total_bytes": 5801.2578125,
+              "mean_safe_bytes_regret": 885.6774291992188,
+              "predicted_candidate_histogram": {
+                "M0/affine/4": 16,
+                "M3/affine/4/float16": 112
+              },
+              "safe_prediction_rate": 0.96875,
+              "target_accuracy": 0.7421875,
+              "target_candidate": "M3/affine/4/float16"
+            }
+          ],
+          "min_safe_prediction_rate": 0.7,
+          "min_target_accuracy": 0.7,
+          "target_candidate": "M3/affine/4/float16",
+          "used_feasible_subset": true
+        },
+        "classes": [
+          "M0/affine/4",
+          "M3/affine/4/float16"
+        ],
+        "dense_control_summary": {
+          "correct_example_weight": 2.0,
+          "dense_group_count": 6,
+          "enabled": true,
+          "incorrect_example_weight": 0.5,
+          "matched_correct_examples": 114,
+          "matched_examples": 162,
+          "matched_incorrect_examples": 48,
+          "report_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/task_compare_promoted_dense_exact_quality_systems/qwen35_9b_task_selector_compare.jsonl",
+          "unmatched_examples": 350
+        },
+        "dense_control_weighting": true,
+        "model_type": "linear_selector_model"
+      },
+      "pareto_optimal": true,
+      "per_split_metrics": [
+        {
+          "example_count": 20,
+          "mean_predicted_total_bytes": 5803.4501953125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.9,
+          "split_name": "cache_layer23_holdout",
+          "target_accuracy": 0.9
+        },
+        {
+          "example_count": 126,
+          "mean_predicted_total_bytes": 5257.78564453125,
+          "mean_safe_bytes_regret": 306.69305419921875,
+          "safe_prediction_rate": 0.8015873015873016,
+          "split_name": "family_cache_holdout",
+          "target_accuracy": 0.753968253968254
+        },
+        {
+          "example_count": 114,
+          "mean_predicted_total_bytes": 3675.622802734375,
+          "mean_safe_bytes_regret": 164.57142639160156,
+          "safe_prediction_rate": 0.6754385964912281,
+          "split_name": "family_instruction_holdout",
+          "target_accuracy": 0.6491228070175439
+        },
+        {
+          "example_count": 141,
+          "mean_predicted_total_bytes": 4417.978515625,
+          "mean_safe_bytes_regret": 209.96490478515625,
+          "safe_prediction_rate": 0.8085106382978723,
+          "split_name": "family_reasoning_holdout",
+          "target_accuracy": 0.7730496453900709
+        },
+        {
+          "example_count": 131,
+          "mean_predicted_total_bytes": 3965.343505859375,
+          "mean_safe_bytes_regret": 328.0776672363281,
+          "safe_prediction_rate": 0.7862595419847328,
+          "split_name": "family_retrieval_holdout",
+          "target_accuracy": 0.732824427480916
+        },
+        {
+          "example_count": 15,
+          "mean_predicted_total_bytes": 5556.13330078125,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.9333333333333333,
+          "split_name": "reasoning_layer23_holdout",
+          "target_accuracy": 0.9333333333333333
+        },
+        {
+          "example_count": 9,
+          "mean_predicted_total_bytes": 3656.111083984375,
+          "mean_safe_bytes_regret": 469.3333435058594,
+          "safe_prediction_rate": 1.0,
+          "split_name": "retrieval_layer23_holdout",
+          "target_accuracy": 0.7777777777777778
+        },
+        {
+          "example_count": 70,
+          "mean_predicted_total_bytes": 3899.699951171875,
+          "mean_safe_bytes_regret": 149.7872314453125,
+          "safe_prediction_rate": 0.6714285714285714,
+          "split_name": "variant_arithmetic_holdout",
+          "target_accuracy": 0.6428571428571429
+        },
+        {
+          "example_count": 50,
+          "mean_predicted_total_bytes": 3486.47998046875,
+          "mean_safe_bytes_regret": 0.0,
+          "safe_prediction_rate": 0.66,
+          "split_name": "variant_constraints_holdout",
+          "target_accuracy": 0.66
+        },
+        {
+          "example_count": 71,
+          "mean_predicted_total_bytes": 4155.54931640625,
+          "mean_safe_bytes_regret": 102.4000015258789,
+          "safe_prediction_rate": 0.7746478873239436,
+          "split_name": "variant_logic_holdout",
+          "target_accuracy": 0.7605633802816901
+        },
+        {
+          "example_count": 66,
+          "mean_predicted_total_bytes": 3755.181884765625,
+          "mean_safe_bytes_regret": 296.4210510253906,
+          "safe_prediction_rate": 0.8636363636363636,
+          "split_name": "variant_memo_holdout",
+          "target_accuracy": 0.8181818181818182
+        }
+      ],
+      "prediction_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p70_dense_control/predictions.jsonl",
+      "promotable": false,
+      "research_model_path": null,
+      "runtime_compatible": true,
+      "serving_smoke": null,
+      "status": "ok",
+      "strategy_id": "linear_softmax_compression_floor_0p70_dense_control",
+      "strategy_kind": "row_multiclass",
+      "variant_breakdown": [
+        {
+          "example_count": 149,
+          "group_name": "prompt_variant",
+          "group_value": "arithmetic",
+          "mean_predicted_total_bytes": 4499.71142578125,
+          "mean_safe_bytes_regret": 129.627197265625,
+          "safe_prediction_rate": 0.7724867463111877,
+          "target_accuracy": 0.7486772537231445
+        },
+        {
+          "example_count": 68,
+          "group_name": "prompt_variant",
+          "group_value": "bandwidth",
+          "mean_predicted_total_bytes": 6549.232421875,
+          "mean_safe_bytes_regret": 88.0,
+          "safe_prediction_rate": 0.9363636374473572,
+          "target_accuracy": 0.9181817770004272
+        },
+        {
+          "example_count": 100,
+          "group_name": "prompt_variant",
+          "group_value": "constraints",
+          "mean_predicted_total_bytes": 3514.64013671875,
+          "mean_safe_bytes_regret": 20.705883026123047,
+          "safe_prediction_rate": 0.6700000166893005,
+          "target_accuracy": 0.6600000262260437
+        },
+        {
+          "example_count": 64,
+          "group_name": "prompt_variant",
+          "group_value": "formatting",
+          "mean_predicted_total_bytes": 3779.390625,
+          "mean_safe_bytes_regret": 261.9534912109375,
+          "safe_prediction_rate": 0.671875,
+          "target_accuracy": 0.640625
+        },
+        {
+          "example_count": 78,
+          "group_name": "prompt_variant",
+          "group_value": "locality",
+          "mean_predicted_total_bytes": 3958.15087890625,
+          "mean_safe_bytes_regret": 212.52830505371094,
+          "safe_prediction_rate": 0.7303823232650757,
+          "target_accuracy": 0.7022132873535156
+        },
+        {
+          "example_count": 148,
+          "group_name": "prompt_variant",
+          "group_value": "logic",
+          "mean_predicted_total_bytes": 4880.79638671875,
+          "mean_safe_bytes_regret": 95.68524169921875,
+          "safe_prediction_rate": 0.8779342770576477,
+          "target_accuracy": 0.8638498187065125
+        },
+        {
+          "example_count": 139,
+          "group_name": "prompt_variant",
+          "group_value": "memo",
+          "mean_predicted_total_bytes": 3765.517822265625,
+          "mean_safe_bytes_regret": 249.66416931152344,
+          "safe_prediction_rate": 0.9040403962135315,
+          "target_accuracy": 0.863636314868927
+        },
+        {
+          "example_count": 67,
+          "group_name": "prompt_variant",
+          "group_value": "transcript",
+          "mean_predicted_total_bytes": 3795.796142578125,
+          "mean_safe_bytes_regret": 1145.872314453125,
+          "safe_prediction_rate": 0.8615384697914124,
+          "target_accuracy": 0.3461538553237915
+        }
+      ]
+    }
+  ]
+}

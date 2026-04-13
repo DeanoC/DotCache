@@ -1,0 +1,666 @@
+{
+  "acceptable_points": [
+    "op_weighted_dense_control"
+  ],
+  "fastest_acceptable_point": "op_weighted_dense_control",
+  "incomplete_points": [
+    "op_floor_070",
+    "op_floor_075",
+    "op_floor_cluster_095_090_085_080"
+  ],
+  "matched_quality_point": "op_weighted_dense_control",
+  "points": [
+    {
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p70_dense_control/selector_artifact.json",
+      "floor": "0.70",
+      "offline_metrics": {
+        "mean_predicted_total_bytes": 4329.93994140625,
+        "mean_safe_bytes_regret": 184.2953338623047,
+        "mean_safe_prediction_rate": 0.8068037629127502,
+        "mean_target_accuracy": 0.7637889385223389,
+        "min_family_safe_prediction_rate": 0.667719304561615,
+        "min_family_target_accuracy": 0.6545614004135132,
+        "min_variant_safe_prediction_rate": 0.6700000166893005,
+        "min_variant_target_accuracy": 0.3461538553237915
+      },
+      "packs": {
+        "longbench_lb21_16_smoke_20260406": {
+          "profiles": {},
+          "status": {
+            "detail": "longbench outputs missing",
+            "shard_line_counts": {},
+            "state": "missing"
+          }
+        },
+        "longbench_mini": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 29.851553829985267,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18593.187979654456,
+              "error_rate_vs_exact": 0.125,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 10792.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 8,
+              "official_score": null,
+              "resident_bytes": 99638016.0
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 1126.6419636847963,
+              "dense_match_rate": 0.875,
+              "effective_bytes_per_token": 18593.187979654456,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 10792.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 99638016.0
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 3868.9969854483916,
+              "dense_match_rate": 0.625,
+              "effective_bytes_per_token": 29504.253085099233,
+              "error_rate_vs_exact": 0.25,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 5711.5,
+              "mean_v_m3_pages": 5080.5,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 152173056.0
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 2634.479150935246,
+              "dense_match_rate": 0.625,
+              "effective_bytes_per_token": 31406.91551382941,
+              "error_rate_vs_exact": 0.25,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 1647.125,
+              "mean_v_m3_pages": 9140.875,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 163517184.0
+            }
+          },
+          "status": {
+            "detail": "merged longbench outputs present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        },
+        "task_compare": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 21.955403117721694,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": null,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 0.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": null,
+              "task_success_rate": 0.6666666666666666
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 347.28001716494975,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 581.5293203459414,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 36901.833333333336,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 963.1666666666666,
+              "mean_v_m3_pages": 2108.8333333333335,
+              "n_rows": 6,
+              "resident_bytes": 56469162.666666664,
+              "task_success_rate": 0.6666666666666666
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 181.46176729890243,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 46449.166666666664,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 267.8333333333333,
+              "mean_v_m3_pages": 2804.1666666666665,
+              "n_rows": 6,
+              "resident_bytes": 70686378.66666667,
+              "task_success_rate": 0.6666666666666666
+            }
+          },
+          "status": {
+            "detail": "task compare artifacts present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        }
+      },
+      "point_id": "op_floor_070",
+      "strategy_id": "linear_softmax_compression_floor_0p70_dense_control"
+    },
+    {
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p75_dense_control/selector_artifact.json",
+      "floor": "0.75",
+      "offline_metrics": {
+        "mean_predicted_total_bytes": 4673.71142578125,
+        "mean_safe_bytes_regret": 321.9799499511719,
+        "mean_safe_prediction_rate": 0.8648302555084229,
+        "mean_target_accuracy": 0.7810396552085876,
+        "min_family_safe_prediction_rate": 0.7703508734703064,
+        "min_family_target_accuracy": 0.7241113185882568,
+        "min_variant_safe_prediction_rate": 0.75,
+        "min_variant_target_accuracy": 0.35384616255760193
+      },
+      "packs": {
+        "longbench_lb21_16_smoke_20260406": {
+          "profiles": {},
+          "status": {
+            "detail": "longbench outputs missing",
+            "shard_line_counts": {},
+            "state": "missing"
+          }
+        },
+        "longbench_mini": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 33.992320626307574,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18593.187979654456,
+              "error_rate_vs_exact": 0.125,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 10792.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 8,
+              "official_score": null,
+              "resident_bytes": 99638016.0
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 1188.9234403285818,
+              "dense_match_rate": 0.875,
+              "effective_bytes_per_token": 18593.187979654456,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 10792.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 99638016.0
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 4705.558670399273,
+              "dense_match_rate": 0.5,
+              "effective_bytes_per_token": 30190.67770258392,
+              "error_rate_vs_exact": 0.375,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 4589.25,
+              "mean_v_m3_pages": 6202.75,
+              "n_rows": 8,
+              "official_score": 0.48055555555555557,
+              "resident_bytes": 156292992.0
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 1976.8848476107933,
+              "dense_match_rate": 0.625,
+              "effective_bytes_per_token": 32682.538556098894,
+              "error_rate_vs_exact": 0.25,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 1114.125,
+              "mean_v_m3_pages": 9673.875,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 170774912.0
+            }
+          },
+          "status": {
+            "detail": "merged longbench outputs present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        },
+        "task_compare": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 22.012310711606577,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": null,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 0.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": null,
+              "task_success_rate": 0.6666666666666666
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 352.20449558282445,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 355.56470309556636,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 354.7597206650405,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            }
+          },
+          "status": {
+            "detail": "task compare artifacts present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        }
+      },
+      "point_id": "op_floor_075",
+      "strategy_id": "linear_softmax_compression_floor_0p75_dense_control"
+    },
+    {
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_floor_0p95_dense_control/selector_artifact.json",
+      "floor": "0.95",
+      "offline_metrics": {
+        "mean_predicted_total_bytes": 3752.701416015625,
+        "mean_safe_bytes_regret": 87.74356079101562,
+        "mean_safe_prediction_rate": 0.6832969188690186,
+        "mean_target_accuracy": 0.6667681336402893,
+        "min_family_safe_prediction_rate": 0.6270174980163574,
+        "min_family_target_accuracy": 0.6182456016540527,
+        "min_variant_safe_prediction_rate": 0.609375,
+        "min_variant_target_accuracy": 0.4961538314819336
+      },
+      "packs": {
+        "longbench_lb21_16_smoke_20260406": {
+          "profiles": {},
+          "status": {
+            "detail": "shard_00.jsonl=502, shard_01.jsonl=512",
+            "shard_line_counts": {
+              "shard_00.jsonl": 502,
+              "shard_01.jsonl": 512
+            },
+            "state": "partial"
+          }
+        },
+        "longbench_mini": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 33.42473509961594,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18593.187979654456,
+              "error_rate_vs_exact": 0.125,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 10792.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 8,
+              "official_score": null,
+              "resident_bytes": 99638016.0
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 1181.787255213344,
+              "dense_match_rate": 0.875,
+              "effective_bytes_per_token": 18593.187979654456,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 10792.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 99638016.0
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 3391.328366381585,
+              "dense_match_rate": 0.875,
+              "effective_bytes_per_token": 24649.097603031638,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 7576.5,
+              "mean_v_m3_pages": 3215.5,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 129248768.0
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 4506.607103955617,
+              "dense_match_rate": 0.625,
+              "effective_bytes_per_token": 30041.464307289425,
+              "error_rate_vs_exact": 0.25,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3426.625,
+              "mean_v_m3_pages": 7365.375,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 154829440.0
+            }
+          },
+          "status": {
+            "detail": "merged longbench outputs present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        },
+        "task_compare": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 21.630726530458087,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": null,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 0.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": null,
+              "task_success_rate": 0.6666666666666666
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 348.0480770716289,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 352.3275274007271,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 351.8298143419627,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            }
+          },
+          "status": {
+            "detail": "task compare artifacts present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        }
+      },
+      "point_id": "op_floor_cluster_095_090_085_080",
+      "strategy_id": "linear_softmax_compression_floor_0p95_dense_control"
+    },
+    {
+      "artifact_path": "benchmarks/results/qwen35_9b_cuda_selector_operating_points_20260407/frontier/strategies/linear_softmax_compression_weighted_dense_control/selector_artifact.json",
+      "floor": "weighted",
+      "offline_metrics": {
+        "mean_predicted_total_bytes": 4854.4638671875,
+        "mean_safe_bytes_regret": 0.0,
+        "mean_safe_prediction_rate": 1.0,
+        "mean_target_accuracy": 1.0,
+        "min_family_safe_prediction_rate": 1.0,
+        "min_family_target_accuracy": 1.0,
+        "min_variant_safe_prediction_rate": 1.0,
+        "min_variant_target_accuracy": 1.0
+      },
+      "packs": {
+        "longbench_lb21_16_smoke_20260406": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 33.34097269155293,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 19261.635926208557,
+              "error_rate_vs_exact": 0.75,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 9514.666666666666,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 84,
+              "official_score": null,
+              "resident_bytes": 86340315.42857143
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 0.5555555555555556,
+              "decode_ms_per_step": 1049.9643093669022,
+              "dense_match_rate": 0.25,
+              "effective_bytes_per_token": 19261.635926208557,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 9514.666666666666,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 84,
+              "official_score": 0.33207617777204845,
+              "resident_bytes": 86340315.42857143
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 0.5555555555555556,
+              "decode_ms_per_step": 116.45317805043965,
+              "dense_match_rate": 0.25,
+              "effective_bytes_per_token": 49116.17642770832,
+              "error_rate_vs_exact": 0.5,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 0.0,
+              "mean_v_m3_pages": 9515.42857142857,
+              "n_rows": 84,
+              "official_score": 0.33201633030321037,
+              "resident_bytes": 212538124.19047618
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 0.5555555555555556,
+              "decode_ms_per_step": 117.943168523023,
+              "dense_match_rate": 0.25,
+              "effective_bytes_per_token": 49116.17642770832,
+              "error_rate_vs_exact": 0.5,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 0.0,
+              "mean_v_m3_pages": 9515.42857142857,
+              "n_rows": 84,
+              "official_score": 0.33201633030321037,
+              "resident_bytes": 212538124.19047618
+            }
+          },
+          "status": {
+            "detail": "merged longbench outputs present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        },
+        "longbench_mini": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 32.39407293355005,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18593.187979654456,
+              "error_rate_vs_exact": 0.125,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 10792.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 8,
+              "official_score": null,
+              "resident_bytes": 99638016.0
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 1155.8981011904868,
+              "dense_match_rate": 0.875,
+              "effective_bytes_per_token": 18593.187979654456,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 10792.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 99638016.0
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 120.91856221400619,
+              "dense_match_rate": 0.625,
+              "effective_bytes_per_token": 46149.70559946584,
+              "error_rate_vs_exact": 0.25,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 0.0,
+              "mean_v_m3_pages": 10788.0,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 239655936.0
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 120.31227123232424,
+              "dense_match_rate": 0.625,
+              "effective_bytes_per_token": 46149.70559946584,
+              "error_rate_vs_exact": 0.25,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 0.0,
+              "mean_v_m3_pages": 10788.0,
+              "n_rows": 8,
+              "official_score": 0.46493055555555557,
+              "resident_bytes": 239655936.0
+            }
+          },
+          "status": {
+            "detail": "merged longbench outputs present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        },
+        "task_compare": {
+          "profiles": {
+            "dense": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 21.99439441082413,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": null,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 0.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": null,
+              "task_success_rate": 0.6666666666666666
+            },
+            "exact": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 351.2182182296076,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            },
+            "quality": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 355.04476000723014,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            },
+            "systems": {
+              "accuracy_when_dense_correct": 1.0,
+              "decode_ms_per_step": 355.12334129803264,
+              "dense_match_rate": 1.0,
+              "effective_bytes_per_token": 18752.0,
+              "error_rate_vs_exact": 0.0,
+              "fit_status": "fit",
+              "mean_v_m0_pages": 3072.0,
+              "mean_v_m3_pages": 0.0,
+              "n_rows": 6,
+              "resident_bytes": 28737536.0,
+              "task_success_rate": 0.6666666666666666
+            }
+          },
+          "status": {
+            "detail": "task compare artifacts present",
+            "shard_line_counts": {},
+            "state": "complete"
+          }
+        }
+      },
+      "point_id": "op_weighted_dense_control",
+      "strategy_id": "linear_softmax_compression_weighted_dense_control"
+    }
+  ],
+  "primary_pack": "longbench_lb21_16_smoke_20260406",
+  "primary_profile": "systems",
+  "recommended_default_point": "op_weighted_dense_control",
+  "smallest_memory_acceptable_point": "op_weighted_dense_control"
+}

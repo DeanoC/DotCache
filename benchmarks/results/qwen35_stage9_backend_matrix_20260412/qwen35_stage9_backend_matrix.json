@@ -1,0 +1,258 @@
+{
+  "rows": [
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 1.0,
+      "bias_ms_per_step": 1407.4417728996195,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "large",
+      "device": "mps",
+      "hand_ms_per_step": 2590.7075613635243,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_large_mps_refreshed/qwen35_persistent_real_mixed_probe.json",
+      "policy": "real_mixed"
+    },
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 0.7,
+      "bias_ms_per_step": 3784.8608239844907,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "large",
+      "device": "mps",
+      "hand_ms_per_step": 3951.702308345557,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_20260412_repo_promptfiles_large_mps_stage9_non_m0_refreshed/qwen35_persistent_serving_policy_compare.json",
+      "policy": "non_m0"
+    },
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 1.0,
+      "bias_ms_per_step": 2054.4194891168445,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "large",
+      "device": "mps",
+      "hand_ms_per_step": 2108.7306239525788,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_20260412_repo_promptfiles_large_mps_conservative_priority_value_hybrid_ci16_refreshed/qwen35_persistent_serving_policy_compare.json",
+      "policy": "conservative"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.1,
+      "bias_ms_per_step": 374.0565278334543,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "large",
+      "device": "cuda",
+      "hand_ms_per_step": 373.0398422572762,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_large_cuda_frontier_batchedresidual_v18_clean/qwen35_persistent_real_mixed_probe.json",
+      "policy": "real_mixed"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.3,
+      "bias_ms_per_step": 388.78248806577176,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "large",
+      "device": "cuda",
+      "hand_ms_per_step": 388.2735997904092,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_large_stage9_non_m0_currenttree_v2/qwen35_persistent_serving_policy_compare.json",
+      "policy": "non_m0"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.2,
+      "bias_ms_per_step": 652.9068992938846,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "large",
+      "device": "cuda",
+      "hand_ms_per_step": 652.1505471784621,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_large_conservative_priority_value_hybrid_ci16/qwen35_persistent_serving_policy_compare.json",
+      "policy": "conservative"
+    },
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 1.0,
+      "bias_ms_per_step": 1627.7167933694727,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "broad",
+      "device": "mps",
+      "hand_ms_per_step": 2583.3856102423547,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_broad_mps_refreshed/qwen35_persistent_real_mixed_probe.json",
+      "policy": "real_mixed"
+    },
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 0.8333333333333334,
+      "bias_ms_per_step": 4234.401677960705,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "broad",
+      "device": "mps",
+      "hand_ms_per_step": 4289.792339437554,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_20260412_repo_promptfiles_broad_mps_stage9_non_m0_refreshed/qwen35_persistent_serving_policy_compare.json",
+      "policy": "non_m0"
+    },
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 0.6666666666666666,
+      "bias_ms_per_step": 2828.7758317055705,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "broad",
+      "device": "mps",
+      "hand_ms_per_step": 2484.6003081062613,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_20260412_repo_promptfiles_broad_mps_conservative_priority_value_hybrid_ci16_refreshed/qwen35_persistent_serving_policy_compare.json",
+      "policy": "conservative"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.16666666666666666,
+      "bias_ms_per_step": 443.3031187315161,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "broad",
+      "device": "cuda",
+      "hand_ms_per_step": 441.83445163071156,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_broad_cuda_frontier_batchedresidual_v18_clean/qwen35_persistent_real_mixed_probe.json",
+      "policy": "real_mixed"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.16666666666666666,
+      "bias_ms_per_step": 465.39615160630393,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "broad",
+      "device": "cuda",
+      "hand_ms_per_step": 464.88330226081115,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_broad_stage9_non_m0_currenttree_v2/qwen35_persistent_serving_policy_compare.json",
+      "policy": "non_m0"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.16666666666666666,
+      "bias_ms_per_step": 792.5956627586856,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "broad",
+      "device": "cuda",
+      "hand_ms_per_step": 791.371537062029,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_broad_conservative_priority_value_hybrid_ci16/qwen35_persistent_serving_policy_compare.json",
+      "policy": "conservative"
+    },
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 1.0,
+      "bias_ms_per_step": 843.7665868259501,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "external",
+      "device": "mps",
+      "hand_ms_per_step": 1290.5590243365925,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_20260412_repo_promptfiles_external_mps_refreshed/qwen35_persistent_real_mixed_probe.json",
+      "policy": "real_mixed"
+    },
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 0.3333333333333333,
+      "bias_ms_per_step": 1700.505168371213,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "external",
+      "device": "mps",
+      "hand_ms_per_step": 1609.8176215479423,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_20260412_repo_promptfiles_external_mps_stage9_non_m0_refreshed/qwen35_persistent_serving_policy_compare.json",
+      "policy": "non_m0"
+    },
+    {
+      "backend": "mps",
+      "backend_name": "torch_mps",
+      "bias_beats_hand_tuned_latency_rate": 0.6666666666666666,
+      "bias_ms_per_step": 1340.0523334178918,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "external",
+      "device": "mps",
+      "hand_ms_per_step": 1176.1939341692294,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_20260412_repo_promptfiles_external_mps_conservative_priority_value_hybrid_ci16_refreshed/qwen35_persistent_serving_policy_compare.json",
+      "policy": "conservative"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.3333333333333333,
+      "bias_ms_per_step": 240.84005147839585,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "external",
+      "device": "cuda",
+      "hand_ms_per_step": 243.39422723278403,
+      "path": "benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_external_cuda_frontier_batchedresidual_v17_clean/qwen35_persistent_real_mixed_probe.json",
+      "policy": "real_mixed"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.3333333333333333,
+      "bias_ms_per_step": 244.02281160776815,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "external",
+      "device": "cuda",
+      "hand_ms_per_step": 244.26848394796252,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_external_stage9_non_m0_currenttree/qwen35_persistent_serving_policy_compare.json",
+      "policy": "non_m0"
+    },
+    {
+      "backend": "cuda",
+      "backend_name": "torch_cuda",
+      "bias_beats_hand_tuned_latency_rate": 0.3333333333333333,
+      "bias_ms_per_step": 380.8497701926778,
+      "bias_vs_hand_exact_match_rate": 1.0,
+      "corpus": "external",
+      "device": "cuda",
+      "hand_ms_per_step": 381.950845864291,
+      "path": "benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_external_conservative_priority_value_hybrid_ci16/qwen35_persistent_serving_policy_compare.json",
+      "policy": "conservative"
+    }
+  ],
+  "winner_rows": [
+    {
+      "backend": "mps",
+      "corpus": "large",
+      "winner_bias_ms_per_step": 1407.4417728996195,
+      "winner_policy": "real_mixed"
+    },
+    {
+      "backend": "cuda",
+      "corpus": "large",
+      "winner_bias_ms_per_step": 374.0565278334543,
+      "winner_policy": "real_mixed"
+    },
+    {
+      "backend": "mps",
+      "corpus": "broad",
+      "winner_bias_ms_per_step": 1627.7167933694727,
+      "winner_policy": "real_mixed"
+    },
+    {
+      "backend": "cuda",
+      "corpus": "broad",
+      "winner_bias_ms_per_step": 443.3031187315161,
+      "winner_policy": "real_mixed"
+    },
+    {
+      "backend": "mps",
+      "corpus": "external",
+      "winner_bias_ms_per_step": 843.7665868259501,
+      "winner_policy": "real_mixed"
+    },
+    {
+      "backend": "cuda",
+      "corpus": "external",
+      "winner_bias_ms_per_step": 240.84005147839585,
+      "winner_policy": "real_mixed"
+    }
+  ]
+}

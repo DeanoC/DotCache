@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import json
+from dataclasses import replace
+
 import numpy as np
 import pytest
-import json
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -1906,6 +1908,12 @@ def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_s
     assert prioritized["streaming_checkpoint_count"] >= 1
     assert prioritized["streaming_processed_block_count"] == prioritized["full_block_count"]
     assert prioritized["streaming_max_abs_error"] == pytest.approx(0.0, abs=1e-6)
+    assert prioritized["streaming_truth_max_beta_over_true_beta_ratio"] >= 1.0
+    assert prioritized["streaming_truth_max_delta_over_true_delta_ratio"] >= 1.0
+    assert prioritized["streaming_truth_min_stop_ratio"] >= 0.0
+    assert prioritized["streaming_truth_bound_stop_ratio_at_true_frontier"] >= 0.0
+    assert prioritized["streaming_truth_min_nonterminal_stop_ratio"] >= 0.0
+    assert prioritized["streaming_truth_bound_stop_ratio_at_nonterminal_true_frontier"] >= 0.0
     assert prioritized["max_abs_error"] >= 0.0
     assert prioritized["prev_attention_transform"] == "sqrt"
     assert prioritized["shaped_prev_attention_nonzero_count"] > 0
@@ -1948,6 +1956,13 @@ def test_qwen35_persistent_full_attention_snapshot_comparison_runs_on_exported_s
     assert debug_payload["beta_upper"] >= 0.0
     assert debug_payload["delta_upper"] >= 0.0
     assert debug_payload["streaming_checkpoint_count"] >= 1
+    assert debug_payload["streaming_truth_max_beta_over_true_beta_ratio"] >= 1.0
+    assert debug_payload["streaming_truth_max_delta_over_true_delta_ratio"] >= 1.0
+    assert debug_payload["streaming_truth_min_stop_ratio"] >= 0.0
+    assert debug_payload["streaming_truth_bound_stop_ratio_at_true_frontier"] >= 0.0
+    assert debug_payload["streaming_truth_min_nonterminal_stop_ratio"] >= 0.0
+    assert debug_payload["streaming_truth_bound_stop_ratio_at_nonterminal_true_frontier"] >= 0.0
+    assert len(debug_payload["streaming_truth_checkpoint_records"]) >= 1
     assert len(debug_payload["top_omitted_by_priority"]) <= 4
     assert len(debug_payload["top_shaped_prev_attention_pages"]) > 0
 
@@ -2111,6 +2126,8 @@ def test_qwen35_attention_subset_persistent_serving_harness_runs_on_tiny_hybrid_
     assert result["persistent_linear_state_sync_from_cache_count_by_layer"]["0"] == 0
     assert result["persistent_linear_direct_compute_count_by_layer"]["0"] == 0
     assert len(result["persistent_generated_ids"]) == 2
+    trace = result["decode_backend_trace"]
+    assert float(trace["prepare_ms_total"]) + float(trace["score_ms_total"]) + float(trace["mix_ms_total"]) > 0.0
     assert adapter.persistent_hybrid_runtime_state is not None
     assert "execution_secondary_relevance_layers" in result
     assert "execution_recent_neighbor_rescue_top_k" in result
@@ -2224,6 +2241,60 @@ def test_qwen35_attention_subset_persistent_serving_harness_respects_full_attent
     assert "per_kv_mix_generic_calls" in trace
     assert len(result["dotcache_generated_ids"]) == 2
     assert np.isfinite(result["dotcache_decode_ms_per_step"])
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_conservative_early_exit_matches_baseline() -> None:
+    baseline_model = _tiny_qwen35_model()
+    streaming_model = copy.deepcopy(baseline_model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("hello persistent certified streaming", return_tensors="pt")
+    common_config = PersistentServingConfig(
+        block_size=2,
+        enable_priority=False,
+        enable_compression=False,
+        full_attention_check_interval=1,
+        full_attention_mass_eps=1e-6,
+        full_attention_value_eps=1e-6,
+        full_attention_min_processed_blocks=1,
+    )
+    baseline_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=baseline_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=common_config,
+        backend="cpu_ref",
+    )
+    streaming_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=streaming_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=4, bits_v=4, tokens_per_page=2),
+        persistent_serving_config=replace(common_config, enable_early_exit=True),
+        backend="cpu_ref",
+    )
+    baseline = run_qwen35_attention_subset_persistent_serving_harness(
+        baseline_model,
+        baseline_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    streaming = run_qwen35_attention_subset_persistent_serving_harness(
+        streaming_model,
+        streaming_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+
+    assert streaming["persistent_runtime_enable_early_exit"] is True
+    assert streaming["persistent_generated_ids"] == baseline["persistent_generated_ids"]
+    assert streaming["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+    assert streaming["persistent_full_attention_last_fallback_rung_by_layer"]["3"] == 0
+    assert streaming["persistent_full_attention_last_mandatory_complete_by_layer"]["3"] is True
+    assert streaming["persistent_full_attention_last_certified_can_stop_by_layer"]["3"] is True
+    assert streaming["persistent_full_attention_last_processed_block_count_by_layer"]["3"] <= (
+        streaming["persistent_full_attention_block_count_by_layer"]["3"]
+    )
 
 
 def test_qwen35_attention_subset_persistent_serving_harness_stage8_compression_preserves_ids() -> None:
@@ -2367,6 +2438,64 @@ def test_qwen35_attention_subset_persistent_serving_harness_stage8_direct_m0_pre
     assert direct["persistent_generated_ids"] == baseline["persistent_generated_ids"]
     assert direct["persistent_full_attention_executed_m0_block_count_total_by_layer"]["3"] >= 1
     assert direct["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+
+
+def test_qwen35_attention_subset_persistent_serving_harness_stage9_direct_m0_streaming_preserves_ids() -> None:
+    baseline_model = _tiny_qwen35_model()
+    mixed_model = copy.deepcopy(baseline_model)
+    tokenizer = _TinyTokenizer()
+    encoded = tokenizer("short", return_tensors="pt")
+    common_config = PersistentServingConfig(
+        enable_priority=False,
+        enable_compression=True,
+        enable_full_attention_mixed_mode_execution=True,
+        full_attention_mixed_mode_execution_strategy="direct_m0",
+        full_attention_mixed_mode_execution_allow_value_m0=False,
+        full_attention_mixed_mode_execution_max_k_comp_error=0.20,
+    )
+    baseline_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=baseline_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=8, bits_v=8, tokens_per_page=2),
+        persistent_serving_config=common_config,
+        backend="cpu_ref",
+    )
+    streaming_adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=mixed_model,
+        dotcache_config=DotCacheConfig(head_dim=16, group_size=16, bits_k=8, bits_v=8, tokens_per_page=2),
+        persistent_serving_config=replace(
+            common_config,
+            enable_early_exit=True,
+            full_attention_check_interval=1,
+            full_attention_mass_eps=1e-6,
+            full_attention_value_eps=1e-6,
+            full_attention_min_processed_blocks=1,
+        ),
+        backend="cpu_ref",
+    )
+    baseline = run_qwen35_attention_subset_persistent_serving_harness(
+        baseline_model,
+        baseline_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    streaming = run_qwen35_attention_subset_persistent_serving_harness(
+        mixed_model,
+        streaming_adapter,
+        input_ids=encoded["input_ids"],
+        attention_mask=encoded["attention_mask"],
+        tokenizer=tokenizer,
+        decode_steps=2,
+    )
+    assert streaming["persistent_runtime_enable_early_exit"] is True
+    assert streaming["persistent_runtime_enable_full_attention_mixed_mode_execution"] is True
+    assert streaming["persistent_generated_ids"] == baseline["persistent_generated_ids"]
+    assert streaming["persistent_full_attention_executed_m0_block_count_total_by_layer"]["3"] >= 1
+    assert streaming["persistent_full_attention_dense_fallback_count_by_layer"]["3"] == 0
+    assert streaming["persistent_full_attention_last_processed_block_count_by_layer"]["3"] <= (
+        streaming["persistent_full_attention_block_count_by_layer"]["3"]
+    )
 
 
 def test_qwen35_build_persistent_prefill_block_metadata_uses_real_page_modes_and_comp_error() -> None:

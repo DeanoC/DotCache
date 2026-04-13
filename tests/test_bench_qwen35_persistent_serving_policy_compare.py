@@ -44,6 +44,44 @@ def test_resolve_prompt_records_reads_manifest_and_explicit_files(tmp_path) -> N
     assert [record["prompt_length"] for record in records] == [128, 64]
 
 
+def test_resolve_prompt_records_resolves_manifest_relative_paths(tmp_path) -> None:
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    prompt = corpus_dir / "relative.md"
+    prompt.write_text("portable", encoding="utf-8")
+    manifests_dir = tmp_path / "manifests"
+    manifests_dir.mkdir()
+    manifest = manifests_dir / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "case_tag": "relative_case",
+                        "prompt_file_path": "../corpus/relative.md",
+                        "prompt_length": 256,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    records = _resolve_prompt_records(
+        manifest_path=str(manifest),
+        prompt_files=[],
+        prompt_file_target_length=0,
+    )
+
+    assert records == [
+        {
+            "case_tag": "relative_case",
+            "prompt_file_path": str(prompt.resolve()),
+            "prompt_length": 256,
+        }
+    ]
+
+
 def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
     summary = _summarize_records(
         [
@@ -70,8 +108,16 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_policy_bias_ms_total": 1.5,
                 "hand_tuned_direct_m0_assembly_ms_total": 10.0,
                 "bias_direct_m0_assembly_ms_total": 20.0,
+                "hand_tuned_direct_m0_query_prep_ms_total": 1.0,
+                "bias_direct_m0_query_prep_ms_total": 2.0,
+                "hand_tuned_direct_m0_gather_ms_total": 3.0,
+                "bias_direct_m0_gather_ms_total": 4.0,
                 "hand_tuned_direct_m0_score_ms_total": 30.0,
                 "bias_direct_m0_score_ms_total": 40.0,
+                "hand_tuned_executed_m0_block_count_total": 11,
+                "bias_executed_m0_block_count_total": 21,
+                "hand_tuned_executed_m3_block_count_total": 31,
+                "bias_executed_m3_block_count_total": 41,
                 "hand_tuned_exact_m3_score_ms_total": 50.0,
                 "bias_exact_m3_score_ms_total": 60.0,
                 "hand_tuned_final_mix_ms_total": 70.0,
@@ -100,8 +146,16 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
                 "bias_policy_bias_ms_total": 2.5,
                 "hand_tuned_direct_m0_assembly_ms_total": 12.0,
                 "bias_direct_m0_assembly_ms_total": 22.0,
+                "hand_tuned_direct_m0_query_prep_ms_total": 5.0,
+                "bias_direct_m0_query_prep_ms_total": 6.0,
+                "hand_tuned_direct_m0_gather_ms_total": 7.0,
+                "bias_direct_m0_gather_ms_total": 8.0,
                 "hand_tuned_direct_m0_score_ms_total": 32.0,
                 "bias_direct_m0_score_ms_total": 42.0,
+                "hand_tuned_executed_m0_block_count_total": 13,
+                "bias_executed_m0_block_count_total": 23,
+                "hand_tuned_executed_m3_block_count_total": 33,
+                "bias_executed_m3_block_count_total": 43,
                 "hand_tuned_exact_m3_score_ms_total": 52.0,
                 "bias_exact_m3_score_ms_total": 62.0,
                 "hand_tuned_final_mix_ms_total": 72.0,
@@ -134,8 +188,16 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
     assert summary["bias_policy_bias_ms_per_case"] == 2.0
     assert summary["hand_tuned_direct_m0_assembly_ms_per_case"] == 11.0
     assert summary["bias_direct_m0_assembly_ms_per_case"] == 21.0
+    assert summary["hand_tuned_direct_m0_query_prep_ms_per_case"] == 3.0
+    assert summary["bias_direct_m0_query_prep_ms_per_case"] == 4.0
+    assert summary["hand_tuned_direct_m0_gather_ms_per_case"] == 5.0
+    assert summary["bias_direct_m0_gather_ms_per_case"] == 6.0
     assert summary["hand_tuned_direct_m0_score_ms_per_case"] == 31.0
     assert summary["bias_direct_m0_score_ms_per_case"] == 41.0
+    assert summary["hand_tuned_executed_m0_blocks_per_case"] == 12.0
+    assert summary["bias_executed_m0_blocks_per_case"] == 22.0
+    assert summary["hand_tuned_executed_m3_blocks_per_case"] == 32.0
+    assert summary["bias_executed_m3_blocks_per_case"] == 42.0
     assert summary["hand_tuned_exact_m3_score_ms_per_case"] == 51.0
     assert summary["bias_exact_m3_score_ms_per_case"] == 61.0
     assert summary["hand_tuned_final_mix_ms_per_case"] == 71.0
@@ -143,8 +205,55 @@ def test_summarize_records_aggregates_serving_matches_and_latency() -> None:
 
 
 def test_persistent_base_config_enables_compression_for_mixed_execution() -> None:
-    config = _persistent_base_config(enable_mixed_execution=True, mixed_execution_strategy="direct_m0")
+    config = _persistent_base_config(
+        enable_early_exit=True,
+        full_attention_region_residual_caps=True,
+        full_attention_residual_cluster_count=8,
+        enable_mixed_execution=True,
+        mixed_execution_strategy="direct_m0",
+    )
 
+    assert config.enable_early_exit is True
+    assert config.full_attention_region_residual_caps is True
+    assert config.full_attention_residual_cluster_count == 8
     assert config.enable_full_attention_mixed_mode_execution is True
     assert config.enable_compression is True
     assert config.full_attention_mixed_mode_execution_strategy == "direct_m0"
+
+
+def test_persistent_base_config_applies_streaming_refine_settings() -> None:
+    config = _persistent_base_config(
+        enable_early_exit=True,
+        full_attention_check_interval=8,
+        full_attention_streaming_order_mode="residual_proxy",
+        full_attention_streaming_priority_value_upper_weight=0.5,
+        full_attention_streaming_exact_value_rerank_layers=[19, 23],
+        full_attention_streaming_exact_value_rerank_max_remaining_blocks=32,
+        full_attention_refine_top_k=32,
+        full_attention_refine_top_k_by_layer={23: 128},
+        full_attention_streaming_refine_top_k=16,
+        full_attention_probe_refine_top_k=24,
+        full_attention_probe_sample_count=6,
+        full_attention_key_centroid_count=4,
+        full_attention_key_centroid_count_by_layer={23: 16},
+        full_attention_value_centroid_count=2,
+        full_attention_value_centroid_count_by_layer={23: 8},
+        full_attention_streaming_proxy_value_weight_by_layer={23: 8.0},
+    )
+
+    assert config.enable_early_exit is True
+    assert config.full_attention_check_interval == 8
+    assert config.full_attention_streaming_order_mode == "residual_proxy"
+    assert config.full_attention_streaming_priority_value_upper_weight == 0.5
+    assert config.full_attention_streaming_exact_value_rerank_layers == [19, 23]
+    assert config.full_attention_streaming_exact_value_rerank_max_remaining_blocks == 32
+    assert config.full_attention_refine_top_k == 32
+    assert config.full_attention_refine_top_k_by_layer == {23: 128}
+    assert config.full_attention_streaming_refine_top_k == 16
+    assert config.full_attention_probe_refine_top_k == 24
+    assert config.full_attention_probe_sample_count == 6
+    assert config.full_attention_key_centroid_count == 4
+    assert config.full_attention_key_centroid_count_by_layer == {23: 16}
+    assert config.full_attention_value_centroid_count == 2
+    assert config.full_attention_value_centroid_count_by_layer == {23: 8}
+    assert config.full_attention_streaming_proxy_value_weight_by_layer == {23: 8.0}
