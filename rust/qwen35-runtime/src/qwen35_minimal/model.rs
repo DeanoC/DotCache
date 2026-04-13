@@ -1897,6 +1897,7 @@ fn repeat_heads(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
         .reshape((b_sz, seq_len, heads * n_rep, head_dim))
 }
 
+#[cfg(test)]
 fn l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     backend_ops::l2norm(xs, eps)
 }
