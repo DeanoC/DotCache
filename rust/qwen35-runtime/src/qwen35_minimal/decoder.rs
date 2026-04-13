@@ -14,7 +14,8 @@ use super::linear_attention::GatedDeltaNet;
 use super::prepared::PreparedTensorSource;
 use super::types::{
     CacheState, Config, ExternalFullAttention, LayerCacheState, LinearAttentionBenchResult,
-    LinearAttentionLayerSpec, LinearAttentionTrace, RuntimeProfile, StateBuffer, TextConfig,
+    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionTrace, RuntimeProfile,
+    StateBuffer, TextConfig,
 };
 #[cfg(any(feature = "hf", test))]
 use super::with_tracing::linear_no_bias;
@@ -591,6 +592,76 @@ impl TextModel {
         Ok(next_xs)
     }
 
+    pub fn trace_decoder_layer(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+    ) -> Result<DecoderLayerTrace> {
+        if target_layer >= self.layers.len() {
+            candle::bail!(
+                "decoder trace target layer {} is out of range for {} layers",
+                target_layer,
+                self.layers.len()
+            );
+        }
+
+        self.clear_kv_cache();
+        let (b_size, seq_len) = input_ids.dims2()?;
+        let attention_mask = if seq_len > 1 {
+            Some(self.prepare_causal_attention_mask(b_size, seq_len, seqlen_offset)?)
+        } else {
+            None
+        };
+        let mut xs = self.hidden_states_from_input_ids(input_ids)?;
+        for layer in self.layers.iter_mut().take(target_layer) {
+            let mask = if layer.layer_type() == "full_attention" {
+                attention_mask.as_ref()
+            } else {
+                None
+            };
+            let (next_xs, _) = layer.forward_profiled(&xs, mask, seqlen_offset)?;
+            xs = next_xs;
+        }
+
+        let target = self
+            .layers
+            .get_mut(target_layer)
+            .expect("target layer index already validated");
+        let mask = if target.layer_type() == "full_attention" {
+            attention_mask.as_ref()
+        } else {
+            None
+        };
+        let input_layernorm_output = target.input_layernorm.forward_buffer(&xs)?;
+        let (token_mixer_output, _) = match &mut target.token_mixer {
+            LayerKind::Linear(linear_attn) => linear_attn.forward_profiled_buffer(&input_layernorm_output, mask)?,
+            LayerKind::Full(self_attn) => self_attn.forward_profiled_with_external_buffer(
+                &input_layernorm_output,
+                mask,
+                seqlen_offset,
+                target_layer,
+                &mut None,
+            )?,
+        };
+        let backend = backend_buffer_api::for_device(xs.device());
+        let attention_residual = backend.add(&xs, &token_mixer_output)?;
+        let post_attention_layernorm_output =
+            target.post_attention_layernorm.forward_buffer(&attention_residual)?;
+        let mlp_output = target.mlp.forward_buffer(&post_attention_layernorm_output)?;
+        let layer_output = backend.add(&attention_residual, &mlp_output)?;
+        self.clear_kv_cache();
+        Ok(DecoderLayerTrace {
+            layer_id: target_layer,
+            sequence_length: seq_len,
+            input_layernorm_output,
+            token_mixer_output,
+            post_attention_layernorm_output,
+            mlp_output,
+            layer_output,
+        })
+    }
+
     pub fn forward_profiled_with_linear_traces(
         &mut self,
         input_ids: &Tensor,
@@ -1074,6 +1145,16 @@ impl ModelForCausalLM {
     ) -> Result<StateBuffer> {
         self.language_model
             .trace_decoder_layer_output(input_ids, target_layer, seqlen_offset)
+    }
+
+    pub fn trace_decoder_layer(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+    ) -> Result<DecoderLayerTrace> {
+        self.language_model
+            .trace_decoder_layer(input_ids, target_layer, seqlen_offset)
     }
 
     pub fn clear_kv_cache(&mut self) {

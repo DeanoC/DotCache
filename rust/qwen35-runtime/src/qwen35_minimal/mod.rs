@@ -23,6 +23,7 @@ pub use types::{
     CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config,
     LinearAttentionBenchResult as MinimalQwen35LinearAttentionBenchResult,
     LinearAttentionLayerSpec as MinimalQwen35LinearAttentionLayerSpec,
+    DecoderLayerTrace as MinimalQwen35DecoderLayerTrace,
     LinearAttentionTrace as MinimalQwen35LinearAttentionTrace,
     NativeCacheState as MinimalQwen35NativeCacheState,
     NativeFullAttentionCacheState as MinimalQwen35NativeFullAttentionCacheState,
@@ -1105,6 +1106,17 @@ impl MinimalQwen35Runner {
         Ok(self
             .model
             .trace_decoder_layer_output(input_ids, target_layer, seqlen_offset)?)
+    }
+
+    pub fn trace_decoder_layer(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+    ) -> Result<MinimalQwen35DecoderLayerTrace> {
+        Ok(self
+            .model
+            .trace_decoder_layer(input_ids, target_layer, seqlen_offset)?)
     }
 
     pub fn clear_kv_cache(&mut self) {

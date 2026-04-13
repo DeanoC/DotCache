@@ -223,6 +223,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         prefill_max_delta: f32,
         prefill_cache_max_delta: Option<f32>,
         pytorch_embedding_max_delta: Option<f32>,
+        pytorch_first_layer_input_layernorm_max_delta: Option<f32>,
+        pytorch_first_layer_token_mixer_max_delta: Option<f32>,
+        pytorch_first_layer_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_first_layer_mlp_max_delta: Option<f32>,
         pytorch_first_layer_max_delta: Option<f32>,
         decode_max_delta: f32,
         decode_input_hidden_max_delta: Option<f32>,
@@ -240,6 +244,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         prefill_ms: f64,
         decode_ms: f64,
         embedding_output: Vec<Vec<Vec<f32>>>,
+        first_layer_input_layernorm_output: Vec<Vec<Vec<f32>>>,
+        first_layer_token_mixer_output: Vec<Vec<Vec<f32>>>,
+        first_layer_post_attention_layernorm_output: Vec<Vec<Vec<f32>>>,
+        first_layer_mlp_output: Vec<Vec<Vec<f32>>>,
         first_layer_output: Vec<Vec<Vec<f32>>>,
         prefill_last_token_logits: Vec<f32>,
         decode_last_token_logits: Vec<Vec<f32>>,
@@ -678,15 +686,43 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     } else {
         None
     };
-    let pytorch_first_layer_max_delta = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
-        let first_layer_output =
-            device_runner.trace_decoder_layer_output(&target_input_ids, 0, 0)?;
-        Some(max_tensor_delta_vec3(
-            first_layer_output.tensor(),
+    let (
+        pytorch_first_layer_input_layernorm_max_delta,
+        pytorch_first_layer_token_mixer_max_delta,
+        pytorch_first_layer_post_attention_layernorm_max_delta,
+        pytorch_first_layer_mlp_max_delta,
+        pytorch_first_layer_max_delta,
+    ) = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+        let first_layer_trace = device_runner.trace_decoder_layer(&target_input_ids, 0, 0)?;
+        let pytorch_first_layer_input_layernorm_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.input_layernorm_output.tensor(),
+            &pytorch_oracle.first_layer_input_layernorm_output,
+        )?);
+        let pytorch_first_layer_token_mixer_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.token_mixer_output.tensor(),
+            &pytorch_oracle.first_layer_token_mixer_output,
+        )?);
+        let pytorch_first_layer_post_attention_layernorm_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.post_attention_layernorm_output.tensor(),
+            &pytorch_oracle.first_layer_post_attention_layernorm_output,
+        )?);
+        let pytorch_first_layer_mlp_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.mlp_output.tensor(),
+            &pytorch_oracle.first_layer_mlp_output,
+        )?);
+        let pytorch_first_layer_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.layer_output.tensor(),
             &pytorch_oracle.first_layer_output,
-        )?)
+        )?);
+        (
+            pytorch_first_layer_input_layernorm_max_delta,
+            pytorch_first_layer_token_mixer_max_delta,
+            pytorch_first_layer_post_attention_layernorm_max_delta,
+            pytorch_first_layer_mlp_max_delta,
+            pytorch_first_layer_max_delta,
+        )
     } else {
-        None
+        (None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1012,6 +1048,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         prefill_max_delta: prefill_delta,
         prefill_cache_max_delta,
         pytorch_embedding_max_delta,
+        pytorch_first_layer_input_layernorm_max_delta,
+        pytorch_first_layer_token_mixer_max_delta,
+        pytorch_first_layer_post_attention_layernorm_max_delta,
+        pytorch_first_layer_mlp_max_delta,
         pytorch_first_layer_max_delta,
         decode_max_delta: max_decode_delta,
         decode_input_hidden_max_delta: max_decode_input_hidden_delta,

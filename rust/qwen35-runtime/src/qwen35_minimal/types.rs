@@ -330,6 +330,17 @@ pub struct LinearAttentionTrace {
     pub profile: RuntimeProfile,
 }
 
+#[derive(Debug, Clone)]
+pub struct DecoderLayerTrace {
+    pub layer_id: usize,
+    pub sequence_length: usize,
+    pub input_layernorm_output: StateBuffer,
+    pub token_mixer_output: StateBuffer,
+    pub post_attention_layernorm_output: StateBuffer,
+    pub mlp_output: StateBuffer,
+    pub layer_output: StateBuffer,
+}
+
 pub struct ExternalFullAttentionOutput {
     pub attn_output: Tensor,
     pub profile: RuntimeProfile,

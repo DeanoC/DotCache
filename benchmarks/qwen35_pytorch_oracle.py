@@ -40,6 +40,10 @@ def main() -> None:
 
     embedding_output = None
     first_layer_output = None
+    first_layer_input_layernorm_output = None
+    first_layer_token_mixer_output = None
+    first_layer_post_attention_layernorm_output = None
+    first_layer_mlp_output = None
 
     def embed_hook(_module, _inputs, output):
         nonlocal embedding_output
@@ -50,17 +54,59 @@ def main() -> None:
         layer_output = output[0] if isinstance(output, tuple) else output
         first_layer_output = layer_output.detach().to(dtype=torch.float32).cpu()
 
+    def capture_tensor(output):
+        tensor = output[0] if isinstance(output, tuple) else output
+        return tensor.detach().to(dtype=torch.float32).cpu()
+
+    def input_layernorm_hook(_module, _inputs, output):
+        nonlocal first_layer_input_layernorm_output
+        first_layer_input_layernorm_output = capture_tensor(output)
+
+    def token_mixer_hook(_module, _inputs, output):
+        nonlocal first_layer_token_mixer_output
+        first_layer_token_mixer_output = capture_tensor(output)
+
+    def post_attention_layernorm_hook(_module, _inputs, output):
+        nonlocal first_layer_post_attention_layernorm_output
+        first_layer_post_attention_layernorm_output = capture_tensor(output)
+
+    def mlp_hook(_module, _inputs, output):
+        nonlocal first_layer_mlp_output
+        first_layer_mlp_output = capture_tensor(output)
+
     embed_handle = model.model.embed_tokens.register_forward_hook(embed_hook)
     layer_handle = model.model.layers[0].register_forward_hook(layer_hook)
+    input_layernorm_handle = model.model.layers[0].input_layernorm.register_forward_hook(
+        input_layernorm_hook
+    )
+    token_mixer_handle = model.model.layers[0].linear_attn.register_forward_hook(
+        token_mixer_hook
+    )
+    post_attention_layernorm_handle = (
+        model.model.layers[0]
+        .post_attention_layernorm.register_forward_hook(post_attention_layernorm_hook)
+    )
+    mlp_handle = model.model.layers[0].mlp.register_forward_hook(mlp_hook)
     try:
         with torch.no_grad():
             model(input_ids=input_ids, use_cache=True)
     finally:
         embed_handle.remove()
         layer_handle.remove()
+        input_layernorm_handle.remove()
+        token_mixer_handle.remove()
+        post_attention_layernorm_handle.remove()
+        mlp_handle.remove()
 
-    if embedding_output is None or first_layer_output is None:
-        raise RuntimeError("failed to capture embedding or first layer output from PyTorch model")
+    if (
+        embedding_output is None
+        or first_layer_output is None
+        or first_layer_input_layernorm_output is None
+        or first_layer_token_mixer_output is None
+        or first_layer_post_attention_layernorm_output is None
+        or first_layer_mlp_output is None
+    ):
+        raise RuntimeError("failed to capture staged first-layer outputs from PyTorch model")
 
     prefill_last_token_logits = (
         outputs.logits[0, -1, :].to(dtype=torch.float32).cpu().tolist()
@@ -92,6 +138,10 @@ def main() -> None:
         "decode_ms": decode_elapsed_ms,
         "embedding_output": embedding_output.tolist(),
         "first_layer_output": first_layer_output.tolist(),
+        "first_layer_input_layernorm_output": first_layer_input_layernorm_output.tolist(),
+        "first_layer_token_mixer_output": first_layer_token_mixer_output.tolist(),
+        "first_layer_post_attention_layernorm_output": first_layer_post_attention_layernorm_output.tolist(),
+        "first_layer_mlp_output": first_layer_mlp_output.tolist(),
         "prefill_last_token_logits": prefill_last_token_logits,
         "decode_last_token_logits": decode_logits,
         "generated_token_ids": generated_token_ids,

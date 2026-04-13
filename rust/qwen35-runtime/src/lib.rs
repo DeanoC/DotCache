@@ -23,7 +23,7 @@ pub use hf::{HfHubModelSource, HfModelArtifacts, HfModelWeightIndex};
 #[cfg(feature = "qwen35-minimal")]
 pub use qwen35_minimal_impl::{
     MinimalQwen35Config, MinimalQwen35DirectRuntime, MinimalQwen35DirectRuntimeProfile,
-    MinimalQwen35KvCache, MinimalQwen35LinearAttentionBenchResult,
+    MinimalQwen35DecoderLayerTrace, MinimalQwen35KvCache, MinimalQwen35LinearAttentionBenchResult,
     MinimalQwen35LinearAttentionLayerSpec, MinimalQwen35LinearAttentionTrace,
     MinimalQwen35LoadMode, MinimalQwen35LoadTrace, MinimalQwen35NativeCacheState,
     MinimalQwen35NativeFullAttentionCacheState, MinimalQwen35NativeLayerCacheState,
