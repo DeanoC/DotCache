@@ -2,6 +2,14 @@ use super::{
     MinimalQwen35DirectRuntime, MinimalQwen35KvCache, MinimalQwen35RuntimeProfile,
     MinimalQwen35StateBuffer, ModelForCausalLM, Result,
 };
+use dotcache_model_store::PreparedQwen35DirectMetadata;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirectHipDecodePhase {
+    layer_type: &'static str,
+    start_layer_idx: usize,
+    end_layer_idx: usize,
+}
 
 pub(crate) struct DirectHipQwen35V1Executor<'a> {
     model: &'a mut ModelForCausalLM,
@@ -55,14 +63,11 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         }
         let mut profile = MinimalQwen35RuntimeProfile::default();
         let mut xs = hidden_state_t.clone();
-        for layer_idx in 0..self.runtime.metadata().num_hidden_layers {
-            let (next_xs, layer_profile) = self.model.direct_decode_layer_profiled_hip_v1(
-                self.runtime.metadata(),
-                layer_idx,
-                &xs,
-                seqlen_offset,
-            )?;
-            profile.add_assign(&layer_profile);
+        let phases = Self::decode_phases(self.runtime.metadata())?;
+        for phase in phases {
+            let (next_xs, phase_profile) =
+                self.decode_phase_from_hidden_state(&xs, seqlen_offset, phase)?;
+            profile.add_assign(&phase_profile);
             xs = next_xs;
         }
         let (logits, finalize_profile) = self.model.finalize_direct_decode_logits_hip_v1(&xs)?;
@@ -77,5 +82,85 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         self.runtime.decode_logits = logits.clone();
         self.runtime.last_decode_sequence_length = seqlen_offset + 1;
         Ok((logits, profile))
+    }
+
+    fn decode_phase_from_hidden_state(
+        &mut self,
+        xs: &MinimalQwen35StateBuffer,
+        seqlen_offset: usize,
+        phase: DirectHipDecodePhase,
+    ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
+        match phase.layer_type {
+            "linear_attention" | "full_attention" => {}
+            other => {
+                return Err(crate::RuntimeError::External {
+                    context: "qwen35-hip-direct",
+                    message: format!("unsupported direct-hip-v1 decode phase type: {other}"),
+                });
+            }
+        }
+        let mut profile = MinimalQwen35RuntimeProfile::default();
+        let mut xs = xs.clone();
+        for layer_idx in phase.start_layer_idx..phase.end_layer_idx {
+            let (next_xs, layer_profile) = self.model.direct_decode_layer_profiled_hip_v1(
+                self.runtime.metadata(),
+                layer_idx,
+                &xs,
+                seqlen_offset,
+            )?;
+            profile.add_assign(&layer_profile);
+            xs = next_xs;
+        }
+        Ok((xs, profile))
+    }
+
+    fn decode_phases(
+        metadata: &PreparedQwen35DirectMetadata,
+    ) -> Result<Vec<DirectHipDecodePhase>> {
+        if metadata.layers.len() != metadata.num_hidden_layers {
+            return Err(crate::RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "direct-hip-v1 metadata layer count mismatch: layers={} num_hidden_layers={}",
+                    metadata.layers.len(),
+                    metadata.num_hidden_layers
+                ),
+            });
+        }
+        let mut phases = Vec::new();
+        let mut start_layer_idx = 0usize;
+        while start_layer_idx < metadata.layers.len() {
+            let current = match metadata.layers[start_layer_idx].layer_type.as_str() {
+                "linear_attention" => "linear_attention",
+                "full_attention" => "full_attention",
+                other => {
+                    return Err(crate::RuntimeError::External {
+                        context: "qwen35-hip-direct",
+                        message: format!(
+                            "unsupported direct-hip-v1 decode phase type in metadata: {other}"
+                        ),
+                    });
+                }
+            };
+            let mut end_layer_idx = start_layer_idx + 1;
+            while end_layer_idx < metadata.layers.len()
+                && metadata.layers[end_layer_idx].layer_type == current
+            {
+                end_layer_idx += 1;
+            }
+            phases.push(DirectHipDecodePhase {
+                layer_type: current,
+                start_layer_idx,
+                end_layer_idx,
+            });
+            start_layer_idx = end_layer_idx;
+        }
+        if phases.is_empty() {
+            return Err(crate::RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct-hip-v1 metadata has no decode phases".to_string(),
+            });
+        }
+        Ok(phases)
     }
 }
