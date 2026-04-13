@@ -2790,6 +2790,11 @@ impl HipDeviceBuffer {
                 buffer.rms_norm(weight, eps, add_unit_offset)?,
             ));
         }
+        if let Some(out) = rms_norm_hip_owned_device_buffer(self, weight, eps, add_unit_offset)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from rms_norm owned device".into())
+            })?);
+        }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = rms_norm_hip_owned_device(&tensor, weight, eps, add_unit_offset)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
@@ -2839,6 +2844,13 @@ impl HipDeviceBuffer {
                 hidden_buffer.rms_norm_gated(&gate_buffer, weight, eps)?,
             ));
         }
+        if let Some(out) = rms_norm_gated_hip_owned_device_buffer(self, gate, weight, eps)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg(
+                    "expected direct device buffer from rms_norm_gated owned device".into(),
+                )
+            })?);
+        }
         let hidden = self.materialize_tensor()?;
         let gate_tensor = gate.materialize_tensor()?;
         if let Some(out) = rms_norm_gated_hip_owned_device(&hidden, &gate_tensor, weight, eps)? {
@@ -2875,6 +2887,11 @@ impl HipDeviceBuffer {
                 a_log_exp,
                 a_buffer.value_decay(&dt_bias_buffer, &a_log_exp_buffer)?,
             ));
+        }
+        if let Some(out) = value_decay_hip_owned_device_buffer(self, dt_bias, a_log_exp)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from value_decay owned device".into())
+            })?);
         }
         let a_tensor = self.materialize_tensor()?;
         let dt_bias_tensor = dt_bias.materialize_tensor()?;
@@ -2945,6 +2962,11 @@ impl HipDeviceBuffer {
                 up,
                 gate_buffer.swiglu_mul(&up_buffer)?,
             ));
+        }
+        if let Some(out) = swiglu_mul_hip_owned_device_buffer(self, up)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from swiglu_mul owned device".into())
+            })?);
         }
         let tensor = self.materialize_tensor()?;
         let up_tensor = up.materialize_tensor()?;
@@ -7225,6 +7247,70 @@ fn rms_norm_hip_host_buffer(
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+fn rms_norm_hip_owned_device_buffer(
+    xs: &HipDeviceBuffer,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let Some((ordinal, dtype, shape, _strides, xs_ptr)) = xs.candle_view_launch_spec()? else {
+        return Ok(None);
+    };
+    if !weight.device().same_device(xs.device()) {
+        return Ok(None);
+    }
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let Storage::Hip(weight_storage) = &*weight_storage else {
+        return Ok(None);
+    };
+    if !weight_layout.is_contiguous() || dtype != weight.dtype() {
+        return Ok(None);
+    }
+    let n_cols = *shape
+        .last()
+        .ok_or_else(|| candle_core::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+    let n_rows = HipNativeBuffer::elem_count(&shape) / n_cols;
+    if weight_layout.shape().elem_count() != n_cols {
+        return Ok(None);
+    }
+    let dtype_code = hip::dtype_code(dtype)?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, dtype, xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            if add_unit_offset { 1 } else { 0 },
+            xs_ptr,
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-rms-norm-owned-device-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn rms_norm_hip_owned_device_buffer(
+    xs: &HipDeviceBuffer,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<HipTensor>> {
+    let _ = (xs, weight, eps, add_unit_offset);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 fn rms_norm_hip_owned_device(
     xs: &Tensor,
     weight: &Tensor,
@@ -7383,6 +7469,75 @@ fn rms_norm_gated_hip_host_buffer(
             device: hidden.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn rms_norm_gated_hip_owned_device_buffer(
+    hidden: &HipDeviceBuffer,
+    gate: &HipDeviceBuffer,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let Some((ordinal, dtype, shape, _hidden_strides, hidden_ptr)) = hidden.candle_view_launch_spec()? else {
+        return Ok(None);
+    };
+    let Some((_gate_ordinal, gate_dtype, gate_shape, _gate_strides, gate_ptr)) =
+        gate.candle_view_launch_spec()?
+    else {
+        return Ok(None);
+    };
+    if !(gate.device().same_device(hidden.device()) && weight.device().same_device(hidden.device())) {
+        return Ok(None);
+    }
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let Storage::Hip(weight_storage) = &*weight_storage else {
+        return Ok(None);
+    };
+    if gate_dtype != dtype || gate_shape != shape || !weight_layout.is_contiguous() || weight.dtype() != dtype {
+        return Ok(None);
+    }
+    let n_cols = *shape.last().ok_or_else(|| {
+        candle_core::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into())
+    })?;
+    let n_rows = HipNativeBuffer::elem_count(&shape) / n_cols;
+    if weight_layout.shape().elem_count() != n_cols {
+        return Ok(None);
+    }
+    let dtype_code = hip::dtype_code(dtype)?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, dtype, hidden.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm_gated(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            hidden_ptr,
+            gate_ptr,
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-rms-norm-gated-owned-device-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn rms_norm_gated_hip_owned_device_buffer(
+    hidden: &HipDeviceBuffer,
+    gate: &HipDeviceBuffer,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<HipTensor>> {
+    let _ = (hidden, gate, weight, eps);
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -7556,6 +7711,51 @@ fn swiglu_mul_hip_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<HipTe
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+fn swiglu_mul_hip_owned_device_buffer(
+    gate: &HipDeviceBuffer,
+    up: &HipDeviceBuffer,
+) -> Result<Option<HipTensor>> {
+    let Some((ordinal, dtype, shape, _gate_strides, gate_ptr)) = gate.candle_view_launch_spec()? else {
+        return Ok(None);
+    };
+    let Some((_up_ordinal, up_dtype, up_shape, _up_strides, up_ptr)) = up.candle_view_launch_spec()? else {
+        return Ok(None);
+    };
+    if !up.device().same_device(gate.device()) || up_dtype != dtype || up_shape != shape {
+        return Ok(None);
+    }
+    let elem_count = HipNativeBuffer::elem_count(&shape);
+    let dtype_code = hip::dtype_code(dtype)?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, dtype, gate.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_swiglu_mul(
+            dtype_code,
+            ordinal,
+            elem_count,
+            gate_ptr,
+            up_ptr,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-swiglu-mul-owned-device-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn swiglu_mul_hip_owned_device_buffer(
+    gate: &HipDeviceBuffer,
+    up: &HipDeviceBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (gate, up);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 fn swiglu_mul_hip_owned_device(gate: &Tensor, up: &Tensor) -> Result<Option<HipTensor>> {
     use candle_core::Storage;
 
@@ -7676,6 +7876,69 @@ fn value_decay_hip_host_buffer(
             device: a.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn value_decay_hip_owned_device_buffer(
+    a: &HipDeviceBuffer,
+    dt_bias: &HipDeviceBuffer,
+    a_log_exp: &HipDeviceBuffer,
+) -> Result<Option<HipTensor>> {
+    let Some((ordinal, dtype, shape, _a_strides, a_ptr)) = a.candle_view_launch_spec()? else {
+        return Ok(None);
+    };
+    let Some((_dt_ordinal, dt_dtype, dt_shape, _dt_strides, dt_ptr)) =
+        dt_bias.candle_view_launch_spec()?
+    else {
+        return Ok(None);
+    };
+    let Some((_exp_ordinal, exp_dtype, exp_shape, _exp_strides, exp_ptr)) =
+        a_log_exp.candle_view_launch_spec()?
+    else {
+        return Ok(None);
+    };
+    if !(dt_bias.device().same_device(a.device()) && a_log_exp.device().same_device(a.device())) {
+        return Ok(None);
+    }
+    if dt_dtype != dtype || exp_dtype != dtype {
+        return Ok(None);
+    }
+    let total_elems = HipNativeBuffer::elem_count(&shape);
+    let num_heads = HipNativeBuffer::elem_count(&dt_shape);
+    if HipNativeBuffer::elem_count(&exp_shape) != num_heads {
+        return Ok(None);
+    }
+    let dtype_code = hip::dtype_code(dtype)?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, dtype, a.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_value_decay(
+            dtype_code,
+            ordinal,
+            total_elems,
+            num_heads,
+            a_ptr,
+            dt_ptr,
+            exp_ptr,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-value-decay-owned-device-buffer", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn value_decay_hip_owned_device_buffer(
+    a: &HipDeviceBuffer,
+    dt_bias: &HipDeviceBuffer,
+    a_log_exp: &HipDeviceBuffer,
+) -> Result<Option<HipTensor>> {
+    let _ = (a, dt_bias, a_log_exp);
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
