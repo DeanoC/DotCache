@@ -383,17 +383,6 @@ pub(crate) fn linear_stateful_conv_value_decay_with_state_buffer(
     )?)
 }
 
-pub(crate) fn delta_recurrent_prefill_op(
-    initial_state: &Tensor,
-    query: &Tensor,
-    key: &Tensor,
-    value: &Tensor,
-    beta: &Tensor,
-    g: &Tensor,
-) -> Result<Tensor> {
-    delta_recurrent_prefill(initial_state, query, key, value, beta, g)
-}
-
 pub(crate) fn delta_recurrent_prefill_buffer(
     initial_state: &StateBuffer,
     query: &Tensor,
@@ -410,17 +399,6 @@ pub(crate) fn delta_recurrent_prefill_buffer(
         beta,
         g,
     )?)
-}
-
-pub(crate) fn delta_chunk_single_prefill_op(
-    initial_state: &Tensor,
-    query: &Tensor,
-    key: &Tensor,
-    value: &Tensor,
-    beta: &Tensor,
-    g: &Tensor,
-) -> Result<Tensor> {
-    delta_chunk_single_prefill(initial_state, query, key, value, beta, g)
 }
 
 pub(crate) fn delta_chunk_single_prefill_buffer(
@@ -441,17 +419,6 @@ pub(crate) fn delta_chunk_single_prefill_buffer(
     )?)
 }
 
-pub(crate) fn delta_chunk_scan_raw_op(
-    initial_state: &Tensor,
-    query: &Tensor,
-    key: &Tensor,
-    value: &Tensor,
-    beta: &Tensor,
-    g: &Tensor,
-) -> Result<Tensor> {
-    delta_chunk_scan_raw(initial_state, query, key, value, beta, g)
-}
-
 pub(crate) fn delta_chunk_scan_raw_buffer(
     initial_state: &StateBuffer,
     query: &Tensor,
@@ -470,28 +437,12 @@ pub(crate) fn delta_chunk_scan_raw_buffer(
     )?)
 }
 
-pub(crate) fn delta_base_attn_scan_op(
-    k_beta_scan: &Tensor,
-    key_scan: &Tensor,
-    exp_g_scan: &Tensor,
-) -> Result<Tensor> {
-    delta_base_attn_scan(k_beta_scan, key_scan, exp_g_scan)
-}
-
 pub(crate) fn delta_base_attn_scan_buffer(
     k_beta_scan: &Tensor,
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<StateBuffer> {
     StateBuffer::from_tensor(delta_base_attn_scan(k_beta_scan, key_scan, exp_g_scan)?)
-}
-
-pub(crate) fn delta_attn_solve_from_inputs_op(
-    k_beta_scan: &Tensor,
-    key_scan: &Tensor,
-    exp_g_scan: &Tensor,
-) -> Result<Tensor> {
-    delta_attn_solve_from_inputs(k_beta_scan, key_scan, exp_g_scan)
 }
 
 pub(crate) fn delta_attn_solve_from_inputs_buffer(
@@ -502,20 +453,8 @@ pub(crate) fn delta_attn_solve_from_inputs_buffer(
     StateBuffer::from_tensor(delta_attn_solve_from_inputs(k_beta_scan, key_scan, exp_g_scan)?)
 }
 
-pub(crate) fn delta_attn_solve_scan_op(base_attn_scan: &Tensor) -> Result<Tensor> {
-    delta_attn_solve_scan(base_attn_scan)
-}
-
 pub(crate) fn delta_attn_solve_scan_buffer(base_attn_scan: &StateBuffer) -> Result<StateBuffer> {
     StateBuffer::from_tensor(delta_attn_solve_scan(base_attn_scan.tensor())?)
-}
-
-pub(crate) fn delta_local_attn_scan_op(
-    query_scan: &Tensor,
-    key_scan: &Tensor,
-    exp_g_scan: &Tensor,
-) -> Result<Tensor> {
-    delta_local_attn_scan(query_scan, key_scan, exp_g_scan)
 }
 
 pub(crate) fn delta_local_attn_scan_buffer(
@@ -524,15 +463,6 @@ pub(crate) fn delta_local_attn_scan_buffer(
     exp_g_scan: &Tensor,
 ) -> Result<StateBuffer> {
     StateBuffer::from_tensor(delta_local_attn_scan(query_scan, key_scan, exp_g_scan)?)
-}
-
-pub(crate) fn delta_full_scan_pack_op(
-    query_scan: &Tensor,
-    key_scan: &Tensor,
-    exp_g_scan: &Tensor,
-    k_cumdecay_scan: &Tensor,
-) -> Result<Tensor> {
-    delta_full_scan_pack(query_scan, key_scan, exp_g_scan, k_cumdecay_scan)
 }
 
 pub(crate) fn delta_full_scan_pack_buffer(
@@ -549,15 +479,6 @@ pub(crate) fn delta_full_scan_pack_buffer(
     )?)
 }
 
-pub(crate) fn delta_full_scan_packed_op(
-    initial_state: &Tensor,
-    packed_scan: &Tensor,
-    local_attn_scan: &Tensor,
-    value: &Tensor,
-) -> Result<Tensor> {
-    delta_full_scan_packed(initial_state, packed_scan, local_attn_scan, value)
-}
-
 pub(crate) fn delta_full_scan_packed_buffer(
     initial_state: &StateBuffer,
     packed_scan: &StateBuffer,
@@ -570,27 +491,6 @@ pub(crate) fn delta_full_scan_packed_buffer(
         local_attn_scan.tensor(),
         value,
     )?)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn delta_full_scan_op(
-    initial_state: &Tensor,
-    weighted_key_scan: &Tensor,
-    k_cumdecay_scan: &Tensor,
-    q_state_scan: &Tensor,
-    local_attn_scan: &Tensor,
-    state_decay_scan: &Tensor,
-    value: &Tensor,
-) -> Result<Tensor> {
-    delta_full_scan(
-        initial_state,
-        weighted_key_scan,
-        k_cumdecay_scan,
-        q_state_scan,
-        local_attn_scan,
-        state_decay_scan,
-        value,
-    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -614,14 +514,6 @@ pub(crate) fn delta_full_scan_buffer(
     )?)
 }
 
-pub(crate) fn delta_state_scan_op(
-    initial_state: &Tensor,
-    packed_scan: &Tensor,
-    value: &Tensor,
-) -> Result<Tensor> {
-    delta_state_scan(initial_state, packed_scan, value)
-}
-
 pub(crate) fn delta_state_scan_buffer(
     initial_state: &StateBuffer,
     packed_scan: &StateBuffer,
@@ -632,14 +524,6 @@ pub(crate) fn delta_state_scan_buffer(
         packed_scan.tensor(),
         value,
     )?)
-}
-
-pub(crate) fn delta_chunk_fused_op(
-    prev_state: &Tensor,
-    packed_chunk: &Tensor,
-    value: &Tensor,
-) -> Result<Tensor> {
-    delta_chunk_fused(prev_state, packed_chunk, value)
 }
 
 pub(crate) fn delta_chunk_fused_buffer(
@@ -679,15 +563,6 @@ pub(crate) fn mix_chunk_attention(
             .tensor()
             .broadcast_add(&attn.matmul(value_chunk.tensor())?)?,
     )
-}
-
-pub(crate) fn delta_state_update_op(
-    prev_state_scaled: &Tensor,
-    weighted_key: &Tensor,
-    value: &Tensor,
-    use_kernel: bool,
-) -> Result<Tensor> {
-    delta_state_update(prev_state_scaled, weighted_key, value, use_kernel)
 }
 
 pub(crate) fn delta_state_update_buffer(
