@@ -1134,6 +1134,44 @@ impl MinimalQwen35Runner {
         )?)
     }
 
+    pub fn trace_decode_final_hidden_with_cache(
+        &mut self,
+        hidden_state_t: &MinimalQwen35StateBuffer,
+        cache_state: &MinimalQwen35KvCache,
+    ) -> Result<MinimalQwen35StateBuffer> {
+        let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
+        self.model.restore_cache_state(cache_state)?;
+        let seqlen_offset = cache_state.sequence_length();
+        Ok(self.model.forward_text_hidden_states(
+            &MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?,
+            seqlen_offset,
+        )?)
+    }
+
+    pub fn trace_output_projection_from_final_hidden(
+        &mut self,
+        final_hidden_states: &MinimalQwen35StateBuffer,
+    ) -> Result<MinimalQwen35StateBuffer> {
+        let final_hidden_states = self.hidden_states_on_runner_device(final_hidden_states)?;
+        Ok(self.model.project_final_hidden_to_logits(
+            &MinimalQwen35StateBuffer::from_tensor(final_hidden_states)?,
+        )?)
+    }
+
+    pub fn trace_output_projection_from_final_hidden_tensor(
+        &mut self,
+        final_hidden_states: &Tensor,
+    ) -> Result<MinimalQwen35StateBuffer> {
+        let final_hidden_states = if final_hidden_states.device().same_device(&self.device) {
+            final_hidden_states.clone()
+        } else {
+            final_hidden_states.to_device(&self.device)?
+        };
+        Ok(self.model.project_final_hidden_to_logits(
+            &MinimalQwen35StateBuffer::from_tensor(final_hidden_states)?,
+        )?)
+    }
+
     pub fn clear_kv_cache(&mut self) {
         self.model.clear_kv_cache();
     }

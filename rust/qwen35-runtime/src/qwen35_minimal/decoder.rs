@@ -1231,6 +1231,25 @@ impl ModelForCausalLM {
             .map(|(output, _)| output)
     }
 
+    pub fn forward_text_hidden_states(
+        &mut self,
+        hidden_states: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<StateBuffer> {
+        self.language_model
+            .forward_hidden_states_profiled(hidden_states, seqlen_offset)
+            .map(|(output, _)| output)
+    }
+
+    pub fn project_final_hidden_to_logits(
+        &mut self,
+        final_hidden_states: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let backend = backend_buffer_api::for_device(final_hidden_states.device());
+        let last_token = backend.slice_last_token(final_hidden_states)?;
+        self.lm_head.forward_buffer(&last_token)
+    }
+
     pub fn linear_attention_layer_ids(&self) -> Vec<usize> {
         self.language_model.linear_attention_layer_ids()
     }

@@ -97,6 +97,7 @@ def main() -> None:
     first_layer_mlp_output = None
     decode_first_layer_mlp_output = None
     decode_first_layer_output = None
+    decode_final_hidden_output = None
     decoder_layer_outputs = []
     decode_decoder_layer_outputs = []
     layer3_input_layernorm_output = None
@@ -786,7 +787,7 @@ def main() -> None:
     layer4_handle = model.model.layers[4].register_forward_hook(layer4_hook)
     try:
         with torch.no_grad():
-            outputs = model(input_ids=input_ids, use_cache=True)
+            outputs = model(input_ids=input_ids, use_cache=True, output_hidden_states=True)
             prefill_last_token_logits = (
                 outputs.logits[0, -1, :].to(dtype=torch.float32).cpu().tolist()
             )
@@ -805,9 +806,16 @@ def main() -> None:
                     input_ids=decode_input_ids,
                     use_cache=True,
                     past_key_values=past_key_values,
+                    output_hidden_states=True,
                 )
                 first_decode_step_logits = (
                     decode_outputs.logits[0, -1, :].to(dtype=torch.float32).cpu().tolist()
+                )
+                decode_final_hidden_output = (
+                    decode_outputs.hidden_states[-1]
+                    .detach()
+                    .to(dtype=torch.float32)
+                    .cpu()
                 )
             else:
                 first_decode_step_logits = None
@@ -962,6 +970,7 @@ def main() -> None:
             "decode_first_layer_post_attention_layernorm_output": decode_first_layer_post_attention_layernorm_output,
             "decode_first_layer_mlp_output": decode_first_layer_mlp_output,
             "decode_first_layer_output": decode_first_layer_output,
+            "decode_final_hidden_output": decode_final_hidden_output,
         }
         missing.extend(name for name, value in required_decode.items() if value is None)
     if missing:
@@ -1083,6 +1092,7 @@ def main() -> None:
         "decode_first_layer_post_attention_layernorm_output": decode_first_layer_post_attention_layernorm_output.tolist() if decode_first_layer_post_attention_layernorm_output is not None else None,
         "decode_first_layer_mlp_output": decode_first_layer_mlp_output.tolist() if decode_first_layer_mlp_output is not None else None,
         "decode_first_layer_output": decode_first_layer_output.tolist() if decode_first_layer_output is not None else None,
+        "decode_final_hidden_output": decode_final_hidden_output.tolist() if decode_final_hidden_output is not None else None,
         "prefill_last_token_logits": prefill_last_token_logits,
         "first_decode_step_last_token_logits": first_decode_step_logits,
         "decode_last_token_logits": decode_logits,

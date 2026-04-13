@@ -361,6 +361,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_post_attention_layernorm_max_delta: Option<f32>,
         pytorch_decode_first_layer_mlp_max_delta: Option<f32>,
         pytorch_decode_first_layer_max_delta: Option<f32>,
+        pytorch_decode_final_hidden_max_delta: Option<f32>,
+        pytorch_decode_output_projection_from_oracle_hidden_max_delta: Option<f32>,
         decode_max_delta: f32,
         decode_input_hidden_max_delta: Option<f32>,
         decode_step_cache_max_delta: Option<f32>,
@@ -463,6 +465,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decode_first_layer_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_hidden_output: Option<Vec<Vec<Vec<f32>>>>,
         prefill_last_token_logits: Vec<f32>,
         first_decode_step_last_token_logits: Option<Vec<f32>>,
         decode_last_token_logits: Vec<Vec<f32>>,
@@ -2073,6 +2076,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_post_attention_layernorm_max_delta,
         pytorch_decode_first_layer_mlp_max_delta,
         pytorch_decode_first_layer_max_delta,
+        pytorch_decode_final_hidden_max_delta,
+        pytorch_decode_output_projection_from_oracle_hidden_max_delta,
     ) = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
         if !pytorch_oracle.decode_decoder_layer_outputs.is_empty() {
             let decode_input_token = *pytorch_oracle.generated_token_ids.first().ok_or_else(|| {
@@ -2083,6 +2088,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             })?;
             let decode_input =
                 Tensor::from_vec(vec![decode_input_token], (1, 1), &target_device)?;
+            let decode_input_hidden = device_runner.hidden_states_from_input_ids_direct(&decode_input)?;
             let mut deltas =
                 Vec::with_capacity(pytorch_oracle.decode_decoder_layer_outputs.len());
             for (layer_id, oracle_layer_output) in
@@ -2124,6 +2130,33 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     context: "pytorch oracle",
                     message: "decode layer 0 linear core trace missing".to_string(),
                 })?;
+            let runtime_decode_final_hidden = device_runner.trace_decode_final_hidden_with_cache(
+                &decode_input_hidden,
+                &device_cache,
+            )?;
+            let oracle_decode_final_hidden = pytorch_oracle
+                .decode_final_hidden_output
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "missing decode final hidden output".to_string(),
+                })?;
+            let oracle_decode_final_hidden_flat = oracle_decode_final_hidden
+                .iter()
+                .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+                .collect::<Vec<_>>();
+            let oracle_decode_final_hidden_tensor = Tensor::from_vec(
+                oracle_decode_final_hidden_flat,
+                (
+                    oracle_decode_final_hidden.len(),
+                    oracle_decode_final_hidden[0].len(),
+                    oracle_decode_final_hidden[0][0].len(),
+                ),
+                &target_device,
+            )?
+            .to_dtype(runtime_decode_final_hidden.tensor().dtype())?;
+            let runtime_logits_from_oracle_hidden = device_runner
+                .trace_output_projection_from_final_hidden_tensor(&oracle_decode_final_hidden_tensor)?;
             (
                 Some(deltas),
                 first_bad.map(|(layer_id, _)| layer_id),
@@ -2912,19 +2945,35 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .as_ref()
                     .map(|oracle| max_tensor_delta_vec3(layer0_trace.layer_output.tensor(), oracle))
                     .transpose()?,
+                pytorch_oracle
+                    .decode_final_hidden_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(runtime_decode_final_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .first_decode_step_last_token_logits
+                    .as_ref()
+                    .map(|oracle| {
+                        max_last_token_delta_vec(runtime_logits_from_oracle_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
             )
         } else {
             (
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None,
             )
         }
     } else {
         (
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None,
         )
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
@@ -3302,6 +3351,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_post_attention_layernorm_max_delta,
         pytorch_decode_first_layer_mlp_max_delta,
         pytorch_decode_first_layer_max_delta,
+        pytorch_decode_final_hidden_max_delta,
+        pytorch_decode_output_projection_from_oracle_hidden_max_delta,
         decode_max_delta: max_decode_delta,
         decode_input_hidden_max_delta: max_decode_input_hidden_delta,
         decode_step_cache_max_delta: max_decode_step_cache_delta,
