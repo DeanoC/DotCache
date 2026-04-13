@@ -22,15 +22,12 @@ Related MPS notes:
 
 ## Main result
 
-CUDA shows the same core pattern as MPS on the original two suspect cases:
+After the fixed-tree handoff fix, the earlier structural divergence is gone on CUDA:
 
-- all three serving-family lanes match each other exactly
-- all three serving-family lanes diverge from dense
-- real mixed still matches hand exactly
-- non-M0 still matches hand exactly
-- conservative still matches hand exactly
+- `performance_journal` now matches dense across real mixed, non-M0 Stage 9, and conservative
+- `state_cache_roadmap` now matches dense across all three serving-family lanes
 
-So on CUDA too, this currently looks like a shared DotCache-family vs dense boundary, not a Stage 9 mixed-only regression.
+So on fixed-tree CUDA, this is no longer a shared-stage-9-only divergence. The remaining `performance_journal` tail difference is now a tie-boundary case where dense/serving pick `15` from equal `logit[15] = logit[16]`.
 
 ## Cases
 
@@ -38,24 +35,20 @@ So on CUDA too, this currently looks like a shared DotCache-family vs dense boun
 
 - dense generated IDs:
   - `[198, 220, 471, 1510, 77518, 28, 15, 7561]`
-- real mixed generated IDs:
-  - `[198, 220, 471, 1510, 8412, 1551, 7408, 63]`
-- non-M0 Stage 9 generated IDs:
-  - `[198, 220, 471, 1510, 8412, 1551, 7408, 63]`
-- conservative certified generated IDs:
-  - `[198, 220, 471, 1510, 8412, 1551, 7408, 63]`
+- real mixed / non-M0 / conservative generated IDs:
+  - `[198, 220, 471, 1510, 77518, 28, 15, 7561]`
 - serving-family lanes matching each other:
   - yes
 - serving-family lanes matching dense:
-  - no
+  - yes
 - prefix match length vs dense:
-  - real mixed: `4`
-  - non-M0 Stage 9: `4`
-  - conservative certified: `4`
+  - real mixed: `8`
+  - non-M0 Stage 9: `8`
+  - conservative certified: `8`
 - first divergent generated token vs dense:
-  - real mixed: token `5`
-  - non-M0 Stage 9: token `5`
-  - conservative certified: token `5`
+  - real mixed: none
+  - non-M0 Stage 9: none
+  - conservative certified: none
 - processed block count at final step:
   - real mixed: `129`
   - non-M0 Stage 9: `129`
@@ -73,24 +66,20 @@ So on CUDA too, this currently looks like a shared DotCache-family vs dense boun
 
 - dense generated IDs:
   - `[12, 264, 11782, 314, 279, 1118, 220, 16]`
-- real mixed generated IDs:
-  - `[12, 1118, 78361, 321, 1118, 7652, 29642, 364]`
-- non-M0 Stage 9 generated IDs:
-  - `[12, 1118, 78361, 321, 1118, 7652, 29642, 364]`
-- conservative certified generated IDs:
-  - `[12, 1118, 78361, 321, 1118, 7652, 29642, 364]`
+- real mixed / non-M0 Stage 9 / conservative generated IDs:
+  - `[12, 264, 11782, 314, 279, 1118, 220, 16]`
 - serving-family lanes matching each other:
   - yes
 - serving-family lanes matching dense:
-  - no
+  - yes
 - prefix match length vs dense:
-  - real mixed: `1`
-  - non-M0 Stage 9: `1`
-  - conservative certified: `1`
+  - real mixed: `8`
+  - non-M0 Stage 9: `8`
+  - conservative certified: `8`
 - first divergent generated token vs dense:
-  - real mixed: token `2`
-  - non-M0 Stage 9: token `2`
-  - conservative certified: token `2`
+  - real mixed: none
+  - non-M0 Stage 9: none
+  - conservative certified: none
 - processed block count at final step:
   - real mixed: `85`
   - non-M0 Stage 9: `85`
@@ -106,28 +95,22 @@ So on CUDA too, this currently looks like a shared DotCache-family vs dense boun
 
 ## CUDA vs MPS nuance
 
-The main pattern matches MPS, but one dense-only backend difference is worth recording:
+The remaining divergence between CUDA and MPS on `performance_journal` is now a backend-tail tie behavior:
 
-- `performance_journal` CUDA dense generated IDs are
-  - `[198, 220, 471, 1510, 77518, 28, 15, 7561]`
-- `performance_journal` MPS dense generated IDs were
-  - `[198, 220, 471, 1510, 77518, 28, 16, 7561]`
-
-That dense-only tail change does not alter the serving-family read:
-
-- the serving-family lanes still align exactly with each other on both backends
-- the serving-family divergence from dense still begins earlier, after the same shared prefix length of `4`
+- CUDA dense and serving both use `[... 28, 15, 7561]`
+- MPS dense and serving use `[... 28, 16, 7561]`
+- all MPS/CUDA divergences are now interpreted as a late tie-boundary effect, not a Stage 9 mixed regression
 
 ## Interpretation
 
 Best current read after the CUDA suspect pass:
 
 - shared DotCache-family boundary remains the best explanation
-- this is not CUDA-only behavior
 - this is not evidence of a Stage 9 mixed-only bug
-- `state_cache_roadmap` remains the stronger structural repro because it diverges at token `2` and is the only original suspect that exercises a visible exact-key / all-M3 frontier in real mixed
+- the structural `state_cache_roadmap` repro is now fixed
+- `submission_execution_plan` is no longer included in the original two-case suspects, and is now treated as a separate cousin family that was addressed on MPS post-fix reruns
 
-With the new cousin dense check now on branch, the broader divergence family is:
+For historical context from this suspect pass (before the handoff fix), the broader divergence family included:
 
 - `performance_journal`
 - `state_cache_roadmap`

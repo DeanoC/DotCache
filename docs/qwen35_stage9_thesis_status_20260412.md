@@ -359,6 +359,22 @@ So the current best cheap recommendation is surprisingly simple:
 - instead, keep the frontier and lower layer `15` to `0.20`
 - that beats both the current baseline and the prompt-length split heuristics on the checked-in portable studies
 
+### 5. Round-2 residual tie boundary (post-fix interpretation)
+
+After the fixed `state_cache_roadmap` handoff handling, the substantial divergence family is gone:
+
+- `state_cache_roadmap` now matches dense in the fixed-tree round-2 suites
+- `submission_execution_plan` is no longer part of the core two-case suspect pair, and is tracked separately as a cousin-case that is resolved in MPS post-fix reruns
+
+The remaining `performance_journal` residue is now a late tied-token boundary rather than a Stage 9 mixed regression:
+
+- CUDA fixed-tree dense and serving generate:
+  - `[198, 220, 471, 1510, 77518, 28, 15, 7561]`
+- in the tied step, `logit[15]` and `logit[16]` are both `20.625`
+- dense-vs-serving deltas for that step are zero
+
+That behavior is best treated as a backend-sensitive dense tie-break and not a priority serving-path blocker.
+
 That is not the final policy yet, but it is the strongest current small-policy candidate to test in the live runtime.
 
 ### 5. Hard-case explanation

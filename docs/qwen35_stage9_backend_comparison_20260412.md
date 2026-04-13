@@ -108,6 +108,7 @@ Important CUDA observation:
 - the updated real-mixed CUDA path is no longer just a research lane on every corpus
 - it now beats the same-tree non-`M0` baseline on all three portable corpora
 - the remaining CUDA work is about increasing headroom, not proving mixed viability
+- a late `performance_journal` tail diff is now classified as a tie-boundary residual and is not a Stage 9 mixed execution regression
 
 ## CUDA baselines on the same portable corpus
 

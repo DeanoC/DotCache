@@ -17,7 +17,12 @@ Targeted real-mixed dense-check bundle:
 
 ## Main result
 
-The real-mixed Stage 9 path diverges from dense on the same two cases, while still matching hand exactly.
+This was the pre-fix baseline for the round-2 suspects on MPS:
+
+- real-mixed Stage 9 diverged from dense on both cases
+- hand still matched real mixed
+
+Post-fix status is in [qwen35_stage9_round2_postfix_mps_20260413.md](./qwen35_stage9_round2_postfix_mps_20260413.md), where the handoff fix removed the structural divergence and narrowed `performance_journal` to a late tie-boundary effect.
 
 ### `performance_journal`
 
@@ -43,13 +48,26 @@ The real-mixed Stage 9 path diverges from dense on the same two cases, while sti
 - hand:
   - `hand_tuned_matches_dense_exact = false`
 
+## Post-fix read
+
+On the MPS post-fix suite, both:
+
+- `performance_journal`
+- `state_cache_roadmap`
+
+now match dense on the serving-family lanes.
+
+For `performance_journal`, the remaining difference is the late tail tie class already documented as CUDA-aligned:
+
+- CUDA/serving: `[198, 220, 471, 1510, 77518, 28, 15, 7561]`
+- MPS dense/serving: `[198, 220, 471, 1510, 77518, 28, 16, 7561]`
+
 ## Interpretation
 
 This is the useful outcome of the sanity pass:
 
-- the round-2 dense mismatch is not unique to the non-`M0` or conservative lanes
-- the real-mixed path shares the same dense divergence on these two cases
-- so this currently looks like a broader mainline DotCache vs dense boundary, not a Stage 9 mixed-only regression
+- the original divergence on these two cases is now understood as a fixed-tree handoff sequence-length issue plus tie-tail alignment noise
+- the shared serving-family behavior remains a DotCache-family boundary against dense rather than a Stage 9-only regression
 
 That does not prove the mainline path is correct. It means the next debugging step should be framed as:
 

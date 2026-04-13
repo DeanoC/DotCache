@@ -14,15 +14,21 @@ The two round-2 cases that diverged from dense are:
 - `performance_journal`
 - `state_cache_roadmap`
 
-## What diverges
+Update (fixed-tree post-handoff interpretation):
+
+- `state_cache_roadmap` now matches dense in the fixed-tree suites
+- `performance_journal` is narrowed to a late tie-boundary behavior on CUDA runs
+- `submission_execution_plan` is no longer part of the original two-case suspect pair, and MPS post-fix reruns now show it matching dense
+
+## What diverged (historical context)
 
 On both cases:
 
-- real mixed `bias` diverges from dense
-- hand diverges from dense
-- non-`M0` Stage 9 diverges from dense
-- conservative certified diverges from dense
-- the serving-family lanes still match each other exactly in the checked MPS runs
+- `performance_journal` and `state_cache_roadmap` diverged from dense in early round-2 checked runs
+- real mixed `bias`, hand, non-`M0` Stage 9, and conservative certified all matched each other in those serving-family runs
+- this divergence is now resolved for `state_cache_roadmap` after the handoff fix
+- `submission_execution_plan` is resolved in MPS post-fix reruns; CUDA status is outside the scope of this dossier
+- residual `performance_journal` behavior is now treated as a late tie-boundary residual rather than a mixed-path correctness failure
 
 That means the current problem framing is:
 

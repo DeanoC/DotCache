@@ -101,3 +101,9 @@ Additional same-tree CUDA read:
   - conservative certified `333.35 ms/step`
   - non-`M0` Stage 9 `339.66 ms/step`
 - real mixed remains the same-tree winner on this broader public set
+
+Residual tie-boundary classification:
+
+- the fixed handoff path closes the substantive `performance_journal` and `state_cache_roadmap` structural divergence narrative
+- on this fixed-tree CUDA run, `performance_journal` now resolves to `[198, 220, 471, 1510, 77518, 28, 15, 7561]` with a tied final-branch score at `15` vs `16`
+- this is now interpreted as a late-stage dense tie-break, not a Stage 9 mixed execution regression

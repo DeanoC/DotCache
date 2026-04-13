@@ -68,6 +68,7 @@ This is qualitatively different from the original family:
 - the earlier structural repros are now fixed
 - the remaining difference is late and narrow
 - it also matches the current CUDA dense tail better than the earlier MPS dense tail
+- this residual is now best interpreted as a tie-boundary class when viewed from fixed-tree CUDA where dense/serving agree on `[198, 220, 471, 1510, 77518, 28, 15, 7561]`
 
 ## Interpretation
 
