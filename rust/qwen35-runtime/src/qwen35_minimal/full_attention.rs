@@ -1258,6 +1258,9 @@ impl FullAttention {
             context.k_norm_weight,
             context.k_norm_eps,
         )?;
+        let query_states =
+            context.backend.copy_state_into_scratch(&query_states, context.qkv_workspace)?;
+        let gate = context.backend.copy_state_into_scratch(&gate, context.gate_workspace)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
         let layout_start = profile_start(device)?;

@@ -13946,6 +13946,51 @@ pub(crate) fn zeros_state(dims: Vec<usize>, dtype: DType, device: &Device) -> Re
     zeros(dims, dtype, device)?.into_state_buffer()
 }
 
+pub(crate) fn copy_state_into_scratch(
+    src: &StateBuffer,
+    scratch: &StateBuffer,
+) -> Result<StateBuffer> {
+    if src.dtype() != scratch.dtype() {
+        candle_core::bail!(
+            "HIP scratch dtype mismatch: src={:?} scratch={:?}",
+            src.dtype(),
+            scratch.dtype(),
+        );
+    }
+    if src.tensor().dims() != scratch.tensor().dims() {
+        candle_core::bail!(
+            "HIP scratch shape mismatch: src={:?} scratch={:?}",
+            src.tensor().dims(),
+            scratch.tensor().dims(),
+        );
+    }
+    let src_hip = HipTensor::from_state_buffer(src);
+    let scratch_hip = HipTensor::from_state_buffer(scratch);
+    if let (Some(src_buffer), Some(dst_buffer)) = (
+        src_hip.0 .0.direct_materialized_device_buffer(),
+        scratch_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            Some((src_ordinal, src_dtype, src_shape, src_ptr)),
+            Some((dst_ordinal, dst_dtype, dst_shape, dst_ptr)),
+        ) = (
+            src_buffer.standard_contiguous_launch_spec()?,
+            dst_buffer.standard_contiguous_launch_spec()?,
+        ) {
+            if src_ordinal == dst_ordinal && src_dtype == dst_dtype && src_shape == dst_shape {
+                hip::copy_device_to_device(
+                    dst_ordinal,
+                    dst_ptr as *mut c_void,
+                    src_ptr,
+                    HipNativeBuffer::byte_len(&src_shape, src_dtype),
+                )?;
+                return scratch_hip.into_state_buffer();
+            }
+        }
+    }
+    Ok(src.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

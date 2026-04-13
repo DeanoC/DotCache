@@ -39,6 +39,13 @@ pub(crate) fn zeros_state(device: &Device, dtype: DType, dims: &[usize]) -> Resu
     transport::zeros_state(dims.to_vec(), dtype, device)
 }
 
+pub(crate) fn copy_state_into_scratch(
+    src: &StateBuffer,
+    scratch: &StateBuffer,
+) -> Result<StateBuffer> {
+    transport::copy_state_into_scratch(src, scratch)
+}
+
 pub(crate) fn zeros_tensor(device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor> {
     transport::zeros(dims.to_vec(), dtype, device).map(|t| t.into_tensor())
 }

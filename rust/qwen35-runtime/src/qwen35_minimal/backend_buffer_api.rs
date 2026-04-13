@@ -27,6 +27,11 @@ fn repeat_kv_impl(xs: &Tensor, repeats: usize) -> Result<Tensor> {
 pub(super) trait Qwen35BackendBufferApi: Sync {
     fn tensor_to_buffer(&self, xs: Tensor) -> Result<StateBuffer>;
     fn zeros_state(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<StateBuffer>;
+    fn copy_state_into_scratch(
+        &self,
+        src: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
     fn zeros_tensor(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor>;
     fn reshape_tensor_to_buffer(&self, xs: &Tensor, dims: &[usize]) -> Result<StateBuffer>;
     fn narrow_tensor_to_buffer(
@@ -455,6 +460,27 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         } else {
             backends::cpu::zeros_state(device, dtype, dims)
         }
+    }
+    fn copy_state_into_scratch(
+        &self,
+        src: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        if src.dtype() != scratch.dtype() {
+            candle_core::bail!(
+                "scratch dtype mismatch: src={:?} scratch={:?}",
+                src.dtype(),
+                scratch.dtype(),
+            );
+        }
+        if src.tensor().dims() != scratch.tensor().dims() {
+            candle_core::bail!(
+                "scratch shape mismatch: src={:?} scratch={:?}",
+                src.tensor().dims(),
+                scratch.tensor().dims(),
+            );
+        }
+        Ok(src.clone())
     }
     fn zeros_tensor(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor> {
         if device.is_cuda() {
@@ -1339,6 +1365,13 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
     }
     fn zeros_state(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<StateBuffer> {
         backends::hip::zeros_state(device, dtype, dims)
+    }
+    fn copy_state_into_scratch(
+        &self,
+        src: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        backends::hip::copy_state_into_scratch(src, scratch)
     }
     fn zeros_tensor(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor> {
         backends::hip::zeros_tensor(device, dtype, dims)
