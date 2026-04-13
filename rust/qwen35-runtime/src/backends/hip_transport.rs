@@ -5088,12 +5088,9 @@ fn concat_last_dim_hip(lhs: &StateBuffer, rhs: &StateBuffer) -> Result<HipTensor
     let lhs = HipTensor::from_state_buffer(lhs);
     let rhs = HipTensor::from_state_buffer(rhs);
     if let (Some(lhs_host), Some(rhs_host)) = (lhs.try_host_buffer()?, rhs.try_host_buffer()?) {
-        return Ok(HipTensor::from_device_buffer(
-            HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer::cat(
-                &[&lhs_host, &rhs_host],
-                lhs.rank() - 1,
-            )?),
-        ));
+        return Ok(HipTensor::from_device_buffer(host_result_device_buffer(
+            HipHostBuffer::cat(&[&lhs_host, &rhs_host], lhs.rank() - 1)?,
+        )));
     }
     if let (Some(lhs), Some(rhs)) = (
         lhs.0 .0.direct_materialized_device_buffer(),
@@ -5124,12 +5121,9 @@ fn pack_delta_state_scan_hip(
         k_cumdecay_scan.try_host_buffer()?,
         state_decay_feature.try_host_buffer()?,
     ) {
-        return Ok(HipTensor::from_device_buffer(
-            HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer::cat(
-                &[&weighted_key_scan, &k_cumdecay_scan, &state_decay_feature],
-                3,
-            )?),
-        ));
+        return Ok(HipTensor::from_device_buffer(host_result_device_buffer(
+            HipHostBuffer::cat(&[&weighted_key_scan, &k_cumdecay_scan, &state_decay_feature], 3)?,
+        )));
     }
     if let (Some(weighted_key_scan), Some(k_cumdecay_scan), Some(state_decay_feature)) = (
         weighted_key_scan.0 .0.direct_materialized_device_buffer(),
@@ -5171,12 +5165,9 @@ fn pack_delta_chunk_fused_hip(
         q_state.try_host_buffer()?,
         state_decay.try_host_buffer()?,
     ) {
-        return Ok(HipTensor::from_device_buffer(
-            HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer::cat(
-                &[&weighted_key, &k_cumdecay, &q_state, &state_decay],
-                2,
-            )?),
-        ));
+        return Ok(HipTensor::from_device_buffer(host_result_device_buffer(
+            HipHostBuffer::cat(&[&weighted_key, &k_cumdecay, &q_state, &state_decay], 2)?,
+        )));
     }
     if let (Some(weighted_key), Some(k_cumdecay), Some(q_state), Some(state_decay)) = (
         weighted_key.0 .0.direct_materialized_device_buffer(),
@@ -5387,7 +5378,7 @@ pub(crate) fn unpack_scan_fused_output_and_state(
 pub(crate) fn state_scan_chunk(state_scan: &StateBuffer, chunk_idx: usize) -> Result<StateBuffer> {
     let state_scan = HipTensor::from_state_buffer(state_scan);
     if let Some(host) = state_scan.try_host_buffer()? {
-        return HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(
+        return HipTensor::from_device_buffer(host_result_device_buffer(
             host.select_copy(1, chunk_idx)?,
         ))
         .into_state_buffer();
@@ -5401,7 +5392,7 @@ pub(crate) fn state_scan_next_chunk(
 ) -> Result<StateBuffer> {
     let state_scan = HipTensor::from_state_buffer(state_scan);
     if let Some(host) = state_scan.try_host_buffer()? {
-        return HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(
+        return HipTensor::from_device_buffer(host_result_device_buffer(
             host.select_copy(1, next_chunk_idx)?,
         ))
         .into_state_buffer();
