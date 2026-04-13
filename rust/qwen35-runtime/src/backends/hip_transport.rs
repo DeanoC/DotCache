@@ -4258,9 +4258,19 @@ impl HipNativeBuffer {
                 dim,
                 start,
                 len,
-            } => source.materialize()?.narrow(*dim, *start, *len),
+            } => {
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.narrow(*dim, *start, *len)?.into_tensor())
+                } else {
+                    source.materialize()?.narrow(*dim, *start, *len)
+                }
+            }
             HipNativeExpr::Select { source, dim, index } => {
-                source.materialize()?.narrow(*dim, *index, 1)?.squeeze(*dim)
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.select(*dim, *index)?.into_tensor())
+                } else {
+                    source.materialize()?.narrow(*dim, *index, 1)?.squeeze(*dim)
+                }
             }
             HipNativeExpr::Concat { sources, dim } => {
                 let device_buffers = sources
@@ -4283,13 +4293,25 @@ impl HipNativeBuffer {
                 }
             }
             HipNativeExpr::Reshape { source, shape } => {
-                source.materialize()?.reshape(shape.clone())
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.reshape(shape.clone())?.into_tensor())
+                } else {
+                    source.materialize()?.reshape(shape.clone())
+                }
             }
             HipNativeExpr::Expand { source, shape } => {
-                source.materialize()?.expand(shape.clone())
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.expand(shape.clone())?.into_tensor())
+                } else {
+                    source.materialize()?.expand(shape.clone())
+                }
             }
             HipNativeExpr::Transpose { source, dim1, dim2 } => {
-                source.materialize()?.transpose(*dim1, *dim2)
+                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
+                    Ok(buffer.transpose(*dim1, *dim2)?.into_tensor())
+                } else {
+                    source.materialize()?.transpose(*dim1, *dim2)
+                }
             }
             HipNativeExpr::Cast { source, dtype } => {
                 if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
