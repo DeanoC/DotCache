@@ -6,6 +6,7 @@ mod builder;
 mod direct_hip;
 mod frontend;
 pub(crate) mod hip;
+mod hip_wrappers;
 pub(crate) mod model;
 mod ops;
 mod prepared;
