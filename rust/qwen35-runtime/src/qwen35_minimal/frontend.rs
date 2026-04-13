@@ -471,6 +471,22 @@ impl OutputProjectionSource {
             }
         }
     }
+
+    pub(super) fn forward_buffer_into_scratch(
+        &self,
+        hidden_states: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        match self {
+            Self::Materialized(linear) => {
+                let backend = backend_buffer_api::for_device(hidden_states.device());
+                let output = linear.forward_buffer(hidden_states)?;
+                backend.copy_state_into_scratch(&output, scratch)
+            }
+            Self::TiedImmutable(embedding) => backend_buffer_api::for_device(hidden_states.device())
+                .output_projection_into_scratch(embedding, hidden_states, scratch),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

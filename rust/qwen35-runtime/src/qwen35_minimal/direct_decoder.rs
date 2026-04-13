@@ -403,13 +403,14 @@ pub(super) fn model_direct_decode_full_phase_profiled_hip_v1_unchecked(
 pub(super) fn model_finalize_direct_decode_logits_hip_v1(
     model: &mut ModelForCausalLM,
     hidden_states: &StateBuffer,
+    logits_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = hidden_states.device();
     let backend = backend_buffer_api::for_device(device);
     let output_start = super::frontend::profile_start(device)?;
     let hidden_states = text_model_finalize_direct_decode_hidden_hip_v1(&mut model.language_model, hidden_states)?;
     let logits = backend.slice_last_token(&hidden_states)?;
-    let logits = model.lm_head.forward_buffer(&logits)?;
+    let logits = model.lm_head.forward_buffer_into_scratch(&logits, logits_scratch)?;
     let mut profile = RuntimeProfile::default();
     profile.output_projection_millis += super::frontend::profile_elapsed(output_start, device)?;
     Ok((logits, profile))

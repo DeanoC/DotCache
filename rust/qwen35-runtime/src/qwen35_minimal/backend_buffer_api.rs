@@ -102,6 +102,12 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         embedding: &ImmutableEmbedding,
         hidden_states: &StateBuffer,
     ) -> Result<StateBuffer>;
+    fn output_projection_into_scratch(
+        &self,
+        embedding: &ImmutableEmbedding,
+        hidden_states: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
     fn linear_forward(
         &self,
         x: &StateBuffer,
@@ -702,6 +708,15 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         hidden_states: &StateBuffer,
     ) -> Result<StateBuffer> {
         backend_ops::output_projection_buffer(embedding, hidden_states)
+    }
+    fn output_projection_into_scratch(
+        &self,
+        embedding: &ImmutableEmbedding,
+        hidden_states: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.output_projection(embedding, hidden_states)?;
+        self.copy_state_into_scratch(&output, scratch)
     }
     fn linear_forward(
         &self,
@@ -1509,6 +1524,14 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         hidden_states: &StateBuffer,
     ) -> Result<StateBuffer> {
         backends::hip::output_projection(embedding, hidden_states)
+    }
+    fn output_projection_into_scratch(
+        &self,
+        embedding: &ImmutableEmbedding,
+        hidden_states: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        backends::hip::output_projection_into_scratch(embedding, hidden_states, scratch)
     }
     fn linear_forward(
         &self,

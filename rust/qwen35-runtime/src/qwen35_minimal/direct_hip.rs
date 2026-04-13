@@ -188,14 +188,15 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
             workspace.advance();
         }
         let active_hidden = workspace.active();
-        let (logits, finalize_profile) =
-            self.model.finalize_direct_decode_logits_hip_v1(active_hidden)?;
+        let (logits, finalize_profile) = self
+            .model
+            .finalize_direct_decode_logits_hip_v1(active_hidden, &runtime.decode_logits)?;
         profile.add_assign(&finalize_profile);
         *cache = self.model.cache_state();
         runtime.next_hidden_slot_is_ping = workspace.active_slot_is_ping();
-        runtime.decode_logits = logits.clone();
+        runtime.decode_logits = logits;
         runtime.last_decode_sequence_length = seqlen_offset + 1;
-        Ok((logits, profile))
+        Ok((runtime.decode_logits.clone(), profile))
     }
 
     fn validate_decode_phases(&self) -> Result<()> {

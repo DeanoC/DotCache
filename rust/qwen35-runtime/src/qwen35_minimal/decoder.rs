@@ -939,8 +939,13 @@ impl ModelForCausalLM {
     pub(crate) fn finalize_direct_decode_logits_hip_v1(
         &mut self,
         hidden_states: &StateBuffer,
+        logits_scratch: &StateBuffer,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
-        direct_decoder::model_finalize_direct_decode_logits_hip_v1(self, hidden_states)
+        direct_decoder::model_finalize_direct_decode_logits_hip_v1(
+            self,
+            hidden_states,
+            logits_scratch,
+        )
     }
 
     pub fn forward_profiled_with_linear_traces(

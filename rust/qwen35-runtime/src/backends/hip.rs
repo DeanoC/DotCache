@@ -159,6 +159,15 @@ pub(crate) fn output_projection(
     transport::output_projection_buffer(embedding, hidden_states)
 }
 
+pub(crate) fn output_projection_into_scratch(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &StateBuffer,
+    scratch: &StateBuffer,
+) -> Result<StateBuffer> {
+    let output = output_projection(embedding, hidden_states)?;
+    copy_state_into_scratch(&output, scratch)
+}
+
 pub(crate) fn linear_forward(
     x: &StateBuffer,
     weight: &Tensor,
