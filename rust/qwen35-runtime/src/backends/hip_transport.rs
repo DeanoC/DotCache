@@ -3028,18 +3028,25 @@ impl HipDeviceBuffer {
             candle_core::bail!("dotcache-hip-cumsum-last-dim requires non-empty shape");
         };
         let outer = HipNativeBuffer::elem_count(&shape[..shape.len() - 1]);
-        let mut out = vec![0f32; tensor.elem_count()];
+        let mut out = vec![0u8; HipNativeBuffer::byte_len(&shape, self.dtype())];
         let flat = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
         for outer_idx in 0..outer.max(1) {
             let mut running = 0.0f32;
             for inner_idx in 0..inner {
                 let idx = outer_idx * inner + inner_idx;
                 running += flat[idx];
-                out[idx] = running;
+                HipNativeBuffer::write_host_float(&mut out, self.dtype(), idx, running as f64)?;
             }
         }
-        let out = Tensor::from_vec(out, shape.as_slice(), tensor.device())?.to_dtype(self.dtype())?;
-        Ok(Self::from_tensor(out))
+        Ok(Self::from_host_computed_buffer_like(
+            self,
+            HipHostBuffer {
+                bytes: out.into(),
+                shape,
+                dtype: self.dtype(),
+                device: self.device().clone(),
+            },
+        ))
     }
 
     pub(crate) fn swiglu_mul(&self, up: &Self) -> Result<Self> {
@@ -5927,7 +5934,7 @@ fn rms_norm_hip(
     eps: f64,
     add_unit_offset: bool,
 ) -> Result<HipTensor> {
-    if let Some(xs) = xs.0 .0.direct_materialized_device_buffer() {
+    if let Some(xs) = xs.try_materialized_device_buffer()? {
         if let HipDeviceStorage::MappedHostBuffer(mapped) = &xs.storage {
             if let Some(out) = mapped_rms_norm_hip_host_buffer(mapped, weight, eps, add_unit_offset)? {
                 return Ok(out);
@@ -5949,7 +5956,7 @@ fn rms_norm_hip(
 }
 
 fn l2norm_hip(xs: &HipTensor, eps: f64) -> Result<HipTensor> {
-    if let Some(xs) = xs.0 .0.direct_materialized_device_buffer() {
+    if let Some(xs) = xs.try_materialized_device_buffer()? {
         if let HipDeviceStorage::MappedHostBuffer(mapped) = &xs.storage {
             if let Some(out) = mapped_l2norm_hip_host_buffer(mapped, eps)? {
                 return Ok(out);
