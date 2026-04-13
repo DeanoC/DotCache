@@ -5099,6 +5099,7 @@ pub(crate) fn linear_stateful_conv_host_buffer(
     Ok(None)
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct LinearStatefulConvValueDecay {
     batch_size: usize,
@@ -5109,6 +5110,7 @@ struct LinearStatefulConvValueDecay {
     num_heads: usize,
 }
 
+#[cfg(test)]
 impl candle::CustomOp6 for LinearStatefulConvValueDecay {
     fn name(&self) -> &'static str {
         "linear-stateful-conv-value-decay"
@@ -5423,6 +5425,7 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecayWithState {
     }
 }
 
+#[cfg(test)]
 fn linear_stateful_conv_value_decay_hip(
     mixed_qkv: &Tensor,
     prev_state: &Tensor,
@@ -5485,6 +5488,7 @@ fn linear_stateful_conv_value_decay_hip(
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+#[cfg(all(test, feature = "qwen35-minimal-hip"))]
 fn linear_stateful_conv_value_decay_host_buffer(
     mixed_qkv: &Tensor,
     prev_state: &Tensor,
@@ -5618,6 +5622,7 @@ fn linear_stateful_conv_value_decay_host_buffer(
 }
 
 #[cfg(not(feature = "qwen35-minimal-hip"))]
+#[cfg(all(test, not(feature = "qwen35-minimal-hip")))]
 fn linear_stateful_conv_value_decay_host_buffer(
     mixed_qkv: &Tensor,
     prev_state: &Tensor,
@@ -6757,6 +6762,7 @@ pub(crate) fn full_attention_decode_megakernel(
     full_attention_prefill_megakernel(query, key, value, num_kv_groups, scale, seqlen_offset)
 }
 
+#[cfg(test)]
 fn paged_attention_decode_fallback(
     queries: &Tensor,
     key: &Tensor,
@@ -6787,6 +6793,7 @@ fn paged_attention_decode_fallback(
         .reshape((batch_queries, head_dim))?)
 }
 
+#[cfg(test)]
 pub fn paged_attention_decode_megakernel(
     queries: &Tensor,
     key: &Tensor,
