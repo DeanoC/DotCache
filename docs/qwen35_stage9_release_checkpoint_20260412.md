@@ -112,3 +112,20 @@ Residual tie-boundary classification:
   - real mixed nudges token `16` slightly higher before argmax
   - the first drift appears upstream at full-attention layer `3`
 - this is now interpreted as tiny upstream mixed-path numeric drift before argmax, not a Stage 9 mixed-only correctness blocker
+
+Current fixed-tree CUDA baseline:
+
+- native CUDA `final_mix` is now default-on for supported mixed-mode calls
+- fused query-first combined-cache `direct_m0_score` is now default-on when the combined cache is available
+- Triton scorer / fused paths remain opt-in only
+
+Measured kept gains on the fixed-tree CUDA performance probes:
+
+- `performance_journal`
+  - native `final_mix`: `405.18 -> 397.16 ms/step`
+  - fused query-first scorer: `397.16 -> 395.51 ms/step`
+- round-2 repo-local public-validation subset
+  - native `final_mix`: `311.07 -> 308.78 ms/step`
+  - fused query-first scorer: `308.78 -> 306.57 ms/step`
+
+So the current CUDA checkpoint is no longer just "correct and viable." It now has a modest but real fixed-tree default baseline improvement with correctness unchanged.

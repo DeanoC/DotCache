@@ -110,7 +110,14 @@ Important CUDA observation:
 - the remaining CUDA work is about increasing headroom, not proving mixed viability
 - the remaining `performance_journal` tail diff is now localized to tiny upstream mixed-path numeric drift before argmax
 - forced CUDA capture shows direct-`M0` / `final_mix` matches float32 recompute very closely, so `final_mix` is not the correctness bug
-- that leaves CUDA focused on performance headroom, especially `final_mix` and `direct_m0_score`, rather than correctness closure
+- the current fixed-tree CUDA default baseline now includes:
+  - native CUDA `final_mix` default-on
+  - fused query-first combined-cache `direct_m0_score` default-on
+  - Triton scorer / fused paths still experimental only
+- the kept gains are modest but clean:
+  - native `final_mix` improved end-to-end latency by about `1.98%` on `performance_journal` and `0.73%` on the round-2 repo-local public-validation subset
+  - fused query-first `direct_m0_score` then improved end-to-end latency by another `0.42%` on `performance_journal` and `0.72%` on the same round-2 subset
+- that leaves CUDA focused on the remaining `final_mix` headroom, with `direct_m0_score` now materially cheaper than before
 
 ## CUDA baselines on the same portable corpus
 
@@ -203,6 +210,7 @@ If we had to choose today:
 - CUDA:
   - prefer real mixed Stage 9 `bias`
   - keep the CUDA mixed path focused on reducing `final_mix`
+  - treat the native-`final_mix` plus fused query-first scorer path as the current default baseline
 
 ## Immediate next work
 

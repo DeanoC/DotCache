@@ -402,6 +402,14 @@ The current state is good enough to say:
 
 The remaining work is mainly about portability and performance headroom, not about proving correctness or basic viability anymore.
 
+On CUDA specifically, that performance story is now beginning to harden into a real default baseline rather than one-off experiments:
+
+- native CUDA `final_mix` is now the default supported mixed-mode path
+- fused query-first combined-cache `direct_m0_score` is now the default fast-score path when the combined cache is available
+- together those kept changes improved the checked fixed-tree CUDA probes without changing exact-match vs hand
+
+That means the next CUDA work is not about deciding whether mixed should be enabled. It is about widening the remaining headroom from the new baseline, with `final_mix` still the largest bucket.
+
 ## CUDA read so far
 
 Updated CUDA reproduction on the portable repo-local corpora now confirms more of the systems story too.
