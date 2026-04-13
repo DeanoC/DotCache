@@ -29,6 +29,7 @@ fn execute_linear_decode_layer(
     layer: &mut DecoderLayer,
     xs: &StateBuffer,
     phase_context: &DirectDecodePhaseContext,
+    phase_output_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
     let mut profile = RuntimeProfile::default();
@@ -59,7 +60,11 @@ fn execute_linear_decode_layer(
     let mlp_start = profile_start(device)?;
     let xs = layer.mlp.forward_buffer(&xs)?;
     profile.mlp_millis += profile_elapsed(mlp_start, device)?;
-    Ok((phase_context.backend.add(&residual, &xs)?, profile))
+    let xs = phase_context.backend.add(&residual, &xs)?;
+    let xs = phase_context
+        .backend
+        .copy_state_into_scratch(&xs, phase_output_scratch)?;
+    Ok((xs, profile))
 }
 
 fn execute_full_decode_layer(
@@ -131,6 +136,7 @@ fn execute_direct_decode_linear_phase_unchecked(
     start_layer_idx: usize,
     end_layer_idx: usize,
     xs: &StateBuffer,
+    phase_output_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let mut profile = RuntimeProfile::default();
     let mut xs = xs.clone();
@@ -151,7 +157,8 @@ fn execute_direct_decode_linear_phase_unchecked(
                 layer.layer_type(),
             );
         }
-        let (next_xs, layer_profile) = execute_linear_decode_layer(layer, &xs, &phase_context)?;
+        let (next_xs, layer_profile) =
+            execute_linear_decode_layer(layer, &xs, &phase_context, phase_output_scratch)?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
     }
@@ -279,8 +286,15 @@ pub(super) fn text_model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
     start_layer_idx: usize,
     end_layer_idx: usize,
     xs: &StateBuffer,
+    phase_output_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
-    execute_direct_decode_linear_phase_unchecked(model, start_layer_idx, end_layer_idx, xs)
+    execute_direct_decode_linear_phase_unchecked(
+        model,
+        start_layer_idx,
+        end_layer_idx,
+        xs,
+        phase_output_scratch,
+    )
 }
 
 pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
@@ -349,12 +363,14 @@ pub(super) fn model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
     start_layer_idx: usize,
     end_layer_idx: usize,
     xs: &StateBuffer,
+    phase_output_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     text_model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
         &mut model.language_model,
         start_layer_idx,
         end_layer_idx,
         xs,
+        phase_output_scratch,
     )
 }
 
