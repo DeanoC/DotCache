@@ -2856,12 +2856,11 @@ impl HipDeviceBuffer {
         } else {
             weight.to_dtype(normed.dtype())?
         };
-        let weight = if add_unit_offset {
-            (&weight + 1.0)?
-        } else {
-            weight
-        };
-        Ok(Self::from_tensor(HipTensor::from_device_buffer(normed).0.materialize()?.broadcast_mul(&weight)?))
+        let mut weight_buffer = Self::from_tensor(weight);
+        if add_unit_offset {
+            weight_buffer = weight_buffer.add_scalar(1.0)?;
+        }
+        normed.broadcast_mul(&weight_buffer)
     }
 
     pub(crate) fn rms_norm_gated(
