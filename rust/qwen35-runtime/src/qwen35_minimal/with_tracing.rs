@@ -1,7 +1,7 @@
 use candle_core::{Module, Result, Tensor};
 use super::backend_buffer_api;
 use super::backend_ops;
-use super::model::StateBuffer;
+use super::types::StateBuffer;
 #[cfg(any(feature = "hf", test))]
 use super::builder::WeightBuilder;
 #[cfg(any(feature = "hf", test))]

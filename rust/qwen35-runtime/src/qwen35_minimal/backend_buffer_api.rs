@@ -1,7 +1,8 @@
 use candle_core::{D, DType, Device, Result, Tensor};
 
 use super::{backend_ops, ops};
-use super::model::{ImmutableEmbedding, StateBuffer};
+use super::model::ImmutableEmbedding;
+use super::types::StateBuffer;
 use crate::backends;
 
 fn repeat_heads_impl(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
