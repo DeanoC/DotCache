@@ -3292,6 +3292,138 @@ impl HipNativeBuffer {
             .filter(|buffer| !buffer.has_pending_views() && buffer.is_materialized())
     }
 
+    fn try_materialize_device_buffer(&self) -> Result<Option<HipDeviceBuffer>> {
+        match &self.expr {
+            HipNativeExpr::DeviceBuffer(buffer) => Ok(Some(buffer.clone())),
+            HipNativeExpr::HostBytes { .. } => Ok(None),
+            HipNativeExpr::PadWithZeros {
+                source,
+                dim,
+                left,
+                right,
+            } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.pad_with_zeros(*dim, *left, *right))
+                .transpose(),
+            HipNativeExpr::Narrow {
+                source,
+                dim,
+                start,
+                len,
+            } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.narrow(*dim, *start, *len))
+                .transpose(),
+            HipNativeExpr::Select { source, dim, index } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.select(*dim, *index))
+                .transpose(),
+            HipNativeExpr::Concat { sources, dim } => {
+                let mut materialized = Vec::with_capacity(sources.len());
+                for source in sources {
+                    let Some(buffer) = source.try_materialize_device_buffer()? else {
+                        return Ok(None);
+                    };
+                    materialized.push(buffer);
+                }
+                let refs = materialized.iter().collect::<Vec<_>>();
+                Ok(Some(HipDeviceBuffer::cat(refs.as_slice(), *dim)?))
+            }
+            HipNativeExpr::Reshape { source, shape } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.reshape(shape.clone()))
+                .transpose(),
+            HipNativeExpr::Expand { source, shape } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.expand(shape.clone()))
+                .transpose(),
+            HipNativeExpr::Transpose { source, dim1, dim2 } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.transpose(*dim1, *dim2))
+                .transpose(),
+            HipNativeExpr::Cast { source, dtype } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.to_dtype(*dtype))
+                .transpose(),
+            HipNativeExpr::Exp { source } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.exp())
+                .transpose(),
+            HipNativeExpr::Log { source } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.log())
+                .transpose(),
+            HipNativeExpr::BroadcastAdd { lhs, rhs } => {
+                let (Some(lhs), Some(rhs)) = (
+                    lhs.try_materialize_device_buffer()?,
+                    rhs.try_materialize_device_buffer()?,
+                ) else {
+                    return Ok(None);
+                };
+                Ok(Some(lhs.broadcast_add(&rhs)?))
+            }
+            HipNativeExpr::BroadcastMul { lhs, rhs } => {
+                let (Some(lhs), Some(rhs)) = (
+                    lhs.try_materialize_device_buffer()?,
+                    rhs.try_materialize_device_buffer()?,
+                ) else {
+                    return Ok(None);
+                };
+                Ok(Some(lhs.broadcast_mul(&rhs)?))
+            }
+            HipNativeExpr::BroadcastSub { lhs, rhs } => {
+                let (Some(lhs), Some(rhs)) = (
+                    lhs.try_materialize_device_buffer()?,
+                    rhs.try_materialize_device_buffer()?,
+                ) else {
+                    return Ok(None);
+                };
+                Ok(Some(lhs.broadcast_sub(&rhs)?))
+            }
+            HipNativeExpr::BroadcastDiv { lhs, rhs } => {
+                let (Some(lhs), Some(rhs)) = (
+                    lhs.try_materialize_device_buffer()?,
+                    rhs.try_materialize_device_buffer()?,
+                ) else {
+                    return Ok(None);
+                };
+                Ok(Some(lhs.broadcast_div(&rhs)?))
+            }
+            HipNativeExpr::MaxKeepdim { source, dim } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.max_keepdim(*dim))
+                .transpose(),
+            HipNativeExpr::SumKeepdim { source, dim } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.sum_keepdim(*dim))
+                .transpose(),
+            HipNativeExpr::Neg { source } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.mul_scalar(-1.0))
+                .transpose(),
+            HipNativeExpr::AddScalar { source, value } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.add_scalar(*value))
+                .transpose(),
+            HipNativeExpr::MulScalar { source, value } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.mul_scalar(*value))
+                .transpose(),
+            HipNativeExpr::Recip { source } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.recip())
+                .transpose(),
+            HipNativeExpr::Sqrt { source } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.sqrt())
+                .transpose(),
+            HipNativeExpr::L2Norm { source, eps } => source
+                .try_materialize_device_buffer()?
+                .map(|buffer| buffer.l2norm(*eps))
+                .transpose(),
+        }
+    }
+
     fn is_host_graph(&self) -> bool {
         match &self.expr {
             HipNativeExpr::DeviceBuffer(_) => false,
@@ -4235,6 +4367,9 @@ impl HipNativeBuffer {
     pub(crate) fn materialize(&self) -> Result<Tensor> {
         if let Some(buffer) = self.materialize_host_buffer()? {
             return Ok(buffer.upload_to_device_buffer()?.into_tensor());
+        }
+        if let Some(buffer) = self.try_materialize_device_buffer()? {
+            return buffer.materialize_tensor();
         }
         match &self.expr {
             HipNativeExpr::DeviceBuffer(buffer) => buffer.materialize_tensor(),
