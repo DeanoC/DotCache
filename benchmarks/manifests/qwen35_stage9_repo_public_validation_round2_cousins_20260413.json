@@ -1,0 +1,24 @@
+{
+  "records": [
+    {
+      "case_tag": "statecache_showcase",
+      "prompt_file_path": "../../docs/qwen35_statecache_showcase.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "gemma4_apple_compatibility",
+      "prompt_file_path": "../../docs/gemma4_apple_compatibility.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "model_roadmap",
+      "prompt_file_path": "../../docs/model_roadmap.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "submission_execution_plan",
+      "prompt_file_path": "../../docs/dotcache_submission_execution_plan.md",
+      "prompt_length": 1536
+    }
+  ]
+}
