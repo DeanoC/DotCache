@@ -6057,6 +6057,23 @@ pub(crate) fn linear_decode_step_hip(
     if seq_len != 1 {
         candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
     }
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = linear_decode_step_host_buffer(
+        &mixed_qkv,
+        &prev_conv_state,
+        &weights,
+        &a_beta_raw,
+        &dt_bias,
+        &a_log_exp,
+        &initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    )? {
+        return hip_tensor_from_host_bytes(mixed_qkv.device(), DType::F32, shape, output);
+    }
     let packed = mixed_qkv.apply_op6_no_bwd(
         &prev_conv_state,
         &weights,
@@ -10468,6 +10485,12 @@ pub(crate) fn delta_chunk_scan_raw(
     beta: &Tensor,
     g: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) =
+        delta_chunk_scan_raw_host_buffer(initial_state, query, key, value, beta, g)?
+    {
+        return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
+    }
     initial_state.apply_op6_no_bwd(query, key, value, beta, g, &DeltaChunkScanRaw)
 }
 
@@ -11091,6 +11114,18 @@ pub(crate) fn delta_full_scan(
     state_decay_scan: &Tensor,
     value: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = delta_full_scan_host_buffer(
+        initial_state,
+        weighted_key_scan,
+        k_cumdecay_scan,
+        q_state_scan,
+        local_attn_scan,
+        state_decay_scan,
+        value,
+    )? {
+        return hip_tensor_from_host_bytes(initial_state.device(), initial_state.dtype(), shape, output);
+    }
     initial_state.apply_op7_no_bwd(
         weighted_key_scan,
         k_cumdecay_scan,
@@ -11388,6 +11423,10 @@ pub(crate) fn delta_local_attn_scan(
     key_scan: &Tensor,
     exp_g_scan: &Tensor,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = delta_local_attn_scan_host_buffer(query_scan, key_scan, exp_g_scan)? {
+        return hip_tensor_from_host_bytes(query_scan.device(), query_scan.dtype(), shape, output);
+    }
     query_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaLocalAttnScan)
 }
 
