@@ -50,6 +50,7 @@ def main() -> None:
     first_layer_linear_pre_norm_output = None
     first_layer_linear_pre_norm_mean_square = None
     first_layer_linear_pre_norm_rsqrt = None
+    first_layer_linear_pre_norm_focus_head_output = None
     first_layer_linear_norm_gate_input = None
     first_layer_linear_norm_weight = None
     first_layer_linear_norm_weighted_hidden = None
@@ -119,10 +120,12 @@ def main() -> None:
         hidden_heads = hidden.reshape(input_ids.shape[0], input_ids.shape[1], num_heads, head_dim)
         nonlocal first_layer_linear_pre_norm_mean_square
         nonlocal first_layer_linear_pre_norm_rsqrt
+        nonlocal first_layer_linear_pre_norm_focus_head_output
         mean_square = hidden_heads.pow(2).mean(dim=-1, keepdim=True)
         rsqrt = torch.rsqrt(mean_square + _module.variance_epsilon)
         first_layer_linear_pre_norm_mean_square = mean_square.squeeze(-1).cpu()
         first_layer_linear_pre_norm_rsqrt = rsqrt.squeeze(-1).cpu()
+        first_layer_linear_pre_norm_focus_head_output = hidden_heads[0, 2, 6].cpu()
         nonlocal first_layer_linear_norm_gate_input
         gate_tensor = capture_tensor(inputs[1])
         first_layer_linear_norm_gate_input = gate_tensor.reshape(
@@ -217,6 +220,7 @@ def main() -> None:
         or first_layer_linear_pre_norm_output is None
         or first_layer_linear_pre_norm_mean_square is None
         or first_layer_linear_pre_norm_rsqrt is None
+        or first_layer_linear_pre_norm_focus_head_output is None
         or first_layer_linear_norm_gate_input is None
         or first_layer_linear_norm_weight is None
         or first_layer_linear_norm_weighted_hidden is None
@@ -267,6 +271,7 @@ def main() -> None:
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_pre_norm_mean_square": first_layer_linear_pre_norm_mean_square.tolist(),
         "first_layer_linear_pre_norm_rsqrt": first_layer_linear_pre_norm_rsqrt.tolist(),
+        "first_layer_linear_pre_norm_focus_head_output": first_layer_linear_pre_norm_focus_head_output.tolist(),
         "first_layer_linear_norm_gate_input": first_layer_linear_norm_gate_input.tolist(),
         "first_layer_linear_norm_weight": first_layer_linear_norm_weight.tolist(),
         "first_layer_linear_norm_weighted_hidden": first_layer_linear_norm_weighted_hidden.tolist(),

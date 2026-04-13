@@ -235,6 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax: Option<[usize; 3]>,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime: Option<f32>,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_gate_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_weight_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta: Option<f32>,
@@ -270,6 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_layer_linear_pre_norm_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_pre_norm_mean_square: Vec<Vec<Vec<f32>>>,
         first_layer_linear_pre_norm_rsqrt: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_pre_norm_focus_head_output: Vec<f32>,
         first_layer_linear_norm_gate_input: Vec<Vec<Vec<f32>>>,
         first_layer_linear_norm_weight: Vec<f32>,
         first_layer_linear_norm_weighted_hidden: Vec<Vec<Vec<f32>>>,
@@ -790,6 +792,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
         pytorch_first_layer_linear_norm_gate_max_delta,
         pytorch_first_layer_linear_norm_weight_max_delta,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
@@ -860,6 +863,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )?;
             (Some(delta), Some(argmax), Some(runtime), Some(oracle))
         };
+        let pytorch_first_layer_linear_pre_norm_focus_head_max_delta = Some(max_tensor_delta_vec1(
+            &linear_core_trace
+                .pre_gated_norm_output
+                .tensor()
+                .reshape((1, 4, 16, 128))?
+                .i((0, 2, 6))?,
+            &pytorch_oracle.first_layer_linear_pre_norm_focus_head_output,
+        )?);
         let pytorch_first_layer_linear_norm_gate_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.gated_norm_gate_input.tensor(),
             &pytorch_oracle.first_layer_linear_norm_gate_input,
@@ -917,6 +928,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
             pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
             pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
             pytorch_first_layer_linear_norm_gate_max_delta,
             pytorch_first_layer_linear_norm_weight_max_delta,
             pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
@@ -929,7 +941,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1267,6 +1279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
         pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
         pytorch_first_layer_linear_norm_gate_max_delta,
         pytorch_first_layer_linear_norm_weight_max_delta,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
