@@ -653,6 +653,37 @@ impl GatedDeltaNet {
             .silu()
     }
 
+    fn depthwise_conv_reference_fp32(&self, mixed_qkv: &Tensor) -> Result<Tensor> {
+        let cpu = Device::Cpu;
+        let mixed_qkv = mixed_qkv.to_device(&cpu)?.to_dtype(DType::F32)?.contiguous()?;
+        let weights = self
+            .conv1d_weight_squeezed()?
+            .to_device(&cpu)?
+            .to_dtype(DType::F32)?
+            .contiguous()?;
+        let (batch_size, conv_dim, seq_len) = mixed_qkv.dims3()?;
+        let kernel = self.conv_kernel_size;
+        let xs = mixed_qkv.to_vec3::<f32>()?;
+        let ws = weights.to_vec2::<f32>()?;
+        let mut out = vec![0.0f32; batch_size * seq_len * conv_dim];
+        for b in 0..batch_size {
+            for t in 0..seq_len {
+                for c in 0..conv_dim {
+                    let mut acc = 0.0f32;
+                    for tap in 0..kernel {
+                        let src_t = t as isize + tap as isize - (kernel as isize - 1);
+                        if src_t >= 0 && (src_t as usize) < seq_len {
+                            acc += xs[b][c][src_t as usize] * ws[c][tap];
+                        }
+                    }
+                    let silu = acc / (1.0 + (-acc).exp());
+                    out[(b * seq_len + t) * conv_dim + c] = silu;
+                }
+            }
+        }
+        Tensor::from_vec(out, (batch_size, seq_len, conv_dim), &cpu)
+    }
+
     fn run_depthwise_conv(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
         if mixed_qkv.device().is_hip() {
             return self
@@ -2267,6 +2298,8 @@ impl GatedDeltaNet {
             explicit_post_conv_value_focus_head,
             explicit_post_conv_reversed_taps_mixed_qkv,
             explicit_post_conv_reversed_taps_value_focus_head,
+            fp32_reference_post_conv_mixed_qkv,
+            fp32_reference_post_conv_value_focus_head,
         ) =
             if device.is_hip() && seq_len > 1 {
                 let saved_conv_state = self.conv_state.clone();
@@ -2277,6 +2310,7 @@ impl GatedDeltaNet {
                     .depthwise_conv_from_state_reversed_taps(&input_mixed_qkv)?
                     .transpose(1, 2)?;
                 self.conv_state = saved_conv_state;
+                let fp32_reference = self.depthwise_conv_reference_fp32(&input_mixed_qkv)?;
                 let explicit_post_conv_mixed_qkv = backend.tensor_to_buffer(explicit.clone())?;
                 let explicit_post_conv_value_focus_head = backend.tensor_to_buffer(
                     explicit
@@ -2292,14 +2326,26 @@ impl GatedDeltaNet {
                         .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
                         .i((0, 2, 6))?,
                 )?;
+                let fp32_reference_post_conv_mixed_qkv =
+                    StateBuffer::from_tensor(fp32_reference.clone())?;
+                let fp32_reference_post_conv_value_focus_head = StateBuffer::from_tensor(
+                    fp32_reference
+                        .narrow(D::Minus1, self.key_dim * 2, self.value_dim)?
+                        .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
+                        .i((0, 2, 6))?,
+                )?;
                 (
                     explicit_post_conv_mixed_qkv,
                     explicit_post_conv_value_focus_head,
                     explicit_post_conv_reversed_taps_mixed_qkv,
                     explicit_post_conv_reversed_taps_value_focus_head,
+                    fp32_reference_post_conv_mixed_qkv,
+                    fp32_reference_post_conv_value_focus_head,
                 )
             } else {
                 (
+                    post_conv_mixed_qkv.clone(),
+                    post_conv_value_focus_head.clone(),
                     post_conv_mixed_qkv.clone(),
                     post_conv_value_focus_head.clone(),
                     post_conv_mixed_qkv.clone(),
@@ -2432,9 +2478,11 @@ impl GatedDeltaNet {
                 post_conv_mixed_qkv,
                 explicit_post_conv_mixed_qkv,
                 explicit_post_conv_reversed_taps_mixed_qkv,
+                fp32_reference_post_conv_mixed_qkv,
                 post_conv_value_focus_head,
                 explicit_post_conv_value_focus_head,
                 explicit_post_conv_reversed_taps_value_focus_head,
+                fp32_reference_post_conv_value_focus_head,
                 prepared_value_focus_head,
                 pre_gated_norm_output,
                 pre_gated_norm_mean_square,
