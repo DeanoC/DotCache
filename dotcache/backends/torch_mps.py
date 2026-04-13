@@ -2256,6 +2256,52 @@ def _score_m0_logits_fused_torch(fused_scaled_codes, fused_queries, bias_groups,
         return output.squeeze(0) if squeeze_batch else output
 
 
+def _score_m0_logits_fused_with_bias_torch(fused_with_bias_codes, fused_queries, query_group_sums):
+    torch = _load_torch()
+    matmul_dtype = fused_with_bias_codes.dtype if torch.is_floating_point(fused_with_bias_codes) else torch.float32
+    if fused_with_bias_codes.ndim == 3:
+        if fused_queries.ndim != 2:
+            raise ValueError("single-batch fused-with-bias scoring expects fused_queries with shape [query_count, padded_head_dim]")
+        combined_queries = torch.cat(
+            [
+                fused_queries.to(dtype=matmul_dtype),
+                query_group_sums.to(dtype=matmul_dtype),
+            ],
+            dim=-1,
+        )
+        codes_flat = fused_with_bias_codes.reshape(-1, int(fused_with_bias_codes.shape[-1])).to(dtype=matmul_dtype)
+        return torch.matmul(
+            combined_queries,
+            codes_flat.transpose(0, 1),
+        ).to(torch.float32)
+    if fused_with_bias_codes.ndim == 4:
+        batch_size = int(fused_with_bias_codes.shape[0])
+        squeeze_batch = False
+        fused_queries_mm = fused_queries
+        query_group_sums_mm = query_group_sums
+        if fused_queries_mm.ndim == 2:
+            fused_queries_mm = fused_queries_mm.unsqueeze(0)
+            query_group_sums_mm = query_group_sums_mm.unsqueeze(0)
+            squeeze_batch = True
+        combined_queries = torch.cat(
+            [
+                fused_queries_mm.to(dtype=matmul_dtype),
+                query_group_sums_mm.to(dtype=matmul_dtype),
+            ],
+            dim=-1,
+        )
+        codes_flat = fused_with_bias_codes.reshape(batch_size, -1, int(fused_with_bias_codes.shape[-1])).to(dtype=matmul_dtype)
+        output = torch.bmm(
+            combined_queries,
+            codes_flat.transpose(1, 2),
+        ).to(torch.float32)
+        return output.squeeze(0) if squeeze_batch else output
+    raise ValueError(
+        "fused_with_bias_codes must have shape [page_count, token_count, padded_head_dim + num_groups] "
+        "or [batch_size, page_count, token_count, padded_head_dim + num_groups]"
+    )
+
+
 def _score_m0_logits_fused_transposed_torch(fused_scaled_codes_transposed, fused_queries, bias_groups, query_group_sums):
     torch = _load_torch()
     num_groups = int(query_group_sums.shape[-1])

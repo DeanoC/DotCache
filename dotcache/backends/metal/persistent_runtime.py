@@ -54,9 +54,15 @@ def _load_torch_mixed_execution_ops():
         _mix_m0_contribution_fused_torch,
         _score_exact_logits_flat_torch,
         _score_m0_logits_fused_torch,
+        _score_m0_logits_fused_with_bias_torch,
     )
 
-    return _mix_m0_contribution_fused_torch, _score_m0_logits_fused_torch, _score_exact_logits_flat_torch
+    return (
+        _mix_m0_contribution_fused_torch,
+        _score_m0_logits_fused_torch,
+        _score_m0_logits_fused_with_bias_torch,
+        _score_exact_logits_flat_torch,
+    )
 
 
 def _load_torch_grouped_packed_ops():
@@ -3697,7 +3703,12 @@ def _decode_selected_blocks_direct_m0_torch(
     return_attn_weights: bool = True,
 ):
     torch = _load_torch()
-    _mix_m0_contribution_fused_torch, score_m0_logits_fused_torch, score_exact_logits_flat_torch = _load_torch_mixed_execution_ops()
+    (
+        _mix_m0_contribution_fused_torch,
+        score_m0_logits_fused_torch,
+        score_m0_logits_fused_with_bias_torch,
+        score_exact_logits_flat_torch,
+    ) = _load_torch_mixed_execution_ops()
     score_m0_logits_packed32_grouped_torch, unpack_metadata = _load_torch_grouped_packed_ops()
     (
         score_direct_m0_logits_triton,
@@ -4396,12 +4407,19 @@ def _decode_selected_blocks_direct_m0_torch(
                     timing["direct_m0_gather_ms"] += float(gather_elapsed_ms)
                     timing["direct_m0_assembly_ms"] += float(query_prep_elapsed_ms + gather_elapsed_ms)
                     direct_m0_score_start = time.perf_counter()
-                m0_logits = score_m0_logits_fused_torch(
-                    fused_concat,
-                    query_padded,
-                    bias_concat.transpose(0, 1).unsqueeze(0),
-                    query_group_sums,
-                )
+                if use_fast_score_cache and state.mixed_key_fused_with_bias_score_cache is not None:
+                    m0_logits = score_m0_logits_fused_with_bias_torch(
+                        combined_concat.unsqueeze(0),
+                        query_padded,
+                        query_group_sums,
+                    )
+                else:
+                    m0_logits = score_m0_logits_fused_torch(
+                        fused_concat,
+                        query_padded,
+                        bias_concat.transpose(0, 1).unsqueeze(0),
+                        query_group_sums,
+                    )
             else:
                 if detailed_mixed_timing:
                     gather_elapsed_ms = (time.perf_counter() - gather_start) * 1000.0
