@@ -334,13 +334,26 @@ pub struct LinearAttentionTrace {
 pub struct DecoderLayerTrace {
     pub layer_id: usize,
     pub sequence_length: usize,
+    pub input_layernorm_trace: Option<RmsNormTrace>,
     pub input_layernorm_output: StateBuffer,
     pub linear_projection_trace: Option<LinearAttentionProjectionTrace>,
     pub linear_core_trace: Option<LinearAttentionCoreTrace>,
+    pub full_attention_trace: Option<FullAttentionTrace>,
     pub token_mixer_output: StateBuffer,
+    pub post_attention_layernorm_trace: Option<RmsNormTrace>,
     pub post_attention_layernorm_output: StateBuffer,
     pub mlp_output: StateBuffer,
     pub layer_output: StateBuffer,
+}
+
+#[derive(Debug, Clone)]
+pub struct RmsNormTrace {
+    pub input_hidden: StateBuffer,
+    pub mean_square: StateBuffer,
+    pub rsqrt: StateBuffer,
+    pub weight: StateBuffer,
+    pub weighted_hidden: StateBuffer,
+    pub output: StateBuffer,
 }
 
 #[derive(Debug, Clone)]
@@ -398,6 +411,18 @@ pub struct LinearAttentionCoreTrace {
     pub gated_norm_weighted_hidden_fallback: StateBuffer,
     pub gated_norm_silu_gate: StateBuffer,
     pub post_gated_norm_output: StateBuffer,
+}
+
+#[derive(Debug, Clone)]
+pub struct FullAttentionTrace {
+    pub q_and_gate_output: StateBuffer,
+    pub k_proj_output: StateBuffer,
+    pub v_proj_output: StateBuffer,
+    pub prepared_query: StateBuffer,
+    pub gate: StateBuffer,
+    pub prepared_key: StateBuffer,
+    pub prepared_value: StateBuffer,
+    pub attention_output: StateBuffer,
 }
 
 pub struct ExternalFullAttentionOutput {

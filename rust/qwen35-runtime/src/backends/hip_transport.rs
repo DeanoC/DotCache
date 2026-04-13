@@ -12912,7 +12912,7 @@ fn prepare_full_attention_inputs_tensors_hip(
         let q_and_gate = q_and_gate.reshape(vec![b_sz, q_len, num_heads, head_dim * 2])?;
         let last_dim = q_and_gate.dims().len() - 1;
         let query_states = rms_norm_hip(
-            &HipTensor::from_device_buffer(q_and_gate.narrow(last_dim, 0, head_dim)?),
+            &HipTensor::from_device_buffer(q_and_gate.narrow(last_dim, 0, head_dim)?.contiguous()?),
             q_norm_weight,
             q_norm_eps,
             true,
@@ -12944,7 +12944,9 @@ fn prepare_full_attention_inputs_tensors_hip(
         head_dim * 2,
     ))?;
     let query_states = rms_norm_hip(
-        &q_and_gate.narrow(candle_core::D::Minus1, 0, head_dim)?,
+        &q_and_gate
+            .narrow(candle_core::D::Minus1, 0, head_dim)?
+            .contiguous()?,
         q_norm_weight,
         q_norm_eps,
         true,

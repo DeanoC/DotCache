@@ -1202,6 +1202,28 @@ impl Qwen35RmsNorm {
         backend_buffer_api::for_device(xs.device()).rms_norm(xs, &self.weight, self.eps, true)
     }
 
+    pub(super) fn trace_buffer(&self, xs: &StateBuffer) -> Result<super::types::RmsNormTrace> {
+        let output = self.forward_buffer(xs)?;
+        let xs_tensor = xs.tensor();
+        let hidden = xs_tensor.to_dtype(DType::F32)?.contiguous()?;
+        let mean_square = hidden.sqr()?.mean_keepdim(D::Minus1)?;
+        let rsqrt = mean_square.affine(1.0, self.eps)?.sqrt()?.recip()?;
+        let weight = self.weight.to_dtype(DType::F32)?.contiguous()?;
+        let effective_weight = (&weight + 1.0)?.contiguous()?;
+        let weighted_hidden = hidden
+            .broadcast_mul(&rsqrt)?
+            .broadcast_mul(&effective_weight.reshape((1, 1, effective_weight.dim(0)?))?)?;
+        Ok(super::types::RmsNormTrace {
+            input_hidden: backend_buffer_api::for_device(xs.device()).tensor_to_buffer(hidden)?,
+            mean_square: backend_buffer_api::for_device(xs.device()).tensor_to_buffer(mean_square)?,
+            rsqrt: backend_buffer_api::for_device(xs.device()).tensor_to_buffer(rsqrt)?,
+            weight: backend_buffer_api::for_device(xs.device()).tensor_to_buffer(weight)?,
+            weighted_hidden: backend_buffer_api::for_device(xs.device())
+                .tensor_to_buffer(weighted_hidden.clone())?,
+            output,
+        })
+    }
+
     pub(super) fn weight(&self) -> &Tensor {
         &self.weight
     }

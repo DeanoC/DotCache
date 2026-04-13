@@ -14,8 +14,8 @@ use super::linear_attention::GatedDeltaNet;
 use super::prepared::PreparedTensorSource;
 use super::types::{
     CacheState, Config, ExternalFullAttention, LayerCacheState, LinearAttentionBenchResult,
-    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionProjectionTrace,
-    LinearAttentionTrace, RuntimeProfile, StateBuffer, TextConfig,
+    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionTrace, RuntimeProfile,
+    StateBuffer, TextConfig,
 };
 #[cfg(any(feature = "hf", test))]
 use super::with_tracing::linear_no_bias;
@@ -633,8 +633,13 @@ impl TextModel {
         } else {
             None
         };
-        let input_layernorm_output = target.input_layernorm.forward_buffer(&xs)?;
-        let (linear_projection_trace, linear_core_trace, token_mixer_output, _) =
+        let input_layernorm_trace = Some(target.input_layernorm.trace_buffer(&xs)?);
+        let input_layernorm_output = input_layernorm_trace
+            .as_ref()
+            .expect("just created input rmsnorm trace")
+            .output
+            .clone();
+        let (linear_projection_trace, linear_core_trace, full_attention_trace, token_mixer_output, _) =
             match &mut target.token_mixer {
             LayerKind::Linear(linear_attn) => {
                 let projection_trace =
@@ -644,33 +649,37 @@ impl TextModel {
                 (
                     Some(projection_trace),
                     Some(core_trace),
+                    None,
                     token_mixer_output,
                     profile,
                 )
             }
-            LayerKind::Full(self_attn) => self_attn.forward_profiled_with_external_buffer(
-                &input_layernorm_output,
-                mask,
-                seqlen_offset,
-                target_layer,
-                &mut None,
-            )
-            .map(|(output, profile)| (None, None, output, profile))?,
+            LayerKind::Full(self_attn) => self_attn
+                .trace_components_buffer(&input_layernorm_output, mask, seqlen_offset)
+                .map(|(trace, output, profile)| (None, None, Some(trace), output, profile))?,
         };
         let backend = backend_buffer_api::for_device(xs.device());
         let attention_residual = backend.add(&xs, &token_mixer_output)?;
-        let post_attention_layernorm_output =
-            target.post_attention_layernorm.forward_buffer(&attention_residual)?;
+        let post_attention_layernorm_trace =
+            Some(target.post_attention_layernorm.trace_buffer(&attention_residual)?);
+        let post_attention_layernorm_output = post_attention_layernorm_trace
+            .as_ref()
+            .expect("just created post-attention rmsnorm trace")
+            .output
+            .clone();
         let mlp_output = target.mlp.forward_buffer(&post_attention_layernorm_output)?;
         let layer_output = backend.add(&attention_residual, &mlp_output)?;
         self.clear_kv_cache();
         Ok(DecoderLayerTrace {
             layer_id: target_layer,
             sequence_length: seq_len,
+            input_layernorm_trace,
             input_layernorm_output,
             linear_projection_trace,
             linear_core_trace,
+            full_attention_trace,
             token_mixer_output,
+            post_attention_layernorm_trace,
             post_attention_layernorm_output,
             mlp_output,
             layer_output,

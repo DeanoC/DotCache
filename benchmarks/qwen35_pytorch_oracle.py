@@ -80,6 +80,19 @@ def main() -> None:
     first_layer_mlp_output = None
     decoder_layer_outputs = []
     layer3_input_layernorm_output = None
+    layer3_input_layernorm_input = None
+    layer3_input_layernorm_mean_square = None
+    layer3_input_layernorm_rsqrt = None
+    layer3_input_layernorm_weight = None
+    layer3_input_layernorm_weighted_hidden = None
+    layer3_q_and_gate_output = None
+    layer3_k_proj_output = None
+    layer3_v_proj_output = None
+    layer3_prepared_query_output = None
+    layer3_gate_output = None
+    layer3_prepared_key_output = None
+    layer3_prepared_value_output = None
+    layer3_attention_output = None
     layer3_token_mixer_output = None
     layer3_post_attention_layernorm_output = None
     layer3_mlp_output = None
@@ -322,9 +335,63 @@ def main() -> None:
         nonlocal layer3_input_layernorm_output
         layer3_input_layernorm_output = capture_tensor(output)
 
+    def layer3_input_layernorm_pre_hook(_module, inputs):
+        nonlocal layer3_input_layernorm_input
+        nonlocal layer3_input_layernorm_mean_square
+        nonlocal layer3_input_layernorm_rsqrt
+        nonlocal layer3_input_layernorm_weight
+        nonlocal layer3_input_layernorm_weighted_hidden
+        eps = getattr(_module, "variance_epsilon", getattr(_module, "eps"))
+        hidden = capture_tensor(inputs[0])
+        layer3_input_layernorm_input = hidden
+        hidden_f32 = inputs[0].detach().to(dtype=torch.float32)
+        mean_square = hidden_f32.pow(2).mean(dim=-1, keepdim=True)
+        rsqrt = torch.rsqrt(mean_square + eps)
+        weighted_hidden = hidden_f32 * rsqrt
+        weighted_hidden = weighted_hidden * (
+            _module.weight.detach().to(dtype=torch.float32) + 1.0
+        )
+        layer3_input_layernorm_mean_square = mean_square.cpu()
+        layer3_input_layernorm_rsqrt = rsqrt.cpu()
+        layer3_input_layernorm_weight = _module.weight.detach().to(dtype=torch.float32).cpu()
+        layer3_input_layernorm_weighted_hidden = weighted_hidden.cpu()
+
     def layer3_token_mixer_hook(_module, _inputs, output):
         nonlocal layer3_token_mixer_output
         layer3_token_mixer_output = capture_tensor(output)
+
+    def layer3_q_proj_hook(_module, _inputs, output):
+        nonlocal layer3_q_and_gate_output
+        nonlocal layer3_gate_output
+        tensor = capture_tensor(output)
+        layer3_q_and_gate_output = tensor
+        layer3_attn = model.model.layers[3].self_attn
+        head_dim = int(layer3_attn.head_dim)
+        num_heads = tensor.shape[-1] // (head_dim * 2)
+        q_and_gate = tensor.reshape(input_ids.shape[0], input_ids.shape[1], num_heads, head_dim * 2)
+        layer3_gate_output = q_and_gate[..., head_dim:].reshape(
+            input_ids.shape[0], input_ids.shape[1], num_heads * head_dim
+        ).cpu()
+
+    def layer3_k_proj_hook(_module, _inputs, output):
+        nonlocal layer3_k_proj_output
+        layer3_k_proj_output = capture_tensor(output)
+
+    def layer3_v_proj_hook(_module, _inputs, output):
+        nonlocal layer3_v_proj_output
+        nonlocal layer3_prepared_value_output
+        tensor = capture_tensor(output)
+        layer3_v_proj_output = tensor
+        layer3_attn = model.model.layers[3].self_attn
+        head_dim = int(layer3_attn.head_dim)
+        num_kv_heads = tensor.shape[-1] // head_dim
+        layer3_prepared_value_output = tensor.reshape(
+            input_ids.shape[0], input_ids.shape[1], num_kv_heads, head_dim
+        ).transpose(1, 2).contiguous().cpu()
+
+    def layer3_o_proj_pre_hook(_module, inputs):
+        nonlocal layer3_attention_output
+        layer3_attention_output = capture_tensor(inputs[0])
 
     def layer3_post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal layer3_post_attention_layernorm_output
@@ -383,8 +450,24 @@ def main() -> None:
         model.model.layers[3]
         .input_layernorm.register_forward_hook(layer3_input_layernorm_hook)
     )
+    layer3_input_layernorm_pre_handle = (
+        model.model.layers[3]
+        .input_layernorm.register_forward_pre_hook(layer3_input_layernorm_pre_hook)
+    )
     layer3_token_mixer_handle = model.model.layers[3].self_attn.register_forward_hook(
         layer3_token_mixer_hook
+    )
+    layer3_q_proj_handle = model.model.layers[3].self_attn.q_proj.register_forward_hook(
+        layer3_q_proj_hook
+    )
+    layer3_k_proj_handle = model.model.layers[3].self_attn.k_proj.register_forward_hook(
+        layer3_k_proj_hook
+    )
+    layer3_v_proj_handle = model.model.layers[3].self_attn.v_proj.register_forward_hook(
+        layer3_v_proj_hook
+    )
+    layer3_o_proj_pre_handle = model.model.layers[3].self_attn.o_proj.register_forward_pre_hook(
+        layer3_o_proj_pre_hook
     )
     layer3_post_attention_layernorm_handle = (
         model.model.layers[3]
@@ -409,13 +492,44 @@ def main() -> None:
         linear_norm_handle.remove()
         post_attention_layernorm_handle.remove()
         mlp_handle.remove()
+        layer3_input_layernorm_pre_handle.remove()
         layer3_input_layernorm_handle.remove()
         layer3_token_mixer_handle.remove()
+        layer3_q_proj_handle.remove()
+        layer3_k_proj_handle.remove()
+        layer3_v_proj_handle.remove()
+        layer3_o_proj_pre_handle.remove()
         layer3_post_attention_layernorm_handle.remove()
         layer3_mlp_handle.remove()
         layer3_handle.remove()
         for handle in decoder_layer_handles:
             handle.remove()
+
+    if layer3_q_and_gate_output is not None and layer3_k_proj_output is not None:
+        layer3_attn = model.model.layers[3].self_attn
+        head_dim = int(layer3_attn.head_dim)
+        num_heads = layer3_q_and_gate_output.shape[-1] // (head_dim * 2)
+        num_kv_heads = layer3_k_proj_output.shape[-1] // head_dim
+        q = layer3_q_and_gate_output.reshape(
+            input_ids.shape[0], input_ids.shape[1], num_heads, head_dim * 2
+        )[..., :head_dim]
+        k = layer3_k_proj_output.reshape(
+            input_ids.shape[0], input_ids.shape[1], num_kv_heads, head_dim
+        )
+        q_weight = layer3_attn.q_norm.weight.detach().to(dtype=torch.float32)
+        k_weight = layer3_attn.k_norm.weight.detach().to(dtype=torch.float32)
+        q_eps = getattr(layer3_attn.q_norm, "variance_epsilon", getattr(layer3_attn.q_norm, "eps"))
+        k_eps = getattr(layer3_attn.k_norm, "variance_epsilon", getattr(layer3_attn.k_norm, "eps"))
+        q_ms = q.pow(2).mean(dim=-1, keepdim=True)
+        k_ms = k.pow(2).mean(dim=-1, keepdim=True)
+        q_normed = q * torch.rsqrt(q_ms + q_eps)
+        k_normed = k * torch.rsqrt(k_ms + k_eps)
+        layer3_prepared_query_output = (
+            q_normed * (q_weight + 1.0)
+        ).transpose(1, 2).contiguous().cpu()
+        layer3_prepared_key_output = (
+            k_normed * (k_weight + 1.0)
+        ).transpose(1, 2).contiguous().cpu()
 
     if (
         embedding_output is None
@@ -457,6 +571,19 @@ def main() -> None:
         or first_layer_post_attention_layernorm_output is None
         or first_layer_mlp_output is None
         or layer3_input_layernorm_output is None
+        or layer3_input_layernorm_input is None
+        or layer3_input_layernorm_mean_square is None
+        or layer3_input_layernorm_rsqrt is None
+        or layer3_input_layernorm_weight is None
+        or layer3_input_layernorm_weighted_hidden is None
+        or layer3_q_and_gate_output is None
+        or layer3_k_proj_output is None
+        or layer3_v_proj_output is None
+        or layer3_prepared_query_output is None
+        or layer3_gate_output is None
+        or layer3_prepared_key_output is None
+        or layer3_prepared_value_output is None
+        or layer3_attention_output is None
         or layer3_token_mixer_output is None
         or layer3_post_attention_layernorm_output is None
         or layer3_mlp_output is None
@@ -532,6 +659,19 @@ def main() -> None:
         "first_layer_post_attention_layernorm_output": first_layer_post_attention_layernorm_output.tolist(),
         "first_layer_mlp_output": first_layer_mlp_output.tolist(),
         "layer3_input_layernorm_output": layer3_input_layernorm_output.tolist(),
+        "layer3_input_layernorm_input": layer3_input_layernorm_input.tolist(),
+        "layer3_input_layernorm_mean_square": layer3_input_layernorm_mean_square.tolist(),
+        "layer3_input_layernorm_rsqrt": layer3_input_layernorm_rsqrt.tolist(),
+        "layer3_input_layernorm_weight": layer3_input_layernorm_weight.tolist(),
+        "layer3_input_layernorm_weighted_hidden": layer3_input_layernorm_weighted_hidden.tolist(),
+        "layer3_q_and_gate_output": layer3_q_and_gate_output.tolist(),
+        "layer3_k_proj_output": layer3_k_proj_output.tolist(),
+        "layer3_v_proj_output": layer3_v_proj_output.tolist(),
+        "layer3_prepared_query_output": layer3_prepared_query_output.tolist(),
+        "layer3_gate_output": layer3_gate_output.tolist(),
+        "layer3_prepared_key_output": layer3_prepared_key_output.tolist(),
+        "layer3_prepared_value_output": layer3_prepared_value_output.tolist(),
+        "layer3_attention_output": layer3_attention_output.tolist(),
         "layer3_token_mixer_output": layer3_token_mixer_output.tolist(),
         "layer3_post_attention_layernorm_output": layer3_post_attention_layernorm_output.tolist(),
         "layer3_mlp_output": layer3_mlp_output.tolist(),

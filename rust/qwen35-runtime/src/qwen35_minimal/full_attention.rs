@@ -13,7 +13,10 @@ use super::model::{
 };
 use super::ops;
 use super::prepared::PreparedTensorSource;
-use super::types::{ExternalFullAttention, FullAttentionCacheState, RuntimeProfile, StateBuffer, TextConfig};
+use super::types::{
+    ExternalFullAttention, FullAttentionCacheState, FullAttentionTrace, RuntimeProfile,
+    StateBuffer, TextConfig,
+};
 #[cfg(any(feature = "hf", test))]
 use super::with_tracing::linear_b;
 use super::with_tracing::Linear;
@@ -1032,6 +1035,222 @@ impl FullAttention {
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))
+    }
+
+    pub(super) fn trace_components_buffer(
+        &mut self,
+        xs: &StateBuffer,
+        attention_mask: Option<&Tensor>,
+        seqlen_offset: usize,
+    ) -> Result<(FullAttentionTrace, StateBuffer, RuntimeProfile)> {
+        let device = xs.device();
+        let backend = backend_buffer_api::for_device(device);
+        let full_start = profile_start(device)?;
+        let mut profile = RuntimeProfile::default();
+        let (b_sz, q_len, _) = xs.dims3()?;
+
+        let qkv_start = profile_start(device)?;
+        let q_and_gate_output = self.q_proj.forward_buffer(xs)?;
+        let k_proj_output = self.k_proj.forward_buffer(xs)?;
+        let v_proj_output = self.v_proj.forward_buffer(xs)?;
+        let (prepared_query, gate, prepared_key, prepared_value) = backend
+            .prepare_full_attention_inputs(
+                &q_and_gate_output,
+                &k_proj_output,
+                &v_proj_output,
+                b_sz,
+                q_len,
+                self.num_heads,
+                self.num_kv_heads,
+                self.head_dim,
+                self.q_norm.weight(),
+                self.q_norm.eps(),
+                self.k_norm.weight(),
+                self.k_norm.eps(),
+            )?;
+        profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
+
+        let layout_start = profile_start(device)?;
+        let (query_states, key_states) =
+            self.rotary_emb
+                .apply_buffer(&prepared_query, &prepared_key, seqlen_offset)?;
+        profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
+
+        let kv_append_start = profile_start(device)?;
+        let appended_kv = backend.append_full_attention_kv_buffers(
+            self.kv_cache.as_ref().map(|(k, _)| k),
+            self.kv_cache.as_ref().map(|(_, v)| v),
+            key_states.tensor(),
+            prepared_value.tensor(),
+        )?;
+        profile.kv_append_write_millis += profile_elapsed(kv_append_start, device)?;
+
+        let input_layout_start = profile_start(device)?;
+        let (query_states, key_states, value_states) =
+            backend.prepare_full_attention_kernel_inputs_with_buffer_kv(
+                &query_states,
+                &appended_kv.0,
+                &appended_kv.1,
+            )?;
+        let scale = 1f64 / f64::sqrt(self.head_dim as f64);
+        let input_layout_elapsed = profile_elapsed(input_layout_start, device)?;
+        profile.layout_prepare_millis += input_layout_elapsed;
+        profile.full_attention_input_layout_millis += input_layout_elapsed;
+
+        let prepared_attn_output = if use_full_attention_decode_megakernel(
+            device,
+            q_len,
+            key_states.dim(2)?,
+            self.head_dim,
+            seqlen_offset,
+        ) {
+            let kernel_start = profile_start(device)?;
+            let output = self.full_attention_decode_projected(
+                xs.tensor().dtype(),
+                b_sz,
+                q_len,
+                &query_states,
+                &key_states,
+                &value_states,
+                &gate,
+                seqlen_offset,
+            )?;
+            profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+            output
+        } else if use_full_attention_prefill_megakernel(
+            device,
+            q_len,
+            key_states.dim(2)?,
+            self.head_dim,
+            seqlen_offset,
+        ) {
+            let kernel_start = profile_start(device)?;
+            let output = backend.full_attention_prefill(
+                &query_states,
+                &key_states,
+                &value_states,
+                self.num_kv_groups,
+                scale as f32,
+                seqlen_offset,
+            )?;
+            profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+            backend.prepare_full_attention_output_buffer(
+                &output,
+                &gate,
+                b_sz,
+                q_len,
+                self.attention_size,
+                xs.tensor().dtype(),
+            )?
+        } else if use_full_attention_torchlike_eager(device) {
+            self.grouped_torchlike_eager_attention_prepared_profiled(
+                backend,
+                &query_states,
+                &key_states,
+                &value_states,
+                &gate,
+                attention_mask,
+                b_sz,
+                q_len,
+                xs.tensor().dtype(),
+                scale,
+                &mut profile,
+            )?
+        } else if let Some(q_block_size) = full_attention_sdpa_q_block(device, q_len) {
+            self.sdpa_chunked_attention_prepared_profiled(
+                backend,
+                &query_states,
+                &key_states,
+                &value_states,
+                &gate,
+                b_sz,
+                q_len,
+                xs.tensor().dtype(),
+                scale as f32,
+                seqlen_offset,
+                q_block_size,
+                &mut profile,
+            )?
+        } else if matches!(device.location(), DeviceLocation::Metal { .. }) {
+            self.grouped_torchlike_eager_attention_prepared_profiled(
+                backend,
+                &query_states,
+                &key_states,
+                &value_states,
+                &gate,
+                attention_mask,
+                b_sz,
+                q_len,
+                xs.tensor().dtype(),
+                scale,
+                &mut profile,
+            )?
+        } else {
+            let kv_materialize_start = profile_start(device)?;
+            let key_states = repeat_kv(key_states.clone(), self.num_kv_groups)?.contiguous()?;
+            let value_states = repeat_kv(value_states.clone(), self.num_kv_groups)?.contiguous()?;
+            let kv_materialize_elapsed = profile_elapsed(kv_materialize_start, device)?;
+            profile.layout_prepare_millis += kv_materialize_elapsed;
+            profile.full_attention_kv_materialize_millis += kv_materialize_elapsed;
+            let query_states_f = query_states.to_dtype(DType::F32)?;
+            let key_states_f = key_states.to_dtype(DType::F32)?;
+            let value_states_f = value_states.to_dtype(DType::F32)?;
+            if let Some((q_block_size, k_block_size)) =
+                full_attention_blockwise_tiles(device, q_len, key_states.dim(2)?)
+            {
+                self.blockwise_attention_prepared_profiled(
+                    backend,
+                    &query_states_f,
+                    &key_states_f,
+                    &value_states_f,
+                    &gate,
+                    b_sz,
+                    q_len,
+                    xs.tensor().dtype(),
+                    scale,
+                    seqlen_offset,
+                    q_block_size,
+                    k_block_size,
+                    &mut profile,
+                )?
+            } else {
+                let score_start = profile_start(device)?;
+                let attn_output = backend.dense_full_attention_fallback_buffer(
+                    &query_states_f,
+                    &key_states_f,
+                    &value_states_f,
+                    attention_mask,
+                    scale,
+                    &gate,
+                    b_sz,
+                    q_len,
+                    self.attention_size,
+                    xs.tensor().dtype(),
+                )?;
+                profile.attention_score_millis += profile_elapsed(score_start, device)?;
+                attn_output
+            }
+        };
+
+        self.kv_cache = Some(appended_kv);
+        let output_start = profile_start(device)?;
+        let output = self.o_proj.forward_buffer(&prepared_attn_output)?;
+        profile.output_projection_millis += profile_elapsed(output_start, device)?;
+        profile.full_attention_millis += profile_elapsed(full_start, device)?;
+        Ok((
+            FullAttentionTrace {
+                q_and_gate_output,
+                k_proj_output,
+                v_proj_output,
+                prepared_query,
+                gate,
+                prepared_key,
+                prepared_value,
+                attention_output: prepared_attn_output,
+            },
+            output,
+            profile,
+        ))
     }
 
     fn forward_profiled(
