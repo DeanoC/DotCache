@@ -362,6 +362,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_mlp_max_delta: Option<f32>,
         pytorch_decode_first_layer_max_delta: Option<f32>,
         pytorch_decode_final_hidden_max_delta: Option<f32>,
+        pytorch_decode_final_norm_input_max_delta: Option<f32>,
+        pytorch_decode_final_norm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_final_norm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_final_norm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_final_norm_output_max_delta: Option<f32>,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta: Option<f32>,
         pytorch_decode_layer3_input_layernorm_max_delta: Option<f32>,
         pytorch_decode_layer3_input_layernorm_input_max_delta: Option<f32>,
@@ -475,6 +480,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decode_first_layer_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_final_hidden_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer3_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
@@ -2095,6 +2105,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_mlp_max_delta,
         pytorch_decode_first_layer_max_delta,
         pytorch_decode_final_hidden_max_delta,
+        pytorch_decode_final_norm_input_max_delta,
+        pytorch_decode_final_norm_mean_square_max_delta,
+        pytorch_decode_final_norm_rsqrt_max_delta,
+        pytorch_decode_final_norm_weighted_hidden_max_delta,
+        pytorch_decode_final_norm_output_max_delta,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta,
         pytorch_decode_layer3_input_layernorm_max_delta,
         pytorch_decode_layer3_input_layernorm_input_max_delta,
@@ -2171,6 +2186,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     message: "decode layer 3 input rmsnorm trace missing".to_string(),
                 })?;
             let runtime_decode_final_hidden = device_runner.trace_decode_final_hidden_with_cache(
+                &decode_input_hidden,
+                &device_cache,
+            )?;
+            let runtime_decode_final_norm = device_runner.trace_decode_final_norm_with_cache(
                 &decode_input_hidden,
                 &device_cache,
             )?;
@@ -2993,6 +3012,50 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     })
                     .transpose()?,
                 pytorch_oracle
+                    .decode_final_norm_input
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            runtime_decode_final_norm.input_hidden.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_mean_square
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            runtime_decode_final_norm.mean_square.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_rsqrt
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(runtime_decode_final_norm.rsqrt.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_weighted_hidden
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            runtime_decode_final_norm.weighted_hidden.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(runtime_decode_final_norm.output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
                     .first_decode_step_last_token_logits
                     .as_ref()
                     .map(|oracle| {
@@ -3067,7 +3130,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None,
             )
         }
     } else {
@@ -3075,7 +3139,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None,
         )
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
@@ -3454,6 +3519,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_mlp_max_delta,
         pytorch_decode_first_layer_max_delta,
         pytorch_decode_final_hidden_max_delta,
+        pytorch_decode_final_norm_input_max_delta,
+        pytorch_decode_final_norm_mean_square_max_delta,
+        pytorch_decode_final_norm_rsqrt_max_delta,
+        pytorch_decode_final_norm_weighted_hidden_max_delta,
+        pytorch_decode_final_norm_output_max_delta,
         pytorch_decode_output_projection_from_oracle_hidden_max_delta,
         pytorch_decode_layer3_input_layernorm_max_delta,
         pytorch_decode_layer3_input_layernorm_input_max_delta,

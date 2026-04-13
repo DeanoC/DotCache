@@ -98,6 +98,11 @@ def main() -> None:
     decode_first_layer_mlp_output = None
     decode_first_layer_output = None
     decode_final_hidden_output = None
+    decode_final_norm_input = None
+    decode_final_norm_mean_square = None
+    decode_final_norm_rsqrt = None
+    decode_final_norm_weighted_hidden = None
+    decode_final_norm_output = None
     decoder_layer_outputs = []
     decode_decoder_layer_outputs = []
     layer3_input_layernorm_output = None
@@ -558,6 +563,30 @@ def main() -> None:
             return
         first_layer_mlp_output = capture_tensor(output)
 
+    def final_norm_hook(_module, _inputs, output):
+        nonlocal decode_final_norm_output
+        if capture_phase == "decode":
+            decode_final_norm_output = capture_tensor(output)
+
+    def final_norm_pre_hook(_module, inputs):
+        nonlocal decode_final_norm_input
+        nonlocal decode_final_norm_mean_square
+        nonlocal decode_final_norm_rsqrt
+        nonlocal decode_final_norm_weighted_hidden
+        if capture_phase != "decode":
+            return
+        eps = getattr(_module, "variance_epsilon", getattr(_module, "eps"))
+        hidden = inputs[0].detach().to(dtype=torch.float32).cpu()
+        hidden_fp32 = inputs[0].detach().to(dtype=torch.float32)
+        mean_square = hidden_fp32.pow(2).mean(dim=-1, keepdim=True)
+        rsqrt = torch.rsqrt(mean_square + eps)
+        weight = (1.0 + _module.weight.detach().to(dtype=torch.float32)).view(1, 1, -1)
+        weighted_hidden = (hidden_fp32 * rsqrt) * weight
+        decode_final_norm_input = hidden
+        decode_final_norm_mean_square = mean_square.cpu()
+        decode_final_norm_rsqrt = rsqrt.cpu()
+        decode_final_norm_weighted_hidden = weighted_hidden.cpu()
+
     def layer3_input_layernorm_hook(_module, _inputs, output):
         nonlocal layer3_input_layernorm_output
         nonlocal decode_layer3_input_layernorm_output
@@ -772,6 +801,8 @@ def main() -> None:
         .post_attention_layernorm.register_forward_hook(post_attention_layernorm_hook)
     )
     mlp_handle = model.model.layers[0].mlp.register_forward_hook(mlp_hook)
+    final_norm_pre_handle = model.model.norm.register_forward_pre_hook(final_norm_pre_hook)
+    final_norm_handle = model.model.norm.register_forward_hook(final_norm_hook)
     layer3_input_layernorm_handle = (
         model.model.layers[3]
         .input_layernorm.register_forward_hook(layer3_input_layernorm_hook)
@@ -866,6 +897,8 @@ def main() -> None:
         linear_norm_handle.remove()
         post_attention_layernorm_handle.remove()
         mlp_handle.remove()
+        final_norm_pre_handle.remove()
+        final_norm_handle.remove()
         layer3_input_layernorm_pre_handle.remove()
         layer3_input_layernorm_handle.remove()
         layer3_token_mixer_handle.remove()
@@ -1135,6 +1168,11 @@ def main() -> None:
         "decode_first_layer_mlp_output": decode_first_layer_mlp_output.tolist() if decode_first_layer_mlp_output is not None else None,
         "decode_first_layer_output": decode_first_layer_output.tolist() if decode_first_layer_output is not None else None,
         "decode_final_hidden_output": decode_final_hidden_output.tolist() if decode_final_hidden_output is not None else None,
+        "decode_final_norm_input": decode_final_norm_input.tolist() if decode_final_norm_input is not None else None,
+        "decode_final_norm_mean_square": decode_final_norm_mean_square.tolist() if decode_final_norm_mean_square is not None else None,
+        "decode_final_norm_rsqrt": decode_final_norm_rsqrt.tolist() if decode_final_norm_rsqrt is not None else None,
+        "decode_final_norm_weighted_hidden": decode_final_norm_weighted_hidden.tolist() if decode_final_norm_weighted_hidden is not None else None,
+        "decode_final_norm_output": decode_final_norm_output.tolist() if decode_final_norm_output is not None else None,
         "decode_layer3_input_layernorm_output": decode_layer3_input_layernorm_output.tolist() if decode_layer3_input_layernorm_output is not None else None,
         "decode_layer3_input_layernorm_input": decode_layer3_input_layernorm_input.tolist() if decode_layer3_input_layernorm_input is not None else None,
         "decode_layer3_input_layernorm_mean_square": decode_layer3_input_layernorm_mean_square.tolist() if decode_layer3_input_layernorm_mean_square is not None else None,

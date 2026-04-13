@@ -14,8 +14,8 @@ use super::linear_attention::GatedDeltaNet;
 use super::prepared::PreparedTensorSource;
 use super::types::{
     CacheState, Config, ExternalFullAttention, LayerCacheState, LinearAttentionBenchResult,
-    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionTrace, RuntimeProfile,
-    StateBuffer, TextConfig,
+    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionTrace, RmsNormTrace,
+    RuntimeProfile, StateBuffer, TextConfig,
 };
 #[cfg(any(feature = "hf", test))]
 use super::with_tracing::linear_no_bias;
@@ -957,6 +957,30 @@ impl TextModel {
         Ok((self.norm.forward_buffer(&xs)?, profile))
     }
 
+    pub fn trace_final_norm_from_hidden_states(
+        &mut self,
+        hidden_states: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<RmsNormTrace> {
+        let (b_size, seq_len, _) = hidden_states.dims3()?;
+        let attention_mask = if seq_len > 1 {
+            Some(self.prepare_causal_attention_mask(b_size, seq_len, seqlen_offset)?)
+        } else {
+            None
+        };
+        let mut xs = hidden_states.clone();
+        for layer in self.layers.iter_mut() {
+            let mask = if layer.layer_type() == "full_attention" {
+                attention_mask.as_ref()
+            } else {
+                None
+            };
+            let (next_xs, _) = layer.forward_profiled(&xs, mask, seqlen_offset)?;
+            xs = next_xs;
+        }
+        self.norm.trace_buffer(&xs)
+    }
+
     pub(crate) fn forward_hidden_states_profiled_direct_hip_v1(
         &mut self,
         metadata: &PreparedQwen35DirectMetadata,
@@ -1239,6 +1263,15 @@ impl ModelForCausalLM {
         self.language_model
             .forward_hidden_states_profiled(hidden_states, seqlen_offset)
             .map(|(output, _)| output)
+    }
+
+    pub fn trace_text_final_norm_from_hidden_states(
+        &mut self,
+        hidden_states: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<RmsNormTrace> {
+        self.language_model
+            .trace_final_norm_from_hidden_states(hidden_states, seqlen_offset)
     }
 
     pub fn project_final_hidden_to_logits(

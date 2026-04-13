@@ -29,6 +29,7 @@ pub use types::{
     NativeFullAttentionCacheState as MinimalQwen35NativeFullAttentionCacheState,
     NativeLayerCacheState as MinimalQwen35NativeLayerCacheState,
     NativeLinearAttentionCacheState as MinimalQwen35NativeLinearAttentionCacheState,
+    RmsNormTrace as MinimalQwen35RmsNormTrace,
     RuntimeProfile as MinimalQwen35RuntimeProfile,
     StateBuffer as MinimalQwen35StateBuffer, TextConfig as MinimalQwen35TextConfig,
 };
@@ -1143,6 +1144,20 @@ impl MinimalQwen35Runner {
         self.model.restore_cache_state(cache_state)?;
         let seqlen_offset = cache_state.sequence_length();
         Ok(self.model.forward_text_hidden_states(
+            &MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?,
+            seqlen_offset,
+        )?)
+    }
+
+    pub fn trace_decode_final_norm_with_cache(
+        &mut self,
+        hidden_state_t: &MinimalQwen35StateBuffer,
+        cache_state: &MinimalQwen35KvCache,
+    ) -> Result<MinimalQwen35RmsNormTrace> {
+        let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
+        self.model.restore_cache_state(cache_state)?;
+        let seqlen_offset = cache_state.sequence_length();
+        Ok(self.model.trace_text_final_norm_from_hidden_states(
             &MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?,
             seqlen_offset,
         )?)
