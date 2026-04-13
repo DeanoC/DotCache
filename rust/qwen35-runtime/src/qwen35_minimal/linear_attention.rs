@@ -2232,6 +2232,12 @@ impl GatedDeltaNet {
         profile.linear_conv_millis += kv_append_elapsed;
         profile.kv_append_write_millis += kv_append_elapsed;
         let post_conv_mixed_qkv = backend.tensor_to_buffer(mixed_qkv.clone())?;
+        let post_conv_value_focus_head = backend.tensor_to_buffer(
+            mixed_qkv
+                .narrow(D::Minus1, self.key_dim * 2, self.value_dim)?
+                .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
+                .i((0, 2, 6))?,
+        )?;
 
         let layout_start = profile_start(device)?;
         let use_short_recurrent_prefill = use_hip_short_linear_prefill_recurrent(device, seq_len);
@@ -2355,6 +2361,7 @@ impl GatedDeltaNet {
         Ok((
             LinearAttentionCoreTrace {
                 post_conv_mixed_qkv,
+                post_conv_value_focus_head,
                 prepared_value_focus_head,
                 pre_gated_norm_output,
                 pre_gated_norm_mean_square,
