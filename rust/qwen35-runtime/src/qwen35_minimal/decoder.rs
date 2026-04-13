@@ -634,14 +634,16 @@ impl TextModel {
             None
         };
         let input_layernorm_output = target.input_layernorm.forward_buffer(&xs)?;
-        let (linear_projection_trace, token_mixer_output, _) = match &mut target.token_mixer {
+        let (linear_projection_trace, linear_core_trace, token_mixer_output, _) =
+            match &mut target.token_mixer {
             LayerKind::Linear(linear_attn) => {
                 let projection_trace =
                     linear_attn.trace_projection_components_buffer(&input_layernorm_output)?;
-                let (token_mixer_output, profile) =
-                    linear_attn.forward_profiled_buffer(&input_layernorm_output, mask)?;
+                let (core_trace, token_mixer_output, _, profile) =
+                    linear_attn.trace_core_components_buffer(&input_layernorm_output, mask)?;
                 (
                     Some(projection_trace),
+                    Some(core_trace),
                     token_mixer_output,
                     profile,
                 )
@@ -653,7 +655,7 @@ impl TextModel {
                 target_layer,
                 &mut None,
             )
-            .map(|(output, profile)| (None, output, profile))?,
+            .map(|(output, profile)| (None, None, output, profile))?,
         };
         let backend = backend_buffer_api::for_device(xs.device());
         let attention_residual = backend.add(&xs, &token_mixer_output)?;
@@ -667,6 +669,7 @@ impl TextModel {
             sequence_length: seq_len,
             input_layernorm_output,
             linear_projection_trace,
+            linear_core_trace,
             token_mixer_output,
             post_attention_layernorm_output,
             mlp_output,

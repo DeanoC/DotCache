@@ -45,6 +45,8 @@ def main() -> None:
     first_layer_linear_z_output = None
     first_layer_linear_b_output = None
     first_layer_linear_a_output = None
+    first_layer_linear_post_conv_output = None
+    first_layer_linear_norm_output = None
     first_layer_token_mixer_output = None
     first_layer_post_attention_layernorm_output = None
     first_layer_mlp_output = None
@@ -86,6 +88,19 @@ def main() -> None:
         nonlocal first_layer_linear_a_output
         first_layer_linear_a_output = capture_tensor(output)
 
+    def linear_conv_hook(_module, _inputs, output):
+        nonlocal first_layer_linear_post_conv_output
+        tensor = capture_tensor(output)
+        seq_len = input_ids.shape[1]
+        first_layer_linear_post_conv_output = (
+            tensor.transpose(1, 2)[:, -seq_len:, :].contiguous()
+        )
+
+    def linear_norm_hook(_module, _inputs, output):
+        nonlocal first_layer_linear_norm_output
+        tensor = capture_tensor(output)
+        first_layer_linear_norm_output = tensor.reshape(input_ids.shape[0], input_ids.shape[1], -1)
+
     def post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal first_layer_post_attention_layernorm_output
         first_layer_post_attention_layernorm_output = capture_tensor(output)
@@ -114,6 +129,12 @@ def main() -> None:
     linear_a_handle = model.model.layers[0].linear_attn.in_proj_a.register_forward_hook(
         linear_a_hook
     )
+    linear_conv_handle = model.model.layers[0].linear_attn.conv1d.register_forward_hook(
+        linear_conv_hook
+    )
+    linear_norm_handle = model.model.layers[0].linear_attn.norm.register_forward_hook(
+        linear_norm_hook
+    )
     post_attention_layernorm_handle = (
         model.model.layers[0]
         .post_attention_layernorm.register_forward_hook(post_attention_layernorm_hook)
@@ -131,6 +152,8 @@ def main() -> None:
         linear_z_handle.remove()
         linear_b_handle.remove()
         linear_a_handle.remove()
+        linear_conv_handle.remove()
+        linear_norm_handle.remove()
         post_attention_layernorm_handle.remove()
         mlp_handle.remove()
 
@@ -142,6 +165,8 @@ def main() -> None:
         or first_layer_linear_z_output is None
         or first_layer_linear_b_output is None
         or first_layer_linear_a_output is None
+        or first_layer_linear_post_conv_output is None
+        or first_layer_linear_norm_output is None
         or first_layer_token_mixer_output is None
         or first_layer_post_attention_layernorm_output is None
         or first_layer_mlp_output is None
@@ -183,6 +208,8 @@ def main() -> None:
         "first_layer_linear_z_output": first_layer_linear_z_output.tolist(),
         "first_layer_linear_b_output": first_layer_linear_b_output.tolist(),
         "first_layer_linear_a_output": first_layer_linear_a_output.tolist(),
+        "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output.tolist(),
+        "first_layer_linear_norm_output": first_layer_linear_norm_output.tolist(),
         "first_layer_token_mixer_output": first_layer_token_mixer_output.tolist(),
         "first_layer_post_attention_layernorm_output": first_layer_post_attention_layernorm_output.tolist(),
         "first_layer_mlp_output": first_layer_mlp_output.tolist(),

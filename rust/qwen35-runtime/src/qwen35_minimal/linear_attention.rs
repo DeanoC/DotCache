@@ -21,8 +21,8 @@ use super::model::{
 };
 use super::prepared::PreparedTensorSource;
 use super::types::{
-    LinearAttentionCacheState, LinearAttentionProjectionTrace, RuntimeProfile, StateBuffer,
-    TextConfig,
+    LinearAttentionCacheState, LinearAttentionCoreTrace, LinearAttentionProjectionTrace,
+    RuntimeProfile, StateBuffer, TextConfig,
 };
 #[cfg(any(feature = "hf", test))]
 use super::with_tracing::linear_no_bias;
@@ -2127,6 +2127,181 @@ impl GatedDeltaNet {
             b_output,
             a_output,
         })
+    }
+
+    pub(super) fn trace_core_components_buffer(
+        &mut self,
+        hidden_states: &StateBuffer,
+        attention_mask: Option<&Tensor>,
+    ) -> Result<(LinearAttentionCoreTrace, StateBuffer, StateBuffer, RuntimeProfile)> {
+        let device = hidden_states.device();
+        let hidden_dtype = hidden_states.tensor().dtype();
+        let total_start = profile_start(device)?;
+        let mut profile = RuntimeProfile::default();
+        let compute_dtype =
+            linear_attention_compute_dtype(hidden_states.device(), hidden_states.tensor().dtype());
+        let layout_start = profile_start(device)?;
+        let hidden_states = backend_buffer_api::for_device(device).tensor_to_buffer(
+            self.apply_mask_to_padding_states(hidden_states.tensor(), attention_mask)?,
+        )?;
+        let (batch_size, seq_len, _) = hidden_states.dims3()?;
+        profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
+
+        let qkv_start = profile_start(device)?;
+        let backend = backend_buffer_api::for_device(device);
+        let mixed_qkv = backend.tensor_to_buffer(
+            self.in_proj_qkv
+                .forward_buffer(&hidden_states)?
+                .tensor()
+                .transpose(1, 2)?,
+        )?;
+        let z = backend.reshape_tensor_to_buffer(
+            self.in_proj_z.forward_buffer(&hidden_states)?.tensor(),
+            &[batch_size, seq_len, self.num_v_heads, self.head_v_dim],
+        )?;
+        let beta_raw = self.in_proj_b.forward_buffer(&hidden_states)?;
+        let a = self.in_proj_a.forward_buffer(&hidden_states)?;
+        profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
+
+        let kv_append_start = profile_start(device)?;
+        let (mixed_qkv, g) = if use_hip_combined_linear_prefill(device, seq_len) {
+            let target_dtype = mixed_qkv.tensor().dtype();
+            let a_tensor = if a.tensor().dtype() == target_dtype {
+                a.clone_tensor()
+            } else {
+                a.tensor().to_dtype(target_dtype)?
+            };
+            let a = backend.tensor_to_buffer(a_tensor)?;
+            let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
+            let weights = self.conv1d_weight_squeezed()?.contiguous()?;
+            let state_len = self.conv_kernel_size.saturating_sub(1);
+            let prev_state = match &self.conv_state {
+                Some(prev_state) => prev_state.clone_tensor_as(target_dtype)?,
+                None => backend.zeros_tensor(
+                    mixed_qkv.device(),
+                    target_dtype,
+                    &[mixed_qkv.tensor().dim(0)?, mixed_qkv.tensor().dim(1)?, state_len],
+                )?,
+            };
+            let fused = backend.linear_stateful_conv_value_decay_with_state(
+                &mixed_qkv.contiguous()?,
+                &prev_state,
+                &weights,
+                &a,
+                &dt_bias,
+                &a_log_exp,
+                self.conv_kernel_size,
+            )?;
+            let conv_dim = self.conv_dim();
+            let (mixed_qkv, g, conv_state) = backend.unpack_linear_prefill_output(
+                &fused,
+                batch_size,
+                seq_len,
+                conv_dim,
+                self.num_v_heads,
+                state_len,
+            )?;
+            self.conv_state = Some(conv_state);
+            let g = if g.dtype() == compute_dtype {
+                g
+            } else {
+                g.to_dtype(compute_dtype)?
+            };
+            (mixed_qkv, g)
+        } else {
+            let mixed_qkv = if seq_len == 1 {
+                self.run_depthwise_conv_update(mixed_qkv.tensor())?
+                    .transpose(1, 2)?
+            } else if use_linear_prefill_packed_kernel(device, seq_len) {
+                self.run_depthwise_conv_packed_prefill(mixed_qkv.tensor())?
+            } else {
+                self.run_depthwise_conv(mixed_qkv.tensor())?.transpose(1, 2)?
+            };
+            let a = if a.tensor().dtype() == compute_dtype {
+                a.clone_tensor()
+            } else {
+                a.tensor().to_dtype(compute_dtype)?
+            };
+            let (dt_bias, a_log_exp) = self.value_cache(device, compute_dtype)?;
+            let g = backend
+                .value_decay(&backend.tensor_to_buffer(a.clone())?, &dt_bias, &a_log_exp)?
+                .clone_tensor();
+            (mixed_qkv, g)
+        };
+        let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
+        profile.linear_conv_millis += kv_append_elapsed;
+        profile.kv_append_write_millis += kv_append_elapsed;
+        let post_conv_mixed_qkv = backend.tensor_to_buffer(mixed_qkv.clone())?;
+
+        let layout_start = profile_start(device)?;
+        let use_short_recurrent_prefill = use_hip_short_linear_prefill_recurrent(device, seq_len);
+        let (query, key, value, beta, g) = backend.prepare_linear_attention_inputs(
+            &mixed_qkv,
+            &beta_raw,
+            &g,
+            batch_size,
+            seq_len,
+            self.key_dim,
+            self.value_dim,
+            self.num_k_heads,
+            self.num_v_heads,
+            self.head_k_dim,
+            self.head_v_dim,
+            compute_dtype,
+            seq_len == 1 || use_short_recurrent_prefill,
+        )?;
+        profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
+
+        let (core_attn_out, recurrent_state, linear_profile) =
+            if seq_len == 1 && self.recurrent_state.is_some() {
+                self.recurrent_gated_delta_rule(
+                    &query,
+                    &key,
+                    &value,
+                    &g,
+                    &beta,
+                    self.recurrent_state.as_ref().map(StateBuffer::tensor),
+                )?
+            } else if seq_len == 1 {
+                self.recurrent_gated_delta_rule(&query, &key, &value, &g, &beta, None)?
+            } else if use_short_recurrent_prefill {
+                self.recurrent_gated_delta_rule(&query, &key, &value, &g, &beta, None)?
+            } else {
+                self.chunk_gated_delta_rule(&query, &key, &value, &g, &beta, seq_len)?
+            };
+        profile.add_assign(&linear_profile);
+
+        let gated_norm = self
+            .norm
+            .forward_buffer(
+                &backend.reshape_tensor_to_buffer(
+                    &core_attn_out,
+                    &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
+                )?,
+                &backend.reshape_tensor_to_buffer(
+                    z.tensor(),
+                    &[batch_size * seq_len * self.num_v_heads, self.head_v_dim],
+                )?,
+            )?;
+        let gated_norm = if gated_norm.tensor().dtype() == hidden_dtype {
+            gated_norm
+        } else {
+            backend.tensor_to_buffer(gated_norm.tensor().to_dtype(hidden_dtype)?)?
+        };
+        let post_gated_norm_output =
+            backend.reshape_tensor_to_buffer(gated_norm.tensor(), &[batch_size, seq_len, self.value_dim])?;
+        let output = self.out_proj.forward_buffer(&post_gated_norm_output)?;
+        profile.output_projection_millis += profile_elapsed(total_start, device)?;
+
+        Ok((
+            LinearAttentionCoreTrace {
+                post_conv_mixed_qkv,
+                post_gated_norm_output,
+            },
+            output,
+            backend.tensor_to_buffer(recurrent_state)?,
+            profile,
+        ))
     }
 
     pub(super) fn project_direct_decode_inputs_into_scratch(

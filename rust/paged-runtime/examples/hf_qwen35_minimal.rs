@@ -228,6 +228,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_z_max_delta: Option<f32>,
         pytorch_first_layer_linear_b_max_delta: Option<f32>,
         pytorch_first_layer_linear_a_max_delta: Option<f32>,
+        pytorch_first_layer_linear_post_conv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_max_delta: Option<f32>,
         pytorch_first_layer_token_mixer_max_delta: Option<f32>,
         pytorch_first_layer_post_attention_layernorm_max_delta: Option<f32>,
         pytorch_first_layer_mlp_max_delta: Option<f32>,
@@ -253,6 +255,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_layer_linear_z_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_b_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_a_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_post_conv_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_norm_output: Vec<Vec<Vec<f32>>>,
         first_layer_token_mixer_output: Vec<Vec<Vec<f32>>>,
         first_layer_post_attention_layernorm_output: Vec<Vec<Vec<f32>>>,
         first_layer_mlp_output: Vec<Vec<Vec<f32>>>,
@@ -700,6 +704,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_z_max_delta,
         pytorch_first_layer_linear_b_max_delta,
         pytorch_first_layer_linear_a_max_delta,
+        pytorch_first_layer_linear_post_conv_max_delta,
+        pytorch_first_layer_linear_norm_max_delta,
         pytorch_first_layer_token_mixer_max_delta,
         pytorch_first_layer_post_attention_layernorm_max_delta,
         pytorch_first_layer_mlp_max_delta,
@@ -733,6 +739,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             linear_projection_trace.a_output.tensor(),
             &pytorch_oracle.first_layer_linear_a_output,
         )?);
+        let linear_core_trace = first_layer_trace
+            .linear_core_trace
+            .as_ref()
+            .ok_or_else(|| RuntimeError::External {
+                context: "pytorch oracle",
+                message: "first traced layer did not expose linear core trace".to_string(),
+            })?;
+        let pytorch_first_layer_linear_post_conv_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.post_conv_mixed_qkv.tensor(),
+            &pytorch_oracle.first_layer_linear_post_conv_output,
+        )?);
+        let pytorch_first_layer_linear_norm_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.post_gated_norm_output.tensor(),
+            &pytorch_oracle.first_layer_linear_norm_output,
+        )?);
         let pytorch_first_layer_token_mixer_max_delta = Some(max_tensor_delta_vec3(
             first_layer_trace.token_mixer_output.tensor(),
             &pytorch_oracle.first_layer_token_mixer_output,
@@ -755,13 +776,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_z_max_delta,
             pytorch_first_layer_linear_b_max_delta,
             pytorch_first_layer_linear_a_max_delta,
+            pytorch_first_layer_linear_post_conv_max_delta,
+            pytorch_first_layer_linear_norm_max_delta,
             pytorch_first_layer_token_mixer_max_delta,
             pytorch_first_layer_post_attention_layernorm_max_delta,
             pytorch_first_layer_mlp_max_delta,
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1092,6 +1115,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_z_max_delta,
         pytorch_first_layer_linear_b_max_delta,
         pytorch_first_layer_linear_a_max_delta,
+        pytorch_first_layer_linear_post_conv_max_delta,
+        pytorch_first_layer_linear_norm_max_delta,
         pytorch_first_layer_token_mixer_max_delta,
         pytorch_first_layer_post_attention_layernorm_max_delta,
         pytorch_first_layer_mlp_max_delta,
