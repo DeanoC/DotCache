@@ -62,23 +62,39 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
             });
         }
         let mut profile = MinimalQwen35RuntimeProfile::default();
-        let mut xs = hidden_state_t.clone();
-        let phases = Self::decode_phases(self.runtime.metadata())?;
-        for phase in phases {
-            let (next_xs, phase_profile) =
-                self.decode_phase_from_hidden_state(&xs, seqlen_offset, phase)?;
-            profile.add_assign(&phase_profile);
-            xs = next_xs;
-        }
-        let (logits, finalize_profile) = self.model.finalize_direct_decode_logits_hip_v1(&xs)?;
-        profile.add_assign(&finalize_profile);
-        *cache = self.model.cache_state();
-        if self.runtime.next_hidden_slot_is_ping {
+        let mut active_slot_is_ping = self.runtime.next_hidden_slot_is_ping;
+        if active_slot_is_ping {
             self.runtime.decode_hidden_ping = hidden_state_t.clone();
         } else {
             self.runtime.decode_hidden_pong = hidden_state_t.clone();
         }
-        self.runtime.next_hidden_slot_is_ping = !self.runtime.next_hidden_slot_is_ping;
+        let phases = Self::decode_phases(self.runtime.metadata())?;
+        for phase in phases {
+            let current_xs = if active_slot_is_ping {
+                self.runtime.decode_hidden_ping.clone()
+            } else {
+                self.runtime.decode_hidden_pong.clone()
+            };
+            let (next_xs, phase_profile) =
+                self.decode_phase_from_hidden_state(&current_xs, seqlen_offset, phase)?;
+            profile.add_assign(&phase_profile);
+            if active_slot_is_ping {
+                self.runtime.decode_hidden_pong = next_xs;
+            } else {
+                self.runtime.decode_hidden_ping = next_xs;
+            }
+            active_slot_is_ping = !active_slot_is_ping;
+        }
+        let active_hidden = if active_slot_is_ping {
+            &self.runtime.decode_hidden_ping
+        } else {
+            &self.runtime.decode_hidden_pong
+        };
+        let (logits, finalize_profile) =
+            self.model.finalize_direct_decode_logits_hip_v1(active_hidden)?;
+        profile.add_assign(&finalize_profile);
+        *cache = self.model.cache_state();
+        self.runtime.next_hidden_slot_is_ping = active_slot_is_ping;
         self.runtime.decode_logits = logits.clone();
         self.runtime.last_decode_sequence_length = seqlen_offset + 1;
         Ok((logits, profile))
@@ -100,7 +116,7 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
             }
         }
         let mut profile = MinimalQwen35RuntimeProfile::default();
-        let mut xs = xs.clone();
+        let xs = xs.clone();
         let (xs, phase_profile) = match phase.layer_type {
             "linear_attention" => self.model.direct_decode_linear_phase_profiled_hip_v1(
                 self.runtime.metadata(),
