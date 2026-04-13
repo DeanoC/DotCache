@@ -17006,6 +17006,72 @@ impl TextModel {
         layer.forward_profiled_direct_decode_v1(layer_idx, xs, seqlen_offset)
     }
 
+    pub(crate) fn direct_decode_linear_phase_profiled_hip_v1(
+        &mut self,
+        metadata: &PreparedQwen35DirectMetadata,
+        start_layer_idx: usize,
+        end_layer_idx: usize,
+        xs: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        self.validate_direct_hip_metadata(metadata)?;
+        let mut profile = RuntimeProfile::default();
+        let mut xs = xs.clone();
+        for layer_idx in start_layer_idx..end_layer_idx {
+            let layer_meta = metadata.layers.get(layer_idx).ok_or_else(|| {
+                candle::Error::Msg(format!(
+                    "direct-hip-v1 decode metadata missing linear layer {}",
+                    layer_idx
+                ))
+            })?;
+            if layer_meta.layer_type != "linear_attention" {
+                candle::bail!(
+                    "direct-hip-v1 linear decode phase expected linear_attention at layer {}, got {}",
+                    layer_idx,
+                    layer_meta.layer_type
+                );
+            }
+            let (next_xs, layer_profile) =
+                self.direct_decode_layer_profiled_hip_v1(metadata, layer_idx, &xs, seqlen_offset)?;
+            profile.add_assign(&layer_profile);
+            xs = next_xs;
+        }
+        Ok((xs, profile))
+    }
+
+    pub(crate) fn direct_decode_full_phase_profiled_hip_v1(
+        &mut self,
+        metadata: &PreparedQwen35DirectMetadata,
+        start_layer_idx: usize,
+        end_layer_idx: usize,
+        xs: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        self.validate_direct_hip_metadata(metadata)?;
+        let mut profile = RuntimeProfile::default();
+        let mut xs = xs.clone();
+        for layer_idx in start_layer_idx..end_layer_idx {
+            let layer_meta = metadata.layers.get(layer_idx).ok_or_else(|| {
+                candle::Error::Msg(format!(
+                    "direct-hip-v1 decode metadata missing full-attention layer {}",
+                    layer_idx
+                ))
+            })?;
+            if layer_meta.layer_type != "full_attention" {
+                candle::bail!(
+                    "direct-hip-v1 full decode phase expected full_attention at layer {}, got {}",
+                    layer_idx,
+                    layer_meta.layer_type
+                );
+            }
+            let (next_xs, layer_profile) =
+                self.direct_decode_layer_profiled_hip_v1(metadata, layer_idx, &xs, seqlen_offset)?;
+            profile.add_assign(&layer_profile);
+            xs = next_xs;
+        }
+        Ok((xs, profile))
+    }
+
     pub(crate) fn finalize_direct_decode_hidden_hip_v1(
         &mut self,
         xs: &StateBuffer,
@@ -17223,15 +17289,38 @@ impl ModelForCausalLM {
         self.language_model.validate_direct_hip_metadata(metadata)
     }
 
-    pub(crate) fn direct_decode_layer_profiled_hip_v1(
+    pub(crate) fn direct_decode_linear_phase_profiled_hip_v1(
         &mut self,
         metadata: &PreparedQwen35DirectMetadata,
-        layer_idx: usize,
+        start_layer_idx: usize,
+        end_layer_idx: usize,
         xs: &StateBuffer,
         seqlen_offset: usize,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
-        self.language_model
-            .direct_decode_layer_profiled_hip_v1(metadata, layer_idx, xs, seqlen_offset)
+        self.language_model.direct_decode_linear_phase_profiled_hip_v1(
+            metadata,
+            start_layer_idx,
+            end_layer_idx,
+            xs,
+            seqlen_offset,
+        )
+    }
+
+    pub(crate) fn direct_decode_full_phase_profiled_hip_v1(
+        &mut self,
+        metadata: &PreparedQwen35DirectMetadata,
+        start_layer_idx: usize,
+        end_layer_idx: usize,
+        xs: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        self.language_model.direct_decode_full_phase_profiled_hip_v1(
+            metadata,
+            start_layer_idx,
+            end_layer_idx,
+            xs,
+            seqlen_offset,
+        )
     }
 
     pub(crate) fn finalize_direct_decode_logits_hip_v1(

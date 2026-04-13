@@ -101,16 +101,29 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         }
         let mut profile = MinimalQwen35RuntimeProfile::default();
         let mut xs = xs.clone();
-        for layer_idx in phase.start_layer_idx..phase.end_layer_idx {
-            let (next_xs, layer_profile) = self.model.direct_decode_layer_profiled_hip_v1(
+        let (xs, phase_profile) = match phase.layer_type {
+            "linear_attention" => self.model.direct_decode_linear_phase_profiled_hip_v1(
                 self.runtime.metadata(),
-                layer_idx,
+                phase.start_layer_idx,
+                phase.end_layer_idx,
                 &xs,
                 seqlen_offset,
-            )?;
-            profile.add_assign(&layer_profile);
-            xs = next_xs;
-        }
+            )?,
+            "full_attention" => self.model.direct_decode_full_phase_profiled_hip_v1(
+                self.runtime.metadata(),
+                phase.start_layer_idx,
+                phase.end_layer_idx,
+                &xs,
+                seqlen_offset,
+            )?,
+            other => {
+                return Err(crate::RuntimeError::External {
+                    context: "qwen35-hip-direct",
+                    message: format!("unsupported direct-hip-v1 decode phase type: {other}"),
+                });
+            }
+        };
+        profile.add_assign(&phase_profile);
         Ok((xs, profile))
     }
 
