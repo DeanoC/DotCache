@@ -16648,9 +16648,9 @@ pub(crate) fn full_attention_prefill(
     let key_hip = HipTensor::from_scaffold_tensor(key.clone());
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
     if let (Some(query), Some(key), Some(value)) = (
-        query_hip.0 .0.direct_materialized_device_buffer(),
-        key_hip.0 .0.direct_materialized_device_buffer(),
-        value_hip.0 .0.direct_materialized_device_buffer(),
+        query_hip.try_materialized_device_buffer()?,
+        key_hip.try_materialized_device_buffer()?,
+        value_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(query_mapped),
@@ -16726,9 +16726,9 @@ pub(crate) fn full_attention_decode(
     let key_hip = HipTensor::from_scaffold_tensor(key.clone());
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
     if let (Some(query), Some(key), Some(value)) = (
-        query_hip.0 .0.direct_materialized_device_buffer(),
-        key_hip.0 .0.direct_materialized_device_buffer(),
-        value_hip.0 .0.direct_materialized_device_buffer(),
+        query_hip.try_materialized_device_buffer()?,
+        key_hip.try_materialized_device_buffer()?,
+        value_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(query_mapped),
