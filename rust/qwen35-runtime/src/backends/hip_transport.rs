@@ -1280,6 +1280,12 @@ impl HipDeviceBuffer {
     fn from_host_computed_buffer_like(&self, buffer: HipHostBuffer) -> Self {
         if self.preserves_pending_upload() {
             Self::from_pending_host_upload(buffer)
+        } else if buffer.device.is_hip() {
+            if let Ok(device) = HipOwnedDeviceBuffer::from_host_buffer(buffer.clone()) {
+                Self::from_owned_device_buffer(device)
+            } else {
+                Self::from_materialized_host_buffer(buffer)
+            }
         } else {
             Self::from_materialized_host_buffer(buffer)
         }
@@ -1292,6 +1298,12 @@ impl HipDeviceBuffer {
     ) -> Self {
         if lhs.preserves_pending_upload() || rhs.preserves_pending_upload() {
             Self::from_pending_host_upload(buffer)
+        } else if buffer.device.is_hip() {
+            if let Ok(device) = HipOwnedDeviceBuffer::from_host_buffer(buffer.clone()) {
+                Self::from_owned_device_buffer(device)
+            } else {
+                Self::from_materialized_host_buffer(buffer)
+            }
         } else {
             Self::from_materialized_host_buffer(buffer)
         }
@@ -3044,8 +3056,8 @@ impl HipDeviceBuffer {
                 .narrow_copy(1, value_dim, num_v_heads * head_k_dim * head_v_dim)?
                 .reshape_copy(vec![batch_size, num_v_heads, head_k_dim, head_v_dim])?;
             return Ok((
-                Self::from_materialized_host_buffer(core_attn_out),
-                Self::from_materialized_host_buffer(recurrent_state),
+                self.from_host_computed_buffer_like(core_attn_out),
+                self.from_host_computed_buffer_like(recurrent_state),
             ));
         }
         let core_attn_out = self
@@ -3077,9 +3089,9 @@ impl HipDeviceBuffer {
                 .narrow_copy(1, seq_len * out_width, conv_dim * state_len)?
                 .reshape_copy(vec![batch_size, conv_dim, state_len])?;
             return Ok((
-                Self::from_materialized_host_buffer(mixed_qkv),
-                Self::from_materialized_host_buffer(g),
-                Self::from_materialized_host_buffer(conv_state),
+                self.from_host_computed_buffer_like(mixed_qkv),
+                self.from_host_computed_buffer_like(g),
+                self.from_host_computed_buffer_like(conv_state),
             ));
         }
         let out_width = conv_dim + num_v_heads;
@@ -3118,8 +3130,8 @@ impl HipDeviceBuffer {
                 .narrow_copy(1, total_sequence_length, k_head_dim)?
                 .reshape_copy(vec![batch_size * num_heads, k_head_dim, v_head_dim])?;
             return Ok((
-                Self::from_materialized_host_buffer(output),
-                Self::from_materialized_host_buffer(recurrent_state),
+                self.from_host_computed_buffer_like(output),
+                self.from_host_computed_buffer_like(recurrent_state),
             ));
         }
         let output_scan = self
@@ -3145,9 +3157,9 @@ impl HipDeviceBuffer {
     ) -> Result<(Self, Self, Self)> {
         if let Some(fused) = self.storage.as_host_buffer() {
             return Ok((
-                Self::from_materialized_host_buffer(fused.narrow_copy(1, 0, chunk_size)?),
-                Self::from_materialized_host_buffer(fused.narrow_copy(1, chunk_size, chunk_size)?),
-                Self::from_materialized_host_buffer(fused.narrow_copy(1, 2 * chunk_size, k_head_dim)?),
+                self.from_host_computed_buffer_like(fused.narrow_copy(1, 0, chunk_size)?),
+                self.from_host_computed_buffer_like(fused.narrow_copy(1, chunk_size, chunk_size)?),
+                self.from_host_computed_buffer_like(fused.narrow_copy(1, 2 * chunk_size, k_head_dim)?),
             ));
         }
         Ok((
@@ -11596,18 +11608,20 @@ fn mapped_delta_chunk_fused_hip_host_buffer(
 
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
-        if buffer.device.is_hip() {
-            if let Ok(device) = HipOwnedDeviceBuffer::from_host_buffer(buffer.clone()) {
-                return Ok(HipTensor::from_device_buffer(
-                    HipDeviceBuffer::from_owned_device_buffer(device),
-                ));
-            }
-        }
         return Ok(HipTensor::from_device_buffer(
-            HipDeviceBuffer::from_materialized_host_buffer(buffer),
+            host_result_device_buffer(buffer),
         ));
     }
     Ok(host)
+}
+
+fn host_result_device_buffer(buffer: HipHostBuffer) -> HipDeviceBuffer {
+    if buffer.device.is_hip() {
+        if let Ok(device) = HipOwnedDeviceBuffer::from_host_buffer(buffer.clone()) {
+            return HipDeviceBuffer::from_owned_device_buffer(device);
+        }
+    }
+    HipDeviceBuffer::from_materialized_host_buffer(buffer)
 }
 
 fn prepare_full_attention_output_host_buffer(
@@ -16944,15 +16958,14 @@ pub(crate) fn unpack_delta_chunk_step_output(
     let fused = HipTensor::from_state_buffer(fused);
     if let Some(fused) = fused.0 .0.direct_materialized_device_buffer() {
         if let Some(fused_host) = fused.storage.as_host_buffer() {
-            let output = HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(
+            let output = HipTensor::from_device_buffer(host_result_device_buffer(
                 fused_host.narrow_copy(1, 0, chunk_size)?,
             ))
             .into_state_buffer()?;
-            let recurrent_state =
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(
-                    fused_host.narrow_copy(1, chunk_size, k_head_dim)?,
-                ))
-                .into_state_buffer()?;
+            let recurrent_state = HipTensor::from_device_buffer(host_result_device_buffer(
+                fused_host.narrow_copy(1, chunk_size, k_head_dim)?,
+            ))
+            .into_state_buffer()?;
             return Ok((output, recurrent_state));
         }
         let output = HipTensor::from_device_buffer(fused.narrow(1, 0, chunk_size)?).into_state_buffer()?;
@@ -16997,8 +17010,8 @@ fn delta_chunk_recurrent_read_tensors_hip(
             let v_new = HipHostBuffer::broadcast_sub(value_host, &v_prime)?;
             let attn_inter = q_state_host.matmul(prev_state_host)?;
             return Ok((
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(v_new)),
-                HipTensor::from_device_buffer(HipDeviceBuffer::from_materialized_host_buffer(attn_inter)),
+                HipTensor::from_device_buffer(host_result_device_buffer(v_new)),
+                HipTensor::from_device_buffer(host_result_device_buffer(attn_inter)),
             ));
         }
         let v_prime = k_cumdecay_chunk.matmul(prev_state)?;
@@ -17049,9 +17062,7 @@ fn mix_chunk_attention_tensors_hip(
         {
             let attn_value = attn_host.matmul(value_host)?;
             let mixed = HipHostBuffer::broadcast_add(attn_inter_host, &attn_value)?;
-            return Ok(HipTensor::from_device_buffer(
-                HipDeviceBuffer::from_materialized_host_buffer(mixed),
-            ));
+            return Ok(HipTensor::from_device_buffer(host_result_device_buffer(mixed)));
         }
         let attn_value = attn.matmul(value_chunk)?;
         let mixed = attn_inter.broadcast_add(&attn_value)?;
