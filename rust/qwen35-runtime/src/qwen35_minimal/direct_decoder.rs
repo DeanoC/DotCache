@@ -1,7 +1,7 @@
 use super::backend_buffer_api;
 use super::backend_buffer_api::Qwen35BackendBufferApi;
 use super::decoder::{DecoderLayer, LayerKind, ModelForCausalLM, TextModel};
-use super::frontend::{profile_elapsed, profile_start};
+use super::frontend::{max_abs_delta, profile_elapsed, profile_start};
 use super::types::{RuntimeProfile, StateBuffer};
 use crate::PreparedQwen35DirectMetadata;
 use candle::Result;
@@ -25,10 +25,83 @@ impl DirectDecodePhaseContext {
     }
 }
 
+fn trace_direct_decode_layer_deltas_enabled() -> bool {
+    std::env::var("DOTCACHE_QWEN35_TRACE_DIRECT_DECODE_LAYERS")
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+fn trace_direct_prefill_enabled() -> bool {
+    std::env::var("DOTCACHE_QWEN35_TRACE_DIRECT_PREFILL")
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+fn trace_direct_finalize_enabled() -> bool {
+    std::env::var("DOTCACHE_QWEN35_TRACE_DIRECT_FINALIZE")
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+fn trace_direct_decode_layer_delta(
+    layer_idx: usize,
+    layer_type: &str,
+    reference: &StateBuffer,
+    direct: &StateBuffer,
+) -> Result<()> {
+    if !trace_direct_decode_layer_deltas_enabled() {
+        return Ok(());
+    }
+    let delta = max_abs_delta(reference.tensor(), direct.tensor())?;
+    eprintln!(
+        "direct-decode-layer-delta layer={} type={} max_abs_delta={:.6}",
+        layer_idx, layer_type, delta
+    );
+    Ok(())
+}
+
+fn trace_direct_prefill_delta(reference: &StateBuffer, direct: &StateBuffer) -> Result<()> {
+    if !trace_direct_prefill_enabled() {
+        return Ok(());
+    }
+    let delta = max_abs_delta(reference.tensor(), direct.tensor())?;
+    eprintln!("direct-prefill-logits-delta max_abs_delta={:.6}", delta);
+    Ok(())
+}
+
+fn trace_direct_finalize_deltas(
+    reference_hidden: &StateBuffer,
+    direct_hidden: &StateBuffer,
+    reference_logits: &StateBuffer,
+    direct_logits: &StateBuffer,
+) -> Result<()> {
+    if !trace_direct_finalize_enabled() {
+        return Ok(());
+    }
+    let hidden_delta = max_abs_delta(reference_hidden.tensor(), direct_hidden.tensor())?;
+    let logits_delta = max_abs_delta(reference_logits.tensor(), direct_logits.tensor())?;
+    eprintln!(
+        "direct-finalize-delta hidden_max_abs_delta={:.6} logits_max_abs_delta={:.6}",
+        hidden_delta, logits_delta
+    );
+    Ok(())
+}
+
 fn execute_linear_decode_layer(
+    layer_idx: usize,
     layer: &mut DecoderLayer,
     xs: &StateBuffer,
     phase_context: &DirectDecodePhaseContext,
+    seqlen_offset: usize,
     phase_output_scratch: &StateBuffer,
     linear_mixed_qkv: &StateBuffer,
     linear_z: &StateBuffer,
@@ -37,7 +110,13 @@ fn execute_linear_decode_layer(
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
     let mut profile = RuntimeProfile::default();
+    let reference_cache_state = if trace_direct_decode_layer_deltas_enabled() {
+        Some(layer.cache_state())
+    } else {
+        None
+    };
     let residual = xs.clone();
+    let layer_input = xs.clone();
     let xs_norm = layer.input_layernorm.forward_buffer(xs)?;
     let linear_attn = match &mut layer.token_mixer {
         LayerKind::Linear(linear_attn) => linear_attn,
@@ -74,10 +153,18 @@ fn execute_linear_decode_layer(
     let xs = phase_context
         .backend
         .copy_state_into_scratch(&xs, phase_output_scratch)?;
+    if let Some(cache_state) = reference_cache_state {
+        let direct_cache_state = layer.cache_state();
+        layer.restore_cache_state(&cache_state)?;
+        let (reference, _) = layer.forward_profiled(&layer_input, None, seqlen_offset)?;
+        layer.restore_cache_state(&direct_cache_state)?;
+        trace_direct_decode_layer_delta(layer_idx, "linear_attention", &reference, &xs)?;
+    }
     Ok((xs, profile))
 }
 
 fn execute_full_decode_layer(
+    layer_idx: usize,
     layer: &mut DecoderLayer,
     xs: &StateBuffer,
     phase_context: &DirectDecodePhaseContext,
@@ -90,7 +177,13 @@ fn execute_full_decode_layer(
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
     let mut profile = RuntimeProfile::default();
+    let reference_cache_state = if trace_direct_decode_layer_deltas_enabled() {
+        Some(layer.cache_state())
+    } else {
+        None
+    };
     let residual = xs.clone();
+    let layer_input = xs.clone();
     let xs_norm = layer.input_layernorm.forward_buffer(xs)?;
     let self_attn = match &mut layer.token_mixer {
         LayerKind::Full(self_attn) => self_attn,
@@ -139,6 +232,13 @@ fn execute_full_decode_layer(
     let xs = phase_context
         .backend
         .copy_state_into_scratch(&xs, full_attention_output_scratch)?;
+    if let Some(cache_state) = reference_cache_state {
+        let direct_cache_state = layer.cache_state();
+        layer.restore_cache_state(&cache_state)?;
+        let (reference, _) = layer.forward_profiled(&layer_input, None, seqlen_offset)?;
+        layer.restore_cache_state(&direct_cache_state)?;
+        trace_direct_decode_layer_delta(layer_idx, "full_attention", &reference, &xs)?;
+    }
     Ok((xs, profile))
 }
 
@@ -174,9 +274,11 @@ fn execute_direct_decode_linear_phase_unchecked(
         }
         let (next_xs, layer_profile) =
             execute_linear_decode_layer(
+                layer_idx,
                 layer,
                 &xs,
                 &phase_context,
+                0,
                 phase_output_scratch,
                 linear_mixed_qkv,
                 linear_z,
@@ -222,6 +324,7 @@ fn execute_direct_decode_full_phase_unchecked(
         }
         let (next_xs, layer_profile) =
             execute_full_decode_layer(
+                layer_idx,
                 layer,
                 &xs,
                 &phase_context,
@@ -368,18 +471,30 @@ pub(super) fn model_forward_hidden_states_profiled_direct_hip_v1(
     hidden_states: &StateBuffer,
     seqlen_offset: usize,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
+    let reference_cache_state = if trace_direct_prefill_enabled() {
+        Some(model.cache_state())
+    } else {
+        None
+    };
     let device = hidden_states.device();
     let backend = backend_buffer_api::for_device(device);
-    let (hidden_states, mut profile) = text_model_forward_hidden_states_profiled_direct_hip_v1(
+    let (direct_hidden_states, mut profile) = text_model_forward_hidden_states_profiled_direct_hip_v1(
         &mut model.language_model,
         metadata,
         hidden_states,
         seqlen_offset,
     )?;
     let output_start = super::frontend::profile_start(device)?;
-    let logits = backend.slice_last_token(&hidden_states)?;
+    let logits = backend.slice_last_token(&direct_hidden_states)?;
     let logits = model.lm_head.forward_buffer(&logits)?;
     profile.output_projection_millis += super::frontend::profile_elapsed(output_start, device)?;
+    if let Some(cache_state) = reference_cache_state {
+        let direct_cache_state = model.cache_state();
+        model.restore_cache_state(&cache_state)?;
+        let (reference_logits, _) = model.forward_hidden_states_profiled(hidden_states, seqlen_offset)?;
+        model.restore_cache_state(&direct_cache_state)?;
+        trace_direct_prefill_delta(&reference_logits, &logits)?;
+    }
     Ok((logits, profile))
 }
 
@@ -448,10 +563,22 @@ pub(super) fn model_finalize_direct_decode_logits_hip_v1(
     let device = hidden_states.device();
     let backend = backend_buffer_api::for_device(device);
     let output_start = super::frontend::profile_start(device)?;
-    let hidden_states = text_model_finalize_direct_decode_hidden_hip_v1(&mut model.language_model, hidden_states)?;
-    let logits = backend.slice_last_token(&hidden_states)?;
+    let direct_hidden_states =
+        text_model_finalize_direct_decode_hidden_hip_v1(&mut model.language_model, hidden_states)?;
+    let logits = backend.slice_last_token(&direct_hidden_states)?;
     let logits = model.lm_head.forward_buffer_into_scratch(&logits, logits_scratch)?;
     let mut profile = RuntimeProfile::default();
     profile.output_projection_millis += super::frontend::profile_elapsed(output_start, device)?;
+    if trace_direct_finalize_enabled() {
+        let reference_hidden = model.language_model.norm.forward_buffer(hidden_states)?;
+        let reference_logits = backend.slice_last_token(&reference_hidden)?;
+        let reference_logits = model.lm_head.forward_buffer(&reference_logits)?;
+        trace_direct_finalize_deltas(
+            &reference_hidden,
+            &direct_hidden_states,
+            &reference_logits,
+            &logits,
+        )?;
+    }
     Ok((logits, profile))
 }

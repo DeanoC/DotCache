@@ -188,14 +188,14 @@ impl DecoderLayer {
         }
     }
 
-    fn cache_state(&self) -> LayerCacheState {
+    pub(super) fn cache_state(&self) -> LayerCacheState {
         match &self.token_mixer {
             LayerKind::Linear(linear_attn) => LayerCacheState::Linear(linear_attn.cache_state()),
             LayerKind::Full(self_attn) => LayerCacheState::Full(self_attn.cache_state()),
         }
     }
 
-    fn restore_cache_state(&mut self, state: &LayerCacheState) -> Result<()> {
+    pub(super) fn restore_cache_state(&mut self, state: &LayerCacheState) -> Result<()> {
         match (&mut self.token_mixer, state) {
             (LayerKind::Linear(linear_attn), LayerCacheState::Linear(state)) => {
                 linear_attn.restore_cache_state(state);
