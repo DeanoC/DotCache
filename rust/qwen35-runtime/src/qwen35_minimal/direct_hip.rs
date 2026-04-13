@@ -1,5 +1,5 @@
 use super::{
-    DirectHipDecodePhaseKind, MinimalQwen35DirectRuntime, MinimalQwen35KvCache,
+    direct_decoder, DirectHipDecodePhaseKind, MinimalQwen35DirectRuntime, MinimalQwen35KvCache,
     MinimalQwen35RuntimeProfile, MinimalQwen35StateBuffer, ModelForCausalLM, Result,
 };
 
@@ -14,7 +14,17 @@ fn decode_phase_from_hidden_state(
 ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
     match phase_kind {
         DirectHipDecodePhaseKind::LinearAttention => Ok(
-            model.direct_decode_linear_phase_profiled_hip_v1(
+            direct_decoder::model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
+                model,
+                metadata,
+                start_layer_idx,
+                end_layer_idx,
+                xs,
+            )?,
+        ),
+        DirectHipDecodePhaseKind::FullAttention => Ok(
+            direct_decoder::model_direct_decode_full_phase_profiled_hip_v1_unchecked(
+                model,
                 metadata,
                 start_layer_idx,
                 end_layer_idx,
@@ -22,13 +32,6 @@ fn decode_phase_from_hidden_state(
                 seqlen_offset,
             )?,
         ),
-        DirectHipDecodePhaseKind::FullAttention => Ok(model.direct_decode_full_phase_profiled_hip_v1(
-            metadata,
-            start_layer_idx,
-            end_layer_idx,
-            xs,
-            seqlen_offset,
-        )?),
     }
 }
 
