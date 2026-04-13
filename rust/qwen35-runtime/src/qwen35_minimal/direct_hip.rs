@@ -43,11 +43,13 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
     ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
         self.model.restore_cache_state(cache)?;
         let seqlen_offset = cache.sequence_length();
-        let (logits, profile) = self.model.forward_hidden_states_profiled_direct_hip_v1(
-            self.runtime.metadata(),
-            hidden_state_t,
-            seqlen_offset,
-        )?;
+        let (logits, profile) = self
+            .model
+            .decode_hidden_state_profiled_direct_hip_v1(
+                self.runtime.metadata(),
+                hidden_state_t,
+                seqlen_offset,
+            )?;
         *cache = self.model.cache_state();
         if self.runtime.next_hidden_slot_is_ping {
             self.runtime.decode_hidden_ping = hidden_state_t.clone();

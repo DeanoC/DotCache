@@ -16728,6 +16728,62 @@ impl TextModel {
         Ok((self.norm.forward_buffer(&xs)?, profile))
     }
 
+    pub(crate) fn decode_hidden_state_profiled_direct_hip_v1(
+        &mut self,
+        metadata: &PreparedQwen35DirectMetadata,
+        hidden_state_t: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        if self.layers.len() != metadata.num_hidden_layers {
+            candle::bail!(
+                "direct-hip-v1 decode layer count mismatch: model={} metadata={}",
+                self.layers.len(),
+                metadata.num_hidden_layers
+            );
+        }
+        if metadata.layers.len() != self.layers.len() {
+            candle::bail!(
+                "direct-hip-v1 decode metadata layer schedule mismatch: metadata={} model={}",
+                metadata.layers.len(),
+                self.layers.len()
+            );
+        }
+        let (_, seq_len, _) = hidden_state_t.dims3()?;
+        if seq_len != 1 {
+            candle::bail!(
+                "direct-hip-v1 decode expects a single-token hidden state, got seq_len={seq_len}"
+            );
+        }
+        let mut profile = RuntimeProfile::default();
+        let mut xs = hidden_state_t.clone();
+        for (layer_idx, (layer, layer_meta)) in self
+            .layers
+            .iter_mut()
+            .zip(metadata.layers.iter())
+            .enumerate()
+        {
+            if layer_meta.layer_idx != layer_idx {
+                candle::bail!(
+                    "direct-hip-v1 decode metadata index mismatch at layer {}: got {}",
+                    layer_idx,
+                    layer_meta.layer_idx
+                );
+            }
+            if layer.layer_type() != layer_meta.layer_type {
+                candle::bail!(
+                    "direct-hip-v1 decode layer type mismatch at layer {}: model={} metadata={}",
+                    layer_idx,
+                    layer.layer_type(),
+                    layer_meta.layer_type
+                );
+            }
+            let (next_xs, layer_profile) = layer.forward_profiled(&xs, None, seqlen_offset)?;
+            profile.add_assign(&layer_profile);
+            xs = next_xs;
+        }
+        Ok((self.norm.forward_buffer(&xs)?, profile))
+    }
+
     pub fn forward(&mut self, input_ids: &Tensor, seqlen_offset: usize) -> Result<Tensor> {
         self.forward_profiled(input_ids, seqlen_offset)
             .map(|(output, _)| output)
@@ -16922,6 +16978,28 @@ impl ModelForCausalLM {
             .forward_hidden_states_profiled_direct_hip_v1(
                 metadata,
                 hidden_states,
+                seqlen_offset,
+            )?;
+        let output_start = profile_start(device)?;
+        let logits = backend.slice_last_token(&hidden_states)?;
+        let logits = self.lm_head.forward_buffer(&logits)?;
+        profile.output_projection_millis += profile_elapsed(output_start, device)?;
+        Ok((logits, profile))
+    }
+
+    pub(crate) fn decode_hidden_state_profiled_direct_hip_v1(
+        &mut self,
+        metadata: &PreparedQwen35DirectMetadata,
+        hidden_state_t: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        let device = hidden_state_t.device();
+        let backend = backend_buffer_api::for_device(device);
+        let (hidden_states, mut profile) = self
+            .language_model
+            .decode_hidden_state_profiled_direct_hip_v1(
+                metadata,
+                hidden_state_t,
                 seqlen_offset,
             )?;
         let output_start = profile_start(device)?;
