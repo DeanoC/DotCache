@@ -235,6 +235,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_a_max_delta: Option<f32>,
         pytorch_first_layer_linear_post_conv_max_delta: Option<f32>,
         pytorch_first_layer_linear_hook_vs_direct_conv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_query_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_key_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_value_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_beta_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_g_max_delta: Option<f32>,
         pytorch_first_layer_linear_explicit_post_conv_max_delta: Option<f32>,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta: Option<f32>,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta: Option<f32>,
@@ -292,6 +297,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_layer_linear_a_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_post_conv_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_direct_conv_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_prepared_query_output: Vec<Vec<Vec<Vec<f32>>>>,
+        first_layer_linear_prepared_key_output: Vec<Vec<Vec<Vec<f32>>>>,
+        first_layer_linear_prepared_value_output: Vec<Vec<Vec<Vec<f32>>>>,
+        first_layer_linear_prepared_beta_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_prepared_g_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_prepared_value_focus_head_output: Vec<f32>,
         first_layer_linear_pre_norm_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_pre_norm_mean_square: Vec<Vec<Vec<f32>>>,
@@ -442,6 +452,36 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let rhs_flat = rhs
             .iter()
             .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        if lhs.len() != rhs_flat.len() {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor delta",
+                expected: rhs_flat.len(),
+                got: lhs.len(),
+            });
+        }
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.iter().zip(rhs_flat.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn max_tensor_delta_vec4(logits: &Tensor, rhs: &[Vec<Vec<Vec<f32>>>]) -> Result<f32> {
+        let dims = logits.dims();
+        if dims.len() != 4 {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("expected rank-4 tensor, got shape {dims:?}"),
+            });
+        }
+        let lhs = logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let rhs_flat = rhs
+            .iter()
+            .flat_map(|a| {
+                a.iter()
+                    .flat_map(|b| b.iter().flat_map(|c| c.iter().copied()))
+            })
             .collect::<Vec<_>>();
         if lhs.len() != rhs_flat.len() {
             return Err(RuntimeError::DimensionMismatch {
@@ -893,6 +933,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_a_max_delta,
         pytorch_first_layer_linear_post_conv_max_delta,
         pytorch_first_layer_linear_hook_vs_direct_conv_max_delta,
+        pytorch_first_layer_linear_prepared_query_max_delta,
+        pytorch_first_layer_linear_prepared_key_max_delta,
+        pytorch_first_layer_linear_prepared_value_max_delta,
+        pytorch_first_layer_linear_prepared_beta_max_delta,
+        pytorch_first_layer_linear_prepared_g_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
@@ -988,6 +1033,26 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pytorch_first_layer_linear_hook_vs_direct_conv_max_delta = Some(max_vec3_delta(
             &pytorch_oracle.first_layer_linear_post_conv_output,
             &pytorch_oracle.first_layer_linear_direct_conv_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_query_max_delta = Some(max_tensor_delta_vec4(
+            linear_core_trace.prepared_query.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_query_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_key_max_delta = Some(max_tensor_delta_vec4(
+            linear_core_trace.prepared_key.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_key_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_value_max_delta = Some(max_tensor_delta_vec4(
+            linear_core_trace.prepared_value.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_value_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_beta_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.prepared_beta.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_beta_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_g_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.prepared_g.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_g_output,
         )?);
         let pytorch_first_layer_linear_explicit_post_conv_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.explicit_post_conv_mixed_qkv.tensor(),
@@ -1147,6 +1212,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_a_max_delta,
             pytorch_first_layer_linear_post_conv_max_delta,
             pytorch_first_layer_linear_hook_vs_direct_conv_max_delta,
+            pytorch_first_layer_linear_prepared_query_max_delta,
+            pytorch_first_layer_linear_prepared_key_max_delta,
+            pytorch_first_layer_linear_prepared_value_max_delta,
+            pytorch_first_layer_linear_prepared_beta_max_delta,
+            pytorch_first_layer_linear_prepared_g_max_delta,
             pytorch_first_layer_linear_explicit_post_conv_max_delta,
             pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
             pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
@@ -1181,7 +1251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1517,6 +1587,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_a_max_delta,
         pytorch_first_layer_linear_post_conv_max_delta,
         pytorch_first_layer_linear_hook_vs_direct_conv_max_delta,
+        pytorch_first_layer_linear_prepared_query_max_delta,
+        pytorch_first_layer_linear_prepared_key_max_delta,
+        pytorch_first_layer_linear_prepared_value_max_delta,
+        pytorch_first_layer_linear_prepared_beta_max_delta,
+        pytorch_first_layer_linear_prepared_g_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,

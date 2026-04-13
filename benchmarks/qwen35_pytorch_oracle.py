@@ -51,6 +51,11 @@ def main() -> None:
     first_layer_linear_pre_conv_value_focus_head_output = None
     first_layer_linear_post_conv_output = None
     first_layer_linear_direct_conv_output = None
+    first_layer_linear_prepared_query_output = None
+    first_layer_linear_prepared_key_output = None
+    first_layer_linear_prepared_value_output = None
+    first_layer_linear_prepared_beta_output = None
+    first_layer_linear_prepared_g_output = None
     first_layer_linear_prepared_value_focus_head_output = None
     first_layer_linear_pre_norm_output = None
     first_layer_linear_pre_norm_mean_square = None
@@ -115,6 +120,11 @@ def main() -> None:
     def linear_conv_hook(_module, _inputs, output):
         nonlocal first_layer_linear_post_conv_output
         nonlocal first_layer_linear_direct_conv_output
+        nonlocal first_layer_linear_prepared_query_output
+        nonlocal first_layer_linear_prepared_key_output
+        nonlocal first_layer_linear_prepared_value_output
+        nonlocal first_layer_linear_prepared_beta_output
+        nonlocal first_layer_linear_prepared_g_output
         nonlocal first_layer_linear_prepared_value_focus_head_output
         nonlocal first_layer_linear_conv_weight
         tensor = capture_tensor(output)
@@ -139,12 +149,41 @@ def main() -> None:
         if first_layer_linear_z_output is None:
             raise RuntimeError("linear_z hook must run before linear_conv hook")
         value_dim = first_layer_linear_z_output.shape[-1]
-        key_dim = (post_conv.shape[-1] - value_dim) // 2
-        num_v_heads = 16
-        head_v_dim = value_dim // num_v_heads
-        value = post_conv[..., key_dim * 2 : key_dim * 2 + value_dim].reshape(
+        key_dim = (direct_conv.shape[-1] - value_dim) // 2
+        linear_attn = model.model.layers[0].linear_attn
+        num_k_heads = int(linear_attn.num_k_heads)
+        num_v_heads = int(linear_attn.num_v_heads)
+        head_k_dim = int(linear_attn.head_k_dim)
+        head_v_dim = int(linear_attn.head_v_dim)
+        query = direct_conv[..., :key_dim].reshape(
+            input_ids.shape[0], input_ids.shape[1], num_k_heads, head_k_dim
+        )
+        key = direct_conv[..., key_dim : key_dim * 2].reshape(
+            input_ids.shape[0], input_ids.shape[1], num_k_heads, head_k_dim
+        )
+        value = direct_conv[..., key_dim * 2 : key_dim * 2 + value_dim].reshape(
             input_ids.shape[0], input_ids.shape[1], num_v_heads, head_v_dim
         )
+        query = F.normalize(query, p=2.0, dim=-1, eps=1e-6)
+        key = F.normalize(key, p=2.0, dim=-1, eps=1e-6)
+        head_repeat = num_v_heads // num_k_heads
+        if head_repeat > 1:
+            query = query.repeat_interleave(head_repeat, dim=2)
+            key = key.repeat_interleave(head_repeat, dim=2)
+        first_layer_linear_prepared_query_output = query.cpu()
+        first_layer_linear_prepared_key_output = key.cpu()
+        first_layer_linear_prepared_value_output = value.cpu()
+        first_layer_linear_prepared_beta_output = torch.sigmoid(
+            first_layer_linear_b_output
+        ).to(dtype=torch.float32).cpu()
+        dt_bias = linear_attn.dt_bias.detach().to(dtype=torch.float32).reshape(1, 1, num_v_heads)
+        a_log_exp = linear_attn.A_log.detach().to(dtype=torch.float32).exp().reshape(
+            1, 1, num_v_heads
+        )
+        a_input = first_layer_linear_a_output.to(dtype=torch.float32)
+        first_layer_linear_prepared_g_output = (
+            -torch.log1p(torch.exp(a_input + dt_bias)) * a_log_exp
+        ).cpu()
         first_layer_linear_prepared_value_focus_head_output = value[0, 2, 6].cpu()
 
     def linear_norm_hook(_module, _inputs, output):
@@ -262,6 +301,11 @@ def main() -> None:
         or first_layer_linear_pre_conv_value_focus_head_output is None
         or first_layer_linear_post_conv_output is None
         or first_layer_linear_direct_conv_output is None
+        or first_layer_linear_prepared_query_output is None
+        or first_layer_linear_prepared_key_output is None
+        or first_layer_linear_prepared_value_output is None
+        or first_layer_linear_prepared_beta_output is None
+        or first_layer_linear_prepared_g_output is None
         or first_layer_linear_prepared_value_focus_head_output is None
         or first_layer_linear_pre_norm_output is None
         or first_layer_linear_pre_norm_mean_square is None
@@ -317,6 +361,11 @@ def main() -> None:
         "first_layer_linear_conv_weight": first_layer_linear_conv_weight.tolist(),
         "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output.tolist(),
         "first_layer_linear_direct_conv_output": first_layer_linear_direct_conv_output.tolist(),
+        "first_layer_linear_prepared_query_output": first_layer_linear_prepared_query_output.tolist(),
+        "first_layer_linear_prepared_key_output": first_layer_linear_prepared_key_output.tolist(),
+        "first_layer_linear_prepared_value_output": first_layer_linear_prepared_value_output.tolist(),
+        "first_layer_linear_prepared_beta_output": first_layer_linear_prepared_beta_output.tolist(),
+        "first_layer_linear_prepared_g_output": first_layer_linear_prepared_g_output.tolist(),
         "first_layer_linear_prepared_value_focus_head_output": first_layer_linear_prepared_value_focus_head_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_pre_norm_mean_square": first_layer_linear_pre_norm_mean_square.tolist(),

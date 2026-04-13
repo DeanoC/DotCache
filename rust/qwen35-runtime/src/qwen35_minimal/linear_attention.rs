@@ -2370,6 +2370,11 @@ impl GatedDeltaNet {
             compute_dtype,
             seq_len == 1 || use_short_recurrent_prefill,
         )?;
+        let prepared_query = backend.tensor_to_buffer(query.clone())?;
+        let prepared_key = backend.tensor_to_buffer(key.clone())?;
+        let prepared_value = backend.tensor_to_buffer(value.clone())?;
+        let prepared_beta = backend.tensor_to_buffer(beta.clone())?;
+        let prepared_g = backend.tensor_to_buffer(g.clone())?;
         let prepared_value_focus_head = backend.tensor_to_buffer(value.i((0, 2, 6))?)?;
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
@@ -2479,6 +2484,11 @@ impl GatedDeltaNet {
                 explicit_post_conv_mixed_qkv,
                 explicit_post_conv_reversed_taps_mixed_qkv,
                 fp32_reference_post_conv_mixed_qkv,
+                prepared_query,
+                prepared_key,
+                prepared_value,
+                prepared_beta,
+                prepared_g,
                 post_conv_value_focus_head,
                 explicit_post_conv_value_focus_head,
                 explicit_post_conv_reversed_taps_value_focus_head,
