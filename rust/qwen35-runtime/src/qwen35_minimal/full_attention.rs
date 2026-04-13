@@ -38,6 +38,20 @@ pub(crate) struct FullAttention {
     kv_cache: Option<(StateBuffer, StateBuffer)>,
 }
 
+pub(super) struct DirectFullAttentionDecodeContext<'a> {
+    backend: &'static dyn Qwen35BackendBufferApi,
+    output_dtype: DType,
+    b_sz: usize,
+    q_len: usize,
+    seqlen_offset: usize,
+    prev_k: Option<&'a StateBuffer>,
+    prev_v: Option<&'a StateBuffer>,
+    q_norm_weight: &'a Tensor,
+    q_norm_eps: f64,
+    k_norm_weight: &'a Tensor,
+    k_norm_eps: f64,
+}
+
 impl FullAttention {
     pub(super) fn cache_state(&self) -> FullAttentionCacheState {
         FullAttentionCacheState {
@@ -1078,6 +1092,30 @@ impl FullAttention {
         )
     }
 
+    pub(super) fn direct_decode_context<'a>(
+        &'a self,
+        xs: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<DirectFullAttentionDecodeContext<'a>> {
+        let backend = backend_buffer_api::for_device(xs.device());
+        let output_dtype = xs.dtype();
+        let (b_sz, q_len, _) = xs.dims3()?;
+        let prev_kv = self.kv_cache.as_ref();
+        Ok(DirectFullAttentionDecodeContext {
+            backend,
+            output_dtype,
+            b_sz,
+            q_len,
+            seqlen_offset,
+            prev_k: prev_kv.map(|(k, _)| k),
+            prev_v: prev_kv.map(|(_, v)| v),
+            q_norm_weight: self.q_norm.weight(),
+            q_norm_eps: self.q_norm.eps(),
+            k_norm_weight: self.k_norm.weight(),
+            k_norm_eps: self.k_norm.eps(),
+        })
+    }
+
     pub(super) fn forward_profiled_direct_decode_v1(
         &mut self,
         xs: &StateBuffer,
@@ -1085,11 +1123,11 @@ impl FullAttention {
         _layer_id: usize,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
         let device = xs.device();
-        let output_dtype = xs.dtype();
-        let (b_sz, q_len, _) = xs.dims3()?;
-        if q_len != 1 {
+        let context = self.direct_decode_context(xs, seqlen_offset)?;
+        if context.q_len != 1 {
             candle::bail!(
-                "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={q_len}"
+                "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={}",
+                context.q_len
             );
         }
         let full_start = profile_start(device)?;
@@ -1102,21 +1140,19 @@ impl FullAttention {
             appended_k,
             appended_v,
             input_profile,
-        ) = self.project_direct_decode_inputs(xs, seqlen_offset)?;
+        ) = self.project_direct_decode_inputs_with_context(xs, &context)?;
         profile.add_assign(&input_profile);
 
         let kernel_start = profile_start(device)?;
-        let attn_output = self.full_attention_decode_projected(
-            output_dtype,
-            b_sz,
-            q_len,
+        let attn_output = self.run_direct_decode_core_with_context(
+            &context,
             &query_states,
             &key_states,
             &value_states,
             &gate,
-            seqlen_offset,
         )?;
         profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+        drop(context);
         self.commit_direct_decode_kv_cache(appended_k, appended_v);
 
         let output_start = profile_start(device)?;
@@ -1139,42 +1175,56 @@ impl FullAttention {
         StateBuffer,
         RuntimeProfile,
     )> {
+        let context = self.direct_decode_context(xs, seqlen_offset)?;
+        self.project_direct_decode_inputs_with_context(xs, &context)
+    }
+
+    pub(super) fn project_direct_decode_inputs_with_context(
+        &self,
+        xs: &StateBuffer,
+        context: &DirectFullAttentionDecodeContext<'_>,
+    ) -> Result<(
+        Tensor,
+        Tensor,
+        Tensor,
+        StateBuffer,
+        StateBuffer,
+        StateBuffer,
+        RuntimeProfile,
+    )> {
         let device = xs.device();
-        let (b_sz, q_len, _) = xs.dims3()?;
-        let backend = backend_buffer_api::for_device(device);
         let mut profile = RuntimeProfile::default();
 
         let qkv_start = profile_start(device)?;
         let q_and_gate = self.q_proj.forward_buffer(xs)?;
         let k_proj = self.k_proj.forward_buffer(xs)?;
         let v_proj = self.v_proj.forward_buffer(xs)?;
-        let (query_states, gate, key_states, value_states) = backend.prepare_full_attention_inputs(
+        let (query_states, gate, key_states, value_states) = context.backend.prepare_full_attention_inputs(
             &q_and_gate,
             &k_proj,
             &v_proj,
-            b_sz,
-            q_len,
+            context.b_sz,
+            context.q_len,
             self.num_heads,
             self.num_kv_heads,
             self.head_dim,
-            self.q_norm.weight(),
-            self.q_norm.eps(),
-            self.k_norm.weight(),
-            self.k_norm.eps(),
+            context.q_norm_weight,
+            context.q_norm_eps,
+            context.k_norm_weight,
+            context.k_norm_eps,
         )?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
         let layout_start = profile_start(device)?;
         let (query_states, key_states) =
             self.rotary_emb
-                .apply_buffer(&query_states, &key_states, seqlen_offset)?;
+                .apply_buffer(&query_states, &key_states, context.seqlen_offset)?;
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let kv_append_start = profile_start(device)?;
-        let prev_kv = self.kv_cache.as_ref();
-        let appended_kv = backend.append_full_attention_kv_buffers(
-            prev_kv.map(|(k, _)| k),
-            prev_kv.map(|(_, v)| v),
+        let appended_kv = context.backend.append_full_attention_kv_buffers(
+            context.prev_k,
+            context.prev_v,
             key_states.tensor(),
             value_states.tensor(),
         )?;
@@ -1182,7 +1232,7 @@ impl FullAttention {
 
         let input_layout_start = profile_start(device)?;
         let (query_states, key_states, value_states) =
-            backend.prepare_full_attention_kernel_inputs_with_buffer_kv(
+            context.backend.prepare_full_attention_kernel_inputs_with_buffer_kv(
                 &query_states,
                 &appended_kv.0,
                 &appended_kv.1,
@@ -1222,6 +1272,26 @@ impl FullAttention {
             value_states,
             gate,
             seqlen_offset,
+        )
+    }
+
+    pub(super) fn run_direct_decode_core_with_context(
+        &self,
+        context: &DirectFullAttentionDecodeContext<'_>,
+        query_states: &Tensor,
+        key_states: &Tensor,
+        value_states: &Tensor,
+        gate: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        self.full_attention_decode_projected(
+            context.output_dtype,
+            context.b_sz,
+            context.q_len,
+            query_states,
+            key_states,
+            value_states,
+            gate,
+            context.seqlen_offset,
         )
     }
 

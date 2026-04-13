@@ -11,20 +11,16 @@ use candle_core::DType;
 struct DirectDecodePhaseContext {
     backend: &'static dyn Qwen35BackendBufferApi,
     output_dtype: DType,
-    batch_size: usize,
-    seq_len: usize,
 }
 
 impl DirectDecodePhaseContext {
     fn from_hidden_state(xs: &StateBuffer) -> Result<Self> {
         let backend = backend_buffer_api::for_device(xs.device());
         let output_dtype = xs.dtype();
-        let (batch_size, seq_len, _) = xs.dims3()?;
+        let _ = xs.dims3()?;
         Ok(Self {
             backend,
             output_dtype,
-            batch_size,
-            seq_len,
         })
     }
 }
@@ -82,6 +78,7 @@ fn execute_full_decode_layer(
             candle::bail!("direct-hip-v1 full decode expected full-attention layer")
         }
     };
+    let context = self_attn.direct_decode_context(&xs_norm, seqlen_offset)?;
     let (
         query_states,
         key_states,
@@ -90,18 +87,16 @@ fn execute_full_decode_layer(
         appended_k,
         appended_v,
         input_profile,
-    ) = self_attn.project_direct_decode_inputs(&xs_norm, seqlen_offset)?;
+    ) = self_attn.project_direct_decode_inputs_with_context(&xs_norm, &context)?;
     profile.add_assign(&input_profile);
-    let xs = self_attn.run_direct_decode_core(
-        phase_context.output_dtype,
-        phase_context.batch_size,
-        phase_context.seq_len,
+    let xs = self_attn.run_direct_decode_core_with_context(
+        &context,
         &query_states,
         &key_states,
         &value_states,
         &gate,
-        seqlen_offset,
     )?;
+    drop(context);
     self_attn.commit_direct_decode_kv_cache(appended_k, appended_v);
     let xs = phase_context.backend.add(&residual, &xs)?;
     let residual = xs.clone();
