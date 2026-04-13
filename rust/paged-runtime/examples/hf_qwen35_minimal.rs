@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use dotcache_paged_runtime::{
         MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
     };
+    use serde::Serialize;
     use tokenizers::Tokenizer;
 
     #[derive(Clone, Debug)]
@@ -135,6 +136,48 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    impl std::fmt::Display for LoadMode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Native => f.write_str("native"),
+                Self::Direct => f.write_str("direct"),
+                Self::HipDirect => f.write_str("hip-direct"),
+            }
+        }
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RunRecord {
+        model_id: String,
+        prompt: String,
+        device: String,
+        load_mode: String,
+        device_only: bool,
+        prompt_token_count: usize,
+        generated_token_count: usize,
+        max_new_tokens: usize,
+        cpu_load_ms: f64,
+        device_load_ms: f64,
+        cpu_prefill_ms: f64,
+        device_prefill_ms: f64,
+        cpu_decode_ms: f64,
+        device_decode_ms: f64,
+        prefill_max_delta: f32,
+        decode_max_delta: f32,
+        generated_text: String,
+        hip_trace_candle_fallback: bool,
+        hip_print_transfers: bool,
+        full_prefill_megakernel_requested: bool,
+        hip_persistent_full_prefill_requested: bool,
+    }
+
+    fn env_flag_truthy(key: &str) -> bool {
+        matches!(
+            std::env::var(key).as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES") | Ok("on") | Ok("ON")
+        )
+    }
+
     fn argmax_last_token(logits: &Tensor) -> Result<u32> {
         let last_token = match logits.dims() {
             [1, _vocab] => logits.i(0)?,
@@ -234,13 +277,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct|hip-direct] [--device-only]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct|hip-direct] [--device-only] [--record-json <path>]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();
     let mut device_selector = DeviceSelector::Cpu;
     let mut load_mode = LoadMode::Native;
     let mut device_only = false;
+    let mut record_json_path: Option<String> = None;
     while let Some(arg) = args.next() {
         if arg == "--device" {
             let value = args.next().ok_or("missing value for --device")?;
@@ -250,6 +294,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             load_mode = value.parse()?;
         } else if arg == "--device-only" {
             device_only = true;
+        } else if arg == "--record-json" {
+            record_json_path = Some(args.next().ok_or("missing value for --record-json")?);
         } else {
             positional.push(arg);
         }
@@ -402,6 +448,35 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let generated_text = tokenizer.decode(&generated_ids, true)?;
+    let record = RunRecord {
+        model_id: model_id.clone(),
+        prompt: prompt.clone(),
+        device: device_selector.to_string(),
+        load_mode: load_mode.to_string(),
+        device_only,
+        prompt_token_count: prompt_ids.len(),
+        generated_token_count: generated_ids.len().saturating_sub(prompt_ids.len()),
+        max_new_tokens,
+        cpu_load_ms: cpu_load_elapsed.as_secs_f64() * 1000.0,
+        device_load_ms: device_load_elapsed.as_secs_f64() * 1000.0,
+        cpu_prefill_ms: cpu_prefill_elapsed.as_secs_f64() * 1000.0,
+        device_prefill_ms: device_prefill_elapsed.as_secs_f64() * 1000.0,
+        cpu_decode_ms: cpu_decode_elapsed.as_secs_f64() * 1000.0,
+        device_decode_ms: device_decode_elapsed.as_secs_f64() * 1000.0,
+        prefill_max_delta: prefill_delta,
+        decode_max_delta: max_decode_delta,
+        generated_text: generated_text.clone(),
+        hip_trace_candle_fallback: env_flag_truthy("DOTCACHE_HIP_TRACE_CANDLE_FALLBACK"),
+        hip_print_transfers: env_flag_truthy("DOTCACHE_QWEN35_PRINT_HIP_TRANSFERS"),
+        full_prefill_megakernel_requested: env_flag_truthy("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL"),
+        hip_persistent_full_prefill_requested: env_flag_truthy(
+            "CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL",
+        ),
+    };
+    if let Some(record_json_path) = record_json_path.as_ref() {
+        std::fs::write(record_json_path, serde_json::to_string_pretty(&record)?)?;
+        eprintln!("run record written to {record_json_path}");
+    }
     println!("{generated_text}");
     eprintln!(
         "device={device_selector} device_only={} prompt_tokens={} generated_tokens={} cpu_load_ms={:.2} device_load_ms={:.2} cpu_prefill_ms={:.2} device_prefill_ms={:.2} cpu_decode_ms={:.2} device_decode_ms={:.2} prefill_max_delta={:.6} decode_max_delta={:.6}",
