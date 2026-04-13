@@ -117,6 +117,7 @@ Current fixed-tree CUDA baseline:
 
 - native CUDA `final_mix` is now default-on for supported mixed-mode calls
 - fused query-first combined-cache `direct_m0_score` is now default-on when the combined cache is available
+- native CUDA generic mixed stream-stats `final_mix` is now default-on when shape limits fit
 - Triton scorer / fused paths remain opt-in only
 
 Measured kept gains on the fixed-tree CUDA performance probes:
@@ -124,8 +125,17 @@ Measured kept gains on the fixed-tree CUDA performance probes:
 - `performance_journal`
   - native `final_mix`: `405.18 -> 397.16 ms/step`
   - fused query-first scorer: `397.16 -> 395.51 ms/step`
+  - native stream-stats `final_mix`: `395.51 -> 384.93 ms/step`
 - round-2 repo-local public-validation subset
   - native `final_mix`: `311.07 -> 308.78 ms/step`
   - fused query-first scorer: `308.78 -> 306.57 ms/step`
+  - native stream-stats `final_mix`: `306.57 -> 304.20 ms/step`
 
-So the current CUDA checkpoint is no longer just "correct and viable." It now has a modest but real fixed-tree default baseline improvement with correctness unchanged.
+The newest kept CUDA win is the most important one:
+
+- it cuts generic mixed `final_mix` cost by about `48%` on both checked probes
+- end-to-end latency improves by about `2.67%` on `performance_journal`
+- end-to-end latency improves by about `0.77%` on the round-2 repo-local public-validation subset
+- exact-match vs hand stays `1.0`
+
+So the current CUDA checkpoint is no longer just "correct and viable." It now has a meaningful fixed-tree default baseline improvement, with the strongest recent gain coming from the generic mixed stream-stats `final_mix` kernel.
