@@ -1075,6 +1075,8 @@ def main() -> None:
         "decode_first_layer_linear_prepared_beta_output": decode_first_layer_linear_prepared_beta_output.tolist() if decode_first_layer_linear_prepared_beta_output is not None else None,
         "decode_first_layer_linear_prepared_g_output": decode_first_layer_linear_prepared_g_output.tolist() if decode_first_layer_linear_prepared_g_output is not None else None,
         "decode_first_layer_linear_direct_recurrent_output": decode_first_layer_linear_direct_recurrent_output.tolist() if decode_first_layer_linear_direct_recurrent_output is not None else None,
+        "decode_first_layer_conv_state_before": decode_first_layer_conv_state_before.tolist() if decode_first_layer_conv_state_before is not None else None,
+        "decode_first_layer_recurrent_state_before": decode_first_layer_recurrent_state_before.tolist() if decode_first_layer_recurrent_state_before is not None else None,
         "decode_first_layer_linear_pre_norm_output": decode_first_layer_linear_pre_norm_output.tolist() if decode_first_layer_linear_pre_norm_output is not None else None,
         "decode_first_layer_linear_norm_output": decode_first_layer_linear_norm_output.tolist() if decode_first_layer_linear_norm_output is not None else None,
         "decode_first_layer_token_mixer_output": decode_first_layer_token_mixer_output.tolist() if decode_first_layer_token_mixer_output is not None else None,

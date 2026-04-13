@@ -2844,6 +2844,23 @@ impl GatedDeltaNet {
         } else {
             self.chunk_gated_delta_rule_trace_label(device, seq_len)
         };
+        let state_len = self.conv_kernel_size.saturating_sub(1);
+        let initial_conv_state = match &self.conv_state {
+            Some(prev_state) => prev_state.clone(),
+            None => backend.tensor_to_buffer(backend_buffer_api::for_device(device).zeros_tensor(
+                device,
+                compute_dtype,
+                &[batch_size, self.conv_dim(), state_len],
+            )?)?,
+        };
+        let initial_recurrent_state = match &self.recurrent_state {
+            Some(state) => state.clone(),
+            None => backend.tensor_to_buffer(backend_buffer_api::for_device(device).zeros_tensor(
+                device,
+                DType::F32,
+                &[batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim],
+            )?)?,
+        };
         let (query, key, value, beta, g) = backend.prepare_linear_attention_inputs(
             &mixed_qkv,
             &beta_raw,
@@ -3146,6 +3163,8 @@ impl GatedDeltaNet {
             LinearAttentionCoreTrace {
                 chunk_scan_mode,
                 chunk_execution_branch,
+                initial_conv_state,
+                initial_recurrent_state,
                 conv_weight_squeezed,
                 post_conv_mixed_qkv,
                 explicit_post_conv_mixed_qkv,

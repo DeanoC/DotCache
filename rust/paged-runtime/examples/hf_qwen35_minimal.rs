@@ -337,6 +337,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_linear_prepared_beta_max_delta: Option<f32>,
         pytorch_decode_first_layer_linear_prepared_g_max_delta: Option<f32>,
         pytorch_decode_first_layer_linear_direct_recurrent_max_delta: Option<f32>,
+        pytorch_decode_first_layer_initial_conv_state_shape_match: Option<bool>,
+        pytorch_decode_first_layer_initial_conv_state_max_delta: Option<f32>,
+        pytorch_decode_first_layer_initial_recurrent_state_max_delta: Option<f32>,
+        pytorch_decode_first_layer_initial_recurrent_state_focus_head_max_delta: Option<f32>,
         pytorch_decode_first_layer_linear_pre_norm_max_delta: Option<f32>,
         pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta: Option<f32>,
         pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta: Option<f32>,
@@ -451,6 +455,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decode_first_layer_linear_prepared_beta_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_linear_prepared_g_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_linear_direct_recurrent_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_conv_state_before: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_recurrent_state_before: Option<Vec<Vec<Vec<Vec<f32>>>>>,
         decode_first_layer_linear_pre_norm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_linear_norm_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_first_layer_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
@@ -2043,6 +2049,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_linear_prepared_beta_max_delta,
         pytorch_decode_first_layer_linear_prepared_g_max_delta,
         pytorch_decode_first_layer_linear_direct_recurrent_max_delta,
+        pytorch_decode_first_layer_initial_conv_state_shape_match,
+        pytorch_decode_first_layer_initial_conv_state_max_delta,
+        pytorch_decode_first_layer_initial_recurrent_state_max_delta,
+        pytorch_decode_first_layer_initial_recurrent_state_focus_head_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta,
@@ -2222,6 +2232,105 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         max_tensor_delta_vec3(
                             layer0_linear_core_trace.pre_gated_norm_output.tensor(),
                             oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_conv_state_before
+                    .as_ref()
+                    .map(|oracle| {
+                        let runtime_dims = layer0_linear_core_trace.initial_conv_state.tensor().dims();
+                        let oracle_dims = [
+                            oracle.len(),
+                            oracle.first().map_or(0usize, |outer| outer.len()),
+                            oracle
+                                .first()
+                                .and_then(|outer| outer.first())
+                                .map_or(0usize, |inner| inner.len()),
+                        ];
+                        Ok::<bool, RuntimeError>(runtime_dims == oracle_dims)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_conv_state_before
+                    .as_ref()
+                    .map(|oracle| {
+                        let runtime_dims = layer0_linear_core_trace.initial_conv_state.tensor().dims();
+                        let oracle_dims = [
+                            oracle.len(),
+                            oracle.first().map_or(0usize, |outer| outer.len()),
+                            oracle
+                                .first()
+                                .and_then(|outer| outer.first())
+                                .map_or(0usize, |inner| inner.len()),
+                        ];
+                        if runtime_dims == oracle_dims {
+                            Ok::<Option<f32>, RuntimeError>(Some(max_tensor_delta_vec3(
+                                layer0_linear_core_trace.initial_conv_state.tensor(),
+                                oracle,
+                            )?))
+                        } else {
+                            Ok::<Option<f32>, RuntimeError>(None)
+                        }
+                    })
+                    .transpose()?
+                    .flatten(),
+                pytorch_oracle
+                    .decode_first_layer_recurrent_state_before
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.initial_recurrent_state.tensor(),
+                            &oracle[0],
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_recurrent_state_before
+                    .as_ref()
+                    .map(|oracle_state| {
+                        let pre_norm_oracle = pytorch_oracle
+                            .decode_first_layer_linear_pre_norm_output
+                            .as_ref()
+                            .ok_or_else(|| RuntimeError::External {
+                                context: "decode linear pre norm oracle",
+                                message: "missing decode pre-norm oracle tensor".to_string(),
+                            })?;
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            pre_norm_oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            pre_norm_oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let focus_head = argmax[2];
+                        max_tensor_delta_vec2(
+                            &layer0_linear_core_trace
+                                .initial_recurrent_state
+                                .tensor()
+                                .i((focus_head, .., ..))?,
+                            &oracle_state[0][focus_head],
                         )
                     })
                     .transpose()?,
@@ -2808,14 +2917,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             (
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None,
             )
         }
     } else {
         (
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None,
         )
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
@@ -3169,6 +3278,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_first_layer_linear_prepared_beta_max_delta,
         pytorch_decode_first_layer_linear_prepared_g_max_delta,
         pytorch_decode_first_layer_linear_direct_recurrent_max_delta,
+        pytorch_decode_first_layer_initial_conv_state_shape_match,
+        pytorch_decode_first_layer_initial_conv_state_max_delta,
+        pytorch_decode_first_layer_initial_recurrent_state_max_delta,
+        pytorch_decode_first_layer_initial_recurrent_state_focus_head_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta,
         pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta,

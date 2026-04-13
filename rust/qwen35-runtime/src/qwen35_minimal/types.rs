@@ -368,6 +368,8 @@ pub struct LinearAttentionProjectionTrace {
 pub struct LinearAttentionCoreTrace {
     pub chunk_scan_mode: Option<String>,
     pub chunk_execution_branch: Option<String>,
+    pub initial_conv_state: StateBuffer,
+    pub initial_recurrent_state: StateBuffer,
     pub conv_weight_squeezed: StateBuffer,
     pub post_conv_mixed_qkv: StateBuffer,
     pub explicit_post_conv_mixed_qkv: StateBuffer,
