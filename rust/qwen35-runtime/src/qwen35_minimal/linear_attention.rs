@@ -2482,7 +2482,16 @@ impl GatedDeltaNet {
         let prepared_value_focus_head = backend.tensor_to_buffer(value.i((0, 2, 6))?)?;
         let focus_step = usize::min(2, seq_len.saturating_sub(1));
         let focus_head = usize::min(6, self.num_v_heads.saturating_sub(1));
-        let (focused_recurrent_kv_mem, focused_recurrent_delta, focused_recurrent_state, focused_recurrent_output) =
+        let (
+            focused_recurrent_kv_mem_steps,
+            focused_recurrent_delta_steps,
+            focused_recurrent_state_steps,
+            focused_recurrent_output_steps,
+            focused_recurrent_kv_mem,
+            focused_recurrent_delta,
+            focused_recurrent_state,
+            focused_recurrent_output,
+        ) =
             if seq_len == 1 || use_short_recurrent_prefill {
                 let query_t = query.transpose(1, 2)?.contiguous()?.to_dtype(compute_dtype)?;
                 let key_t = key.transpose(1, 2)?.contiguous()?.to_dtype(compute_dtype)?;
@@ -2497,6 +2506,10 @@ impl GatedDeltaNet {
                     &[batch_size, num_heads, k_head_dim, v_head_dim],
                 )?;
                 if focus_step < seq_len && focus_head < num_heads {
+                    let mut kv_mem_steps = Vec::new();
+                    let mut delta_steps = Vec::new();
+                    let mut state_steps = Vec::new();
+                    let mut output_steps = Vec::new();
                     let mut focused_kv_mem = None;
                     let mut focused_delta = None;
                     let mut focused_state = None;
@@ -2521,26 +2534,32 @@ impl GatedDeltaNet {
                         trace_state = trace_state.broadcast_add(
                             &k_cur.unsqueeze(D::Minus1)?.broadcast_mul(&delta_cur.unsqueeze(2)?)?,
                         )?;
+                        let output_cur = trace_state
+                            .broadcast_mul(&q_cur.unsqueeze(D::Minus1)?)?
+                            .sum_keepdim(2)?
+                            .squeeze(2)?;
+                        let kv_mem_focus = backend.tensor_to_buffer(kv_mem_cur.i((0, focus_head))?)?;
+                        let delta_focus = backend.tensor_to_buffer(delta_cur.i((0, focus_head))?)?;
+                        let state_focus =
+                            backend.tensor_to_buffer(trace_state.i((0, focus_head, .., ..))?)?;
+                        let output_focus =
+                            backend.tensor_to_buffer(output_cur.i((0, focus_head))?)?;
+                        kv_mem_steps.push(kv_mem_focus.clone());
+                        delta_steps.push(delta_focus.clone());
+                        state_steps.push(state_focus.clone());
+                        output_steps.push(output_focus.clone());
                         if step == focus_step {
-                            let output_cur = trace_state
-                                .broadcast_mul(&q_cur.unsqueeze(D::Minus1)?)?
-                                .sum_keepdim(2)?
-                                .squeeze(2)?;
-                            focused_kv_mem = Some(backend.tensor_to_buffer(
-                                kv_mem_cur.i((0, focus_head))?,
-                            )?);
-                            focused_delta = Some(backend.tensor_to_buffer(
-                                delta_cur.i((0, focus_head))?,
-                            )?);
-                            focused_state = Some(backend.tensor_to_buffer(
-                                trace_state.i((0, focus_head, .., ..))?,
-                            )?);
-                            focused_output = Some(backend.tensor_to_buffer(
-                                output_cur.i((0, focus_head))?,
-                            )?);
+                            focused_kv_mem = Some(kv_mem_focus);
+                            focused_delta = Some(delta_focus);
+                            focused_state = Some(state_focus);
+                            focused_output = Some(output_focus);
                         }
                     }
                     (
+                        kv_mem_steps,
+                        delta_steps,
+                        state_steps,
+                        output_steps,
                         focused_kv_mem.expect("focused kv_mem must be set"),
                         focused_delta.expect("focused delta must be set"),
                         focused_state.expect("focused state must be set"),
@@ -2558,6 +2577,10 @@ impl GatedDeltaNet {
                         &[self.head_k_dim, self.head_v_dim],
                     )?;
                     (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
                         backend.tensor_to_buffer(zeros_head.clone())?,
                         backend.tensor_to_buffer(zeros_head.clone())?,
                         backend.tensor_to_buffer(zeros_state)?,
@@ -2576,6 +2599,10 @@ impl GatedDeltaNet {
                     &[self.head_k_dim, self.head_v_dim],
                 )?;
                 (
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
                     backend.tensor_to_buffer(zeros_head.clone())?,
                     backend.tensor_to_buffer(zeros_head.clone())?,
                     backend.tensor_to_buffer(zeros_state)?,
@@ -2695,6 +2722,10 @@ impl GatedDeltaNet {
                 prepared_value,
                 prepared_beta,
                 prepared_g,
+                focused_recurrent_kv_mem_steps,
+                focused_recurrent_delta_steps,
+                focused_recurrent_state_steps,
+                focused_recurrent_output_steps,
                 focused_recurrent_kv_mem,
                 focused_recurrent_delta,
                 focused_recurrent_state,

@@ -4,7 +4,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Instant;
 
     use candle_core::{D, DType, Device, IndexOp, Tensor};
-    use dotcache_paged_runtime::{MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError};
+    use dotcache_paged_runtime::{
+        MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
+    };
+    use dotcache_qwen35_runtime::MinimalQwen35StateBuffer as StateBuffer;
     use serde::{Deserialize, Serialize};
     use tokenizers::Tokenizer;
 
@@ -245,6 +248,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_focus_delta_max_delta: Option<f32>,
         pytorch_first_layer_linear_focus_state_max_delta: Option<f32>,
         pytorch_first_layer_linear_focus_output_max_delta: Option<f32>,
+        pytorch_first_layer_linear_focus_kv_mem_step_max_deltas: Option<Vec<f32>>,
+        pytorch_first_layer_linear_focus_delta_step_max_deltas: Option<Vec<f32>>,
+        pytorch_first_layer_linear_focus_state_step_max_deltas: Option<Vec<f32>>,
+        pytorch_first_layer_linear_focus_output_step_max_deltas: Option<Vec<f32>>,
         pytorch_first_layer_linear_explicit_post_conv_max_delta: Option<f32>,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta: Option<f32>,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta: Option<f32>,
@@ -312,6 +319,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         first_layer_linear_focus_delta_output: Vec<f32>,
         first_layer_linear_focus_state_output: Vec<Vec<f32>>,
         first_layer_linear_focus_output: Vec<f32>,
+        first_layer_linear_focus_kv_mem_steps: Vec<Vec<f32>>,
+        first_layer_linear_focus_delta_steps: Vec<Vec<f32>>,
+        first_layer_linear_focus_state_steps: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_focus_output_steps: Vec<Vec<f32>>,
         first_layer_linear_prepared_value_focus_head_output: Vec<f32>,
         first_layer_linear_pre_norm_output: Vec<Vec<Vec<f32>>>,
         first_layer_linear_pre_norm_mean_square: Vec<Vec<Vec<f32>>>,
@@ -555,6 +566,22 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_delta = max_delta.max((lhs - rhs).abs());
         }
         Ok(max_delta)
+    }
+
+    fn max_tensor_delta_vec1_list(tensors: &[StateBuffer], rhs: &[Vec<f32>]) -> Result<Vec<f32>> {
+        let mut out = Vec::with_capacity(tensors.len().min(rhs.len()));
+        for (lhs, rhs_item) in tensors.iter().zip(rhs.iter()) {
+            out.push(max_tensor_delta_vec1(lhs.tensor(), rhs_item)?);
+        }
+        Ok(out)
+    }
+
+    fn max_tensor_delta_vec2_list(tensors: &[StateBuffer], rhs: &[Vec<Vec<f32>>]) -> Result<Vec<f32>> {
+        let mut out = Vec::with_capacity(tensors.len().min(rhs.len()));
+        for (lhs, rhs_item) in tensors.iter().zip(rhs.iter()) {
+            out.push(max_tensor_delta_vec2(lhs.tensor(), rhs_item)?);
+        }
+        Ok(out)
     }
 
     fn max_tensor_delta_vec3_with_argmax(
@@ -953,6 +980,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_focus_delta_max_delta,
         pytorch_first_layer_linear_focus_state_max_delta,
         pytorch_first_layer_linear_focus_output_max_delta,
+        pytorch_first_layer_linear_focus_kv_mem_step_max_deltas,
+        pytorch_first_layer_linear_focus_delta_step_max_deltas,
+        pytorch_first_layer_linear_focus_state_step_max_deltas,
+        pytorch_first_layer_linear_focus_output_step_max_deltas,
         pytorch_first_layer_linear_explicit_post_conv_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
@@ -1089,6 +1120,30 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             linear_core_trace.focused_recurrent_output.tensor(),
             &pytorch_oracle.first_layer_linear_focus_output,
         )?);
+        let pytorch_first_layer_linear_focus_kv_mem_step_max_deltas = Some(
+            max_tensor_delta_vec1_list(
+                &linear_core_trace.focused_recurrent_kv_mem_steps,
+                &pytorch_oracle.first_layer_linear_focus_kv_mem_steps,
+            )?,
+        );
+        let pytorch_first_layer_linear_focus_delta_step_max_deltas = Some(
+            max_tensor_delta_vec1_list(
+                &linear_core_trace.focused_recurrent_delta_steps,
+                &pytorch_oracle.first_layer_linear_focus_delta_steps,
+            )?,
+        );
+        let pytorch_first_layer_linear_focus_state_step_max_deltas = Some(
+            max_tensor_delta_vec2_list(
+                &linear_core_trace.focused_recurrent_state_steps,
+                &pytorch_oracle.first_layer_linear_focus_state_steps,
+            )?,
+        );
+        let pytorch_first_layer_linear_focus_output_step_max_deltas = Some(
+            max_tensor_delta_vec1_list(
+                &linear_core_trace.focused_recurrent_output_steps,
+                &pytorch_oracle.first_layer_linear_focus_output_steps,
+            )?,
+        );
         let pytorch_first_layer_linear_explicit_post_conv_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.explicit_post_conv_mixed_qkv.tensor(),
             &pytorch_oracle.first_layer_linear_direct_conv_output,
@@ -1257,6 +1312,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_focus_delta_max_delta,
             pytorch_first_layer_linear_focus_state_max_delta,
             pytorch_first_layer_linear_focus_output_max_delta,
+            pytorch_first_layer_linear_focus_kv_mem_step_max_deltas,
+            pytorch_first_layer_linear_focus_delta_step_max_deltas,
+            pytorch_first_layer_linear_focus_state_step_max_deltas,
+            pytorch_first_layer_linear_focus_output_step_max_deltas,
             pytorch_first_layer_linear_explicit_post_conv_max_delta,
             pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
             pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
@@ -1291,7 +1350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1637,6 +1696,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_focus_delta_max_delta,
         pytorch_first_layer_linear_focus_state_max_delta,
         pytorch_first_layer_linear_focus_output_max_delta,
+        pytorch_first_layer_linear_focus_kv_mem_step_max_deltas,
+        pytorch_first_layer_linear_focus_delta_step_max_deltas,
+        pytorch_first_layer_linear_focus_state_step_max_deltas,
+        pytorch_first_layer_linear_focus_output_step_max_deltas,
         pytorch_first_layer_linear_explicit_post_conv_max_delta,
         pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
         pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,

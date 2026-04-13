@@ -61,6 +61,10 @@ def main() -> None:
     first_layer_linear_focus_delta_output = None
     first_layer_linear_focus_state_output = None
     first_layer_linear_focus_output = None
+    first_layer_linear_focus_kv_mem_steps = None
+    first_layer_linear_focus_delta_steps = None
+    first_layer_linear_focus_state_steps = None
+    first_layer_linear_focus_output_steps = None
     first_layer_linear_prepared_value_focus_head_output = None
     first_layer_linear_pre_norm_output = None
     first_layer_linear_pre_norm_mean_square = None
@@ -135,6 +139,10 @@ def main() -> None:
         nonlocal first_layer_linear_focus_delta_output
         nonlocal first_layer_linear_focus_state_output
         nonlocal first_layer_linear_focus_output
+        nonlocal first_layer_linear_focus_kv_mem_steps
+        nonlocal first_layer_linear_focus_delta_steps
+        nonlocal first_layer_linear_focus_state_steps
+        nonlocal first_layer_linear_focus_output_steps
         nonlocal first_layer_linear_prepared_value_focus_head_output
         nonlocal first_layer_linear_conv_weight
         tensor = capture_tensor(output)
@@ -208,6 +216,10 @@ def main() -> None:
             (batch_size, num_v_heads, head_k_dim, head_v_dim), dtype=torch.float32
         )
         outputs = []
+        focus_kv_mem_steps = []
+        focus_delta_steps = []
+        focus_state_steps = []
+        focus_output_steps = []
         focus_step = min(2, seq_len - 1)
         focus_head = min(6, num_v_heads - 1)
         for step in range(seq_len):
@@ -221,12 +233,20 @@ def main() -> None:
             delta = (v_step - kv_mem) * beta_step
             state = state + k_step.unsqueeze(-1) * delta.unsqueeze(2)
             out_step = (state * q_step.unsqueeze(-1)).sum(dim=2)
+            focus_kv_mem_steps.append(kv_mem[0, focus_head].cpu())
+            focus_delta_steps.append(delta[0, focus_head].cpu())
+            focus_state_steps.append(state[0, focus_head].cpu())
+            focus_output_steps.append(out_step[0, focus_head].cpu())
             if step == focus_step:
                 first_layer_linear_focus_kv_mem_output = kv_mem[0, focus_head].cpu()
                 first_layer_linear_focus_delta_output = delta[0, focus_head].cpu()
                 first_layer_linear_focus_state_output = state[0, focus_head].cpu()
                 first_layer_linear_focus_output = out_step[0, focus_head].cpu()
             outputs.append(out_step.unsqueeze(2))
+        first_layer_linear_focus_kv_mem_steps = focus_kv_mem_steps
+        first_layer_linear_focus_delta_steps = focus_delta_steps
+        first_layer_linear_focus_state_steps = focus_state_steps
+        first_layer_linear_focus_output_steps = focus_output_steps
         first_layer_linear_direct_recurrent_output = (
             torch.cat(outputs, dim=2).transpose(1, 2).contiguous().reshape(batch_size, seq_len, -1).cpu()
         )
@@ -357,6 +377,10 @@ def main() -> None:
         or first_layer_linear_focus_delta_output is None
         or first_layer_linear_focus_state_output is None
         or first_layer_linear_focus_output is None
+        or first_layer_linear_focus_kv_mem_steps is None
+        or first_layer_linear_focus_delta_steps is None
+        or first_layer_linear_focus_state_steps is None
+        or first_layer_linear_focus_output_steps is None
         or first_layer_linear_prepared_value_focus_head_output is None
         or first_layer_linear_pre_norm_output is None
         or first_layer_linear_pre_norm_mean_square is None
@@ -422,6 +446,10 @@ def main() -> None:
         "first_layer_linear_focus_delta_output": first_layer_linear_focus_delta_output.tolist(),
         "first_layer_linear_focus_state_output": first_layer_linear_focus_state_output.tolist(),
         "first_layer_linear_focus_output": first_layer_linear_focus_output.tolist(),
+        "first_layer_linear_focus_kv_mem_steps": [tensor.tolist() for tensor in first_layer_linear_focus_kv_mem_steps],
+        "first_layer_linear_focus_delta_steps": [tensor.tolist() for tensor in first_layer_linear_focus_delta_steps],
+        "first_layer_linear_focus_state_steps": [tensor.tolist() for tensor in first_layer_linear_focus_state_steps],
+        "first_layer_linear_focus_output_steps": [tensor.tolist() for tensor in first_layer_linear_focus_output_steps],
         "first_layer_linear_prepared_value_focus_head_output": first_layer_linear_prepared_value_focus_head_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_pre_norm_mean_square": first_layer_linear_pre_norm_mean_square.tolist(),
