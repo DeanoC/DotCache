@@ -686,6 +686,116 @@ impl TextModel {
         })
     }
 
+    pub fn trace_decoder_layer_with_cache(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+        cache_state: &CacheState,
+    ) -> Result<DecoderLayerTrace> {
+        let saved_cache = self.cache_state();
+        self.restore_cache_state(cache_state)?;
+        let trace = self.trace_decoder_layer_without_clearing_cache(
+            input_ids,
+            target_layer,
+            seqlen_offset,
+        );
+        self.restore_cache_state(&saved_cache)?;
+        trace
+    }
+
+    fn trace_decoder_layer_without_clearing_cache(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+    ) -> Result<DecoderLayerTrace> {
+        if target_layer >= self.layers.len() {
+            candle::bail!(
+                "decoder trace target layer {} is out of range for {} layers",
+                target_layer,
+                self.layers.len()
+            );
+        }
+
+        let (b_size, seq_len) = input_ids.dims2()?;
+        let attention_mask = if seq_len > 1 {
+            Some(self.prepare_causal_attention_mask(b_size, seq_len, seqlen_offset)?)
+        } else {
+            None
+        };
+        let mut xs = self.hidden_states_from_input_ids(input_ids)?;
+        for layer in self.layers.iter_mut().take(target_layer) {
+            let mask = if layer.layer_type() == "full_attention" {
+                attention_mask.as_ref()
+            } else {
+                None
+            };
+            let (next_xs, _) = layer.forward_profiled(&xs, mask, seqlen_offset)?;
+            xs = next_xs;
+        }
+
+        let target = self
+            .layers
+            .get_mut(target_layer)
+            .expect("target layer index already validated");
+        let mask = if target.layer_type() == "full_attention" {
+            attention_mask.as_ref()
+        } else {
+            None
+        };
+        let input_layernorm_trace = Some(target.input_layernorm.trace_buffer(&xs)?);
+        let input_layernorm_output = input_layernorm_trace
+            .as_ref()
+            .expect("just created input rmsnorm trace")
+            .output
+            .clone();
+        let (linear_projection_trace, linear_core_trace, full_attention_trace, token_mixer_output, _) =
+            match &mut target.token_mixer {
+                LayerKind::Linear(linear_attn) => {
+                    let projection_trace =
+                        linear_attn.trace_projection_components_buffer(&input_layernorm_output)?;
+                    let (core_trace, token_mixer_output, _, profile) =
+                        linear_attn.trace_core_components_buffer(&input_layernorm_output, mask)?;
+                    (
+                        Some(projection_trace),
+                        Some(core_trace),
+                        None,
+                        token_mixer_output,
+                        profile,
+                    )
+                }
+                LayerKind::Full(self_attn) => self_attn
+                    .trace_components_buffer(&input_layernorm_output, mask, seqlen_offset)
+                    .map(|(trace, output, profile)| (None, None, Some(trace), output, profile))?,
+            };
+        let backend = backend_buffer_api::for_device(xs.device());
+        let attention_residual = backend.add(&xs, &token_mixer_output)?;
+        let post_attention_layernorm_trace =
+            Some(target.post_attention_layernorm.trace_buffer(&attention_residual)?);
+        let post_attention_layernorm_output = post_attention_layernorm_trace
+            .as_ref()
+            .expect("just created post-attention rmsnorm trace")
+            .output
+            .clone();
+        let mlp_output = target.mlp.forward_buffer(&post_attention_layernorm_output)?;
+        let layer_output = backend.add(&attention_residual, &mlp_output)?;
+        Ok(DecoderLayerTrace {
+            layer_id: target_layer,
+            sequence_length: seq_len,
+            input_layernorm_trace,
+            input_layernorm_output,
+            linear_projection_trace,
+            linear_core_trace,
+            full_attention_trace,
+            token_mixer_output,
+            post_attention_layernorm_trace,
+            post_attention_layernorm_output,
+            mlp_output,
+            layer_output,
+        })
+    }
+
     pub fn forward_profiled_with_linear_traces(
         &mut self,
         input_ids: &Tensor,
@@ -1179,6 +1289,21 @@ impl ModelForCausalLM {
     ) -> Result<DecoderLayerTrace> {
         self.language_model
             .trace_decoder_layer(input_ids, target_layer, seqlen_offset)
+    }
+
+    pub fn trace_decoder_layer_with_cache(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+        cache_state: &CacheState,
+    ) -> Result<DecoderLayerTrace> {
+        self.language_model.trace_decoder_layer_with_cache(
+            input_ids,
+            target_layer,
+            seqlen_offset,
+            cache_state,
+        )
     }
 
     pub fn clear_kv_cache(&mut self) {

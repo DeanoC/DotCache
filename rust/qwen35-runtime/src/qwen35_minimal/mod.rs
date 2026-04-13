@@ -1119,6 +1119,21 @@ impl MinimalQwen35Runner {
             .trace_decoder_layer(input_ids, target_layer, seqlen_offset)?)
     }
 
+    pub fn trace_decoder_layer_with_cache(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+        cache_state: &MinimalQwen35KvCache,
+    ) -> Result<MinimalQwen35DecoderLayerTrace> {
+        Ok(self.model.trace_decoder_layer_with_cache(
+            input_ids,
+            target_layer,
+            seqlen_offset,
+            cache_state,
+        )?)
+    }
+
     pub fn clear_kv_cache(&mut self) {
         self.model.clear_kv_cache();
     }

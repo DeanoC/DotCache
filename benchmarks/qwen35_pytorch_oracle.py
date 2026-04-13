@@ -43,6 +43,7 @@ def main() -> None:
     embedding_output = None
     first_layer_output = None
     first_layer_input_layernorm_output = None
+    decode_first_layer_input_layernorm_output = None
     first_layer_linear_qkv_output = None
     first_layer_linear_z_output = None
     first_layer_linear_b_output = None
@@ -76,9 +77,14 @@ def main() -> None:
     first_layer_linear_norm_silu_gate = None
     first_layer_linear_norm_output = None
     first_layer_token_mixer_output = None
+    decode_first_layer_token_mixer_output = None
     first_layer_post_attention_layernorm_output = None
+    decode_first_layer_post_attention_layernorm_output = None
     first_layer_mlp_output = None
+    decode_first_layer_mlp_output = None
+    decode_first_layer_output = None
     decoder_layer_outputs = []
+    decode_decoder_layer_outputs = []
     layer3_input_layernorm_output = None
     layer3_input_layernorm_input = None
     layer3_input_layernorm_mean_square = None
@@ -110,19 +116,32 @@ def main() -> None:
 
     def embed_hook(_module, _inputs, output):
         nonlocal embedding_output
+        if capture_phase != "prefill":
+            return
         embedding_output = output.detach().to(dtype=torch.float32).cpu()
 
     def layer_hook(_module, _inputs, output):
         nonlocal first_layer_output
+        nonlocal decode_first_layer_output
+        if capture_phase == "decode":
+            layer_output = output[0] if isinstance(output, tuple) else output
+            decode_first_layer_output = layer_output.detach().to(dtype=torch.float32).cpu()
+            return
+        if capture_phase != "prefill":
+            return
         layer_output = output[0] if isinstance(output, tuple) else output
         first_layer_output = layer_output.detach().to(dtype=torch.float32).cpu()
+
+    capture_phase = "prefill"
 
     def make_decoder_layer_hook(layer_idx: int):
         def hook(_module, _inputs, output):
             layer_output = output[0] if isinstance(output, tuple) else output
-            decoder_layer_outputs[layer_idx] = (
-                layer_output.detach().to(dtype=torch.float32).cpu()
-            )
+            captured = layer_output.detach().to(dtype=torch.float32).cpu()
+            if capture_phase == "prefill":
+                decoder_layer_outputs[layer_idx] = captured
+            elif capture_phase == "decode":
+                decode_decoder_layer_outputs[layer_idx] = captured
 
         return hook
 
@@ -132,15 +151,29 @@ def main() -> None:
 
     def input_layernorm_hook(_module, _inputs, output):
         nonlocal first_layer_input_layernorm_output
+        nonlocal decode_first_layer_input_layernorm_output
+        if capture_phase == "decode":
+            decode_first_layer_input_layernorm_output = capture_tensor(output)
+            return
+        if capture_phase != "prefill":
+            return
         first_layer_input_layernorm_output = capture_tensor(output)
 
     def token_mixer_hook(_module, _inputs, output):
         nonlocal first_layer_token_mixer_output
+        nonlocal decode_first_layer_token_mixer_output
+        if capture_phase == "decode":
+            decode_first_layer_token_mixer_output = capture_tensor(output)
+            return
+        if capture_phase != "prefill":
+            return
         first_layer_token_mixer_output = capture_tensor(output)
 
     def linear_qkv_hook(_module, _inputs, output):
         nonlocal first_layer_linear_qkv_output
         nonlocal first_layer_linear_pre_conv_value_focus_head_output
+        if capture_phase != "prefill":
+            return
         first_layer_linear_qkv_output = capture_tensor(output)
         qkv = first_layer_linear_qkv_output
         value_dim = first_layer_linear_z_output.shape[-1] if first_layer_linear_z_output is not None else 2048
@@ -154,14 +187,20 @@ def main() -> None:
 
     def linear_z_hook(_module, _inputs, output):
         nonlocal first_layer_linear_z_output
+        if capture_phase != "prefill":
+            return
         first_layer_linear_z_output = capture_tensor(output)
 
     def linear_b_hook(_module, _inputs, output):
         nonlocal first_layer_linear_b_output
+        if capture_phase != "prefill":
+            return
         first_layer_linear_b_output = capture_tensor(output)
 
     def linear_a_hook(_module, _inputs, output):
         nonlocal first_layer_linear_a_output
+        if capture_phase != "prefill":
+            return
         first_layer_linear_a_output = capture_tensor(output)
 
     def linear_conv_hook(_module, _inputs, output):
@@ -183,6 +222,8 @@ def main() -> None:
         nonlocal first_layer_linear_focus_output_steps
         nonlocal first_layer_linear_prepared_value_focus_head_output
         nonlocal first_layer_linear_conv_weight
+        if capture_phase != "prefill":
+            return
         tensor = capture_tensor(output)
         first_layer_linear_conv_weight = _module.weight.detach().squeeze(1).to(dtype=torch.float32).cpu()
         seq_len = input_ids.shape[1]
@@ -292,11 +333,15 @@ def main() -> None:
 
     def linear_norm_hook(_module, _inputs, output):
         nonlocal first_layer_linear_norm_output
+        if capture_phase != "prefill":
+            return
         tensor = capture_tensor(output)
         first_layer_linear_norm_output = tensor.reshape(input_ids.shape[0], input_ids.shape[1], -1)
 
     def linear_norm_pre_hook(_module, inputs):
         nonlocal first_layer_linear_pre_norm_output
+        if capture_phase != "prefill":
+            return
         tensor = capture_tensor(inputs[0])
         hidden = tensor.reshape(input_ids.shape[0], input_ids.shape[1], -1)
         first_layer_linear_pre_norm_output = hidden
@@ -335,14 +380,28 @@ def main() -> None:
 
     def post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal first_layer_post_attention_layernorm_output
+        nonlocal decode_first_layer_post_attention_layernorm_output
+        if capture_phase == "decode":
+            decode_first_layer_post_attention_layernorm_output = capture_tensor(output)
+            return
+        if capture_phase != "prefill":
+            return
         first_layer_post_attention_layernorm_output = capture_tensor(output)
 
     def mlp_hook(_module, _inputs, output):
         nonlocal first_layer_mlp_output
+        nonlocal decode_first_layer_mlp_output
+        if capture_phase == "decode":
+            decode_first_layer_mlp_output = capture_tensor(output)
+            return
+        if capture_phase != "prefill":
+            return
         first_layer_mlp_output = capture_tensor(output)
 
     def layer3_input_layernorm_hook(_module, _inputs, output):
         nonlocal layer3_input_layernorm_output
+        if capture_phase != "prefill":
+            return
         layer3_input_layernorm_output = capture_tensor(output)
 
     def layer3_input_layernorm_pre_hook(_module, inputs):
@@ -351,6 +410,8 @@ def main() -> None:
         nonlocal layer3_input_layernorm_rsqrt
         nonlocal layer3_input_layernorm_weight
         nonlocal layer3_input_layernorm_weighted_hidden
+        if capture_phase != "prefill":
+            return
         eps = getattr(_module, "variance_epsilon", getattr(_module, "eps"))
         hidden = capture_tensor(inputs[0])
         layer3_input_layernorm_input = hidden
@@ -368,11 +429,15 @@ def main() -> None:
 
     def layer3_token_mixer_hook(_module, _inputs, output):
         nonlocal layer3_token_mixer_output
+        if capture_phase != "prefill":
+            return
         layer3_token_mixer_output = capture_tensor(output)
 
     def layer3_q_proj_hook(_module, _inputs, output):
         nonlocal layer3_q_and_gate_output
         nonlocal layer3_gate_output
+        if capture_phase != "prefill":
+            return
         tensor = capture_tensor(output)
         layer3_q_and_gate_output = tensor
         layer3_attn = model.model.layers[3].self_attn
@@ -385,11 +450,15 @@ def main() -> None:
 
     def layer3_k_proj_hook(_module, _inputs, output):
         nonlocal layer3_k_proj_output
+        if capture_phase != "prefill":
+            return
         layer3_k_proj_output = capture_tensor(output)
 
     def layer3_v_proj_hook(_module, _inputs, output):
         nonlocal layer3_v_proj_output
         nonlocal layer3_prepared_value_output
+        if capture_phase != "prefill":
+            return
         tensor = capture_tensor(output)
         layer3_v_proj_output = tensor
         layer3_attn = model.model.layers[3].self_attn
@@ -401,23 +470,33 @@ def main() -> None:
 
     def layer3_o_proj_pre_hook(_module, inputs):
         nonlocal layer3_attention_output
+        if capture_phase != "prefill":
+            return
         layer3_attention_output = capture_tensor(inputs[0])
 
     def layer3_post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal layer3_post_attention_layernorm_output
+        if capture_phase != "prefill":
+            return
         layer3_post_attention_layernorm_output = capture_tensor(output)
 
     def layer3_mlp_hook(_module, _inputs, output):
         nonlocal layer3_mlp_output
+        if capture_phase != "prefill":
+            return
         layer3_mlp_output = capture_tensor(output)
 
     def layer3_hook(_module, _inputs, output):
         nonlocal layer3_output
+        if capture_phase != "prefill":
+            return
         tensor = output[0] if isinstance(output, tuple) else output
         layer3_output = tensor.detach().to(dtype=torch.float32).cpu()
 
     def layer4_input_layernorm_hook(_module, _inputs, output):
         nonlocal layer4_input_layernorm_output
+        if capture_phase != "prefill":
+            return
         layer4_input_layernorm_output = capture_tensor(output)
 
     def layer4_input_layernorm_pre_hook(_module, inputs):
@@ -426,6 +505,8 @@ def main() -> None:
         nonlocal layer4_input_layernorm_rsqrt
         nonlocal layer4_input_layernorm_weight
         nonlocal layer4_input_layernorm_weighted_hidden
+        if capture_phase != "prefill":
+            return
         eps = getattr(_module, "variance_epsilon", getattr(_module, "eps"))
         hidden = capture_tensor(inputs[0])
         layer4_input_layernorm_input = hidden
@@ -443,22 +524,31 @@ def main() -> None:
 
     def layer4_token_mixer_hook(_module, _inputs, output):
         nonlocal layer4_token_mixer_output
+        if capture_phase != "prefill":
+            return
         layer4_token_mixer_output = capture_tensor(output)
 
     def layer4_post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal layer4_post_attention_layernorm_output
+        if capture_phase != "prefill":
+            return
         layer4_post_attention_layernorm_output = capture_tensor(output)
 
     def layer4_mlp_hook(_module, _inputs, output):
         nonlocal layer4_mlp_output
+        if capture_phase != "prefill":
+            return
         layer4_mlp_output = capture_tensor(output)
 
     def layer4_hook(_module, _inputs, output):
         nonlocal layer4_output
+        if capture_phase != "prefill":
+            return
         tensor = output[0] if isinstance(output, tuple) else output
         layer4_output = tensor.detach().to(dtype=torch.float32).cpu()
 
     decoder_layer_outputs = [None] * len(model.model.layers)
+    decode_decoder_layer_outputs = [None] * len(model.model.layers)
 
     embed_handle = model.model.embed_tokens.register_forward_hook(embed_hook)
     layer_handle = model.model.layers[0].register_forward_hook(layer_hook)
@@ -546,7 +636,25 @@ def main() -> None:
     layer4_handle = model.model.layers[4].register_forward_hook(layer4_hook)
     try:
         with torch.no_grad():
-            model(input_ids=input_ids, use_cache=True)
+            outputs = model(input_ids=input_ids, use_cache=True)
+            prefill_last_token_logits = (
+                outputs.logits[0, -1, :].to(dtype=torch.float32).cpu().tolist()
+            )
+            past_key_values = outputs.past_key_values
+            next_token = int(torch.argmax(outputs.logits[:, -1, :], dim=-1).item())
+            if args.max_new_tokens > 0:
+                capture_phase = "decode"
+                decode_input_ids = torch.tensor([[next_token]], dtype=torch.long)
+                decode_outputs = model(
+                    input_ids=decode_input_ids,
+                    use_cache=True,
+                    past_key_values=past_key_values,
+                )
+                first_decode_step_logits = (
+                    decode_outputs.logits[0, -1, :].to(dtype=torch.float32).cpu().tolist()
+                )
+            else:
+                first_decode_step_logits = None
     finally:
         embed_handle.remove()
         layer_handle.remove()
@@ -674,12 +782,14 @@ def main() -> None:
         or layer4_mlp_output is None
         or layer4_output is None
         or any(layer_output is None for layer_output in decoder_layer_outputs)
+        or (args.max_new_tokens > 0 and any(layer_output is None for layer_output in decode_decoder_layer_outputs))
+        or (args.max_new_tokens > 0 and decode_first_layer_input_layernorm_output is None)
+        or (args.max_new_tokens > 0 and decode_first_layer_token_mixer_output is None)
+        or (args.max_new_tokens > 0 and decode_first_layer_post_attention_layernorm_output is None)
+        or (args.max_new_tokens > 0 and decode_first_layer_mlp_output is None)
+        or (args.max_new_tokens > 0 and decode_first_layer_output is None)
     ):
         raise RuntimeError("failed to capture staged first-layer outputs from PyTorch model")
-
-    prefill_last_token_logits = (
-        outputs.logits[0, -1, :].to(dtype=torch.float32).cpu().tolist()
-    )
 
     decode_started = time.perf_counter()
     decode_logits: list[list[float]] = []
@@ -772,7 +882,16 @@ def main() -> None:
         "layer4_mlp_output": layer4_mlp_output.tolist(),
         "layer4_output": layer4_output.tolist(),
         "decoder_layer_outputs": [layer_output.tolist() for layer_output in decoder_layer_outputs],
+        "decode_decoder_layer_outputs": [
+            layer_output.tolist() for layer_output in decode_decoder_layer_outputs
+        ] if args.max_new_tokens > 0 else [],
+        "decode_first_layer_input_layernorm_output": decode_first_layer_input_layernorm_output.tolist() if decode_first_layer_input_layernorm_output is not None else None,
+        "decode_first_layer_token_mixer_output": decode_first_layer_token_mixer_output.tolist() if decode_first_layer_token_mixer_output is not None else None,
+        "decode_first_layer_post_attention_layernorm_output": decode_first_layer_post_attention_layernorm_output.tolist() if decode_first_layer_post_attention_layernorm_output is not None else None,
+        "decode_first_layer_mlp_output": decode_first_layer_mlp_output.tolist() if decode_first_layer_mlp_output is not None else None,
+        "decode_first_layer_output": decode_first_layer_output.tolist() if decode_first_layer_output is not None else None,
         "prefill_last_token_logits": prefill_last_token_logits,
+        "first_decode_step_last_token_logits": first_decode_step_logits,
         "decode_last_token_logits": decode_logits,
         "generated_token_ids": generated_token_ids,
     }

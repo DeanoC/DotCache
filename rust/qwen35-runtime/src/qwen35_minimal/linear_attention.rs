@@ -2768,12 +2768,14 @@ impl GatedDeltaNet {
         let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
         profile.linear_conv_millis += kv_append_elapsed;
         profile.kv_append_write_millis += kv_append_elapsed;
+        let focus_step = usize::min(2, seq_len.saturating_sub(1));
+        let focus_head = usize::min(6, self.num_v_heads.saturating_sub(1));
         let post_conv_mixed_qkv = backend.tensor_to_buffer(mixed_qkv.clone())?;
         let post_conv_value_focus_head = backend.tensor_to_buffer(
             mixed_qkv
                 .narrow(D::Minus1, self.key_dim * 2, self.value_dim)?
                 .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
-                .i((0, 2, 6))?,
+                .i((0, focus_step, focus_head))?,
         )?;
         let (
             explicit_post_conv_mixed_qkv,
@@ -2798,7 +2800,7 @@ impl GatedDeltaNet {
                     explicit
                         .narrow(D::Minus1, self.key_dim * 2, self.value_dim)?
                         .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
-                        .i((0, 2, 6))?,
+                        .i((0, focus_step, focus_head))?,
                 )?;
                 let explicit_post_conv_reversed_taps_mixed_qkv =
                     backend.tensor_to_buffer(explicit_reversed.clone())?;
@@ -2806,7 +2808,7 @@ impl GatedDeltaNet {
                     explicit_reversed
                         .narrow(D::Minus1, self.key_dim * 2, self.value_dim)?
                         .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
-                        .i((0, 2, 6))?,
+                        .i((0, focus_step, focus_head))?,
                 )?;
                 let fp32_reference_post_conv_mixed_qkv =
                     StateBuffer::from_tensor(fp32_reference.clone())?;
@@ -2814,7 +2816,7 @@ impl GatedDeltaNet {
                     fp32_reference
                         .narrow(D::Minus1, self.key_dim * 2, self.value_dim)?
                         .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?
-                        .i((0, 2, 6))?,
+                        .i((0, focus_step, focus_head))?,
                 )?;
                 (
                     explicit_post_conv_mixed_qkv,
@@ -2862,7 +2864,8 @@ impl GatedDeltaNet {
         let prepared_value = backend.tensor_to_buffer(value.clone())?;
         let prepared_beta = backend.tensor_to_buffer(beta.clone())?;
         let prepared_g = backend.tensor_to_buffer(g.clone())?;
-        let prepared_value_focus_head = backend.tensor_to_buffer(value.i((0, 2, 6))?)?;
+        let prepared_value_focus_head =
+            backend.tensor_to_buffer(value.i((0, focus_step, focus_head))?)?;
         let (
             flat3d_weighted_k,
             torch_like_weighted_k,
