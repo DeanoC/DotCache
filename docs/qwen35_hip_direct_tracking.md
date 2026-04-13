@@ -27,6 +27,7 @@ That refreshes:
 - `hip_direct_short.json`
 - `hip_direct_longer.json`
 - `hip_direct_short_cpu_oracle.json`
+- `history.jsonl`
 - the generated markdown summary in the same tracking directory
 
 Example:
