@@ -232,6 +232,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_max_delta: Option<f32>,
         pytorch_first_layer_linear_pre_norm_mean_square_max_delta: Option<f32>,
         pytorch_first_layer_linear_pre_norm_rsqrt_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax: Option<[usize; 3]>,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle: Option<f32>,
         pytorch_first_layer_linear_norm_gate_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_weight_max_delta: Option<f32>,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta: Option<f32>,
@@ -425,6 +428,51 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_delta = max_delta.max((lhs - rhs).abs());
         }
         Ok(max_delta)
+    }
+
+    fn max_tensor_delta_vec3_with_argmax(
+        logits: &Tensor,
+        rhs: &[Vec<Vec<f32>>],
+    ) -> Result<(f32, [usize; 3], f32, f32)> {
+        let dims = logits.dims();
+        if dims.len() != 3 {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("expected rank-3 tensor, got shape {dims:?}"),
+            });
+        }
+        let [d0, d1, d2] = [dims[0], dims[1], dims[2]];
+        if rhs.len() != d0
+            || rhs.iter().any(|outer| outer.len() != d1)
+            || rhs
+                .iter()
+                .flat_map(|outer| outer.iter())
+                .any(|inner| inner.len() != d2)
+        {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("rhs shape did not match lhs shape {dims:?}"),
+            });
+        }
+        let lhs = logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let rhs_flat = rhs
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        let mut best_idx = 0usize;
+        let mut best_delta = -1.0f32;
+        for (idx, (lhs, rhs)) in lhs.iter().zip(rhs_flat.iter()).enumerate() {
+            let delta = (lhs - rhs).abs();
+            if delta > best_delta {
+                best_delta = delta;
+                best_idx = idx;
+            }
+        }
+        let i = best_idx / (d1 * d2);
+        let rem = best_idx % (d1 * d2);
+        let j = rem / d2;
+        let k = rem % d2;
+        Ok((best_delta, [i, j, k], lhs[best_idx], rhs_flat[best_idx]))
     }
 
     fn max_tensor_delta_vec1(tensor: &Tensor, rhs: &[f32]) -> Result<f32> {
@@ -739,6 +787,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_max_delta,
         pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
         pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
         pytorch_first_layer_linear_norm_gate_max_delta,
         pytorch_first_layer_linear_norm_weight_max_delta,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
@@ -797,10 +848,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             linear_core_trace.pre_gated_norm_mean_square.tensor(),
             &pytorch_oracle.first_layer_linear_pre_norm_mean_square,
         )?);
-        let pytorch_first_layer_linear_pre_norm_rsqrt_max_delta = Some(max_tensor_delta_vec3(
-            linear_core_trace.pre_gated_norm_rsqrt.tensor(),
-            &pytorch_oracle.first_layer_linear_pre_norm_rsqrt,
-        )?);
+        let (
+            pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        ) = {
+            let (delta, argmax, runtime, oracle) = max_tensor_delta_vec3_with_argmax(
+                linear_core_trace.pre_gated_norm_rsqrt.tensor(),
+                &pytorch_oracle.first_layer_linear_pre_norm_rsqrt,
+            )?;
+            (Some(delta), Some(argmax), Some(runtime), Some(oracle))
+        };
         let pytorch_first_layer_linear_norm_gate_max_delta = Some(max_tensor_delta_vec3(
             linear_core_trace.gated_norm_gate_input.tensor(),
             &pytorch_oracle.first_layer_linear_norm_gate_input,
@@ -855,6 +914,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_linear_pre_norm_max_delta,
             pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
             pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
             pytorch_first_layer_linear_norm_gate_max_delta,
             pytorch_first_layer_linear_norm_weight_max_delta,
             pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
@@ -867,7 +929,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             pytorch_first_layer_max_delta,
         )
     } else {
-        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
     };
     let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
         input_ids.clone()
@@ -1202,6 +1264,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_first_layer_linear_pre_norm_max_delta,
         pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
         pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
         pytorch_first_layer_linear_norm_gate_max_delta,
         pytorch_first_layer_linear_norm_weight_max_delta,
         pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
