@@ -11596,6 +11596,13 @@ fn mapped_delta_chunk_fused_hip_host_buffer(
 
 fn materialize_host_result_as_device_leaf(host: HipTensor) -> Result<HipTensor> {
     if let Some(buffer) = host.try_host_buffer()? {
+        if buffer.device.is_hip() {
+            if let Ok(device) = HipOwnedDeviceBuffer::from_host_buffer(buffer.clone()) {
+                return Ok(HipTensor::from_device_buffer(
+                    HipDeviceBuffer::from_owned_device_buffer(device),
+                ));
+            }
+        }
         return Ok(HipTensor::from_device_buffer(
             HipDeviceBuffer::from_materialized_host_buffer(buffer),
         ));
