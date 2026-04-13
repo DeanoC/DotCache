@@ -104,6 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     enum LoadMode {
         Native,
         Direct,
+        HipDirect,
     }
 
     impl LoadMode {
@@ -111,6 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             match self {
                 Self::Native => Some(MinimalQwen35LoadMode::NativeStore),
                 Self::Direct => None,
+                Self::HipDirect => Some(MinimalQwen35LoadMode::HipDirect),
             }
         }
     }
@@ -122,9 +124,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             match value.trim().to_ascii_lowercase().as_str() {
                 "native" => Ok(Self::Native),
                 "direct" => Ok(Self::Direct),
+                "hip-direct" | "direct-hip" => Ok(Self::HipDirect),
                 other => Err(RuntimeError::External {
                     context: "load-mode",
-                    message: format!("unsupported load mode `{other}`, expected native or direct"),
+                    message: format!(
+                        "unsupported load mode `{other}`, expected native, direct, or hip-direct"
+                    ),
                 }),
             }
         }
@@ -229,7 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct] [--device-only]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct|hip-direct] [--device-only]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();
@@ -386,8 +391,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
 
         if let Some(cpu_logits) = cpu_logits.as_ref() {
-            max_decode_delta = max_decode_delta
-                .max(max_logit_delta(cpu_logits.tensor(), device_logits.tensor())?);
+            max_decode_delta = max_decode_delta.max(max_logit_delta(
+                cpu_logits.tensor(),
+                device_logits.tensor(),
+            )?);
             next_token = argmax_last_token(cpu_logits.tensor())?;
         } else {
             next_token = argmax_last_token(device_logits.tensor())?;

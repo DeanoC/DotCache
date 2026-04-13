@@ -35,6 +35,15 @@ pub use decode::{
     decode_one_head, decode_one_head_owned, decode_query_batch_owned, decode_virtual_one_head,
     decode_virtual_one_head_owned, softmax_in_place,
 };
+#[cfg(feature = "qwen35-minimal")]
+pub use dotcache_qwen35_runtime::{
+    MinimalQwen35Config, MinimalQwen35DirectRuntime, MinimalQwen35DirectRuntimeProfile,
+    MinimalQwen35KvCache, MinimalQwen35LinearAttentionBenchResult,
+    MinimalQwen35LinearAttentionLayerSpec, MinimalQwen35LinearAttentionTrace,
+    MinimalQwen35LoadMode, MinimalQwen35LoadTrace, MinimalQwen35Runner, MinimalQwen35StateBuffer,
+    MinimalQwen35TextConfig, MinimalQwen35Weights, Qwen35Backend, Qwen35BackendDescriptor,
+    Qwen35BackendOps, Qwen35Runtime, Qwen35Weights,
+};
 #[cfg(feature = "hf")]
 pub use hf::{HfHubModelSource, HfModelArtifacts, HfModelWeightIndex};
 pub use model::{greedy_generate, CausalLm, GreedyGeneration, ModelArchitecture, ModelFamily};
@@ -49,15 +58,6 @@ pub use page_mode::{
 };
 #[cfg(feature = "candle")]
 pub use policy::{default_prompt_policy_table, PromptBucketPolicy, PromptBucketPolicyTable};
-#[cfg(feature = "qwen35-minimal")]
-pub use dotcache_qwen35_runtime::{
-    MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35LinearAttentionBenchResult,
-    MinimalQwen35LinearAttentionLayerSpec, MinimalQwen35LinearAttentionTrace,
-    MinimalQwen35LoadMode, MinimalQwen35LoadTrace, MinimalQwen35Runner, MinimalQwen35StateBuffer,
-    MinimalQwen35Weights,
-    MinimalQwen35TextConfig, Qwen35Backend, Qwen35BackendDescriptor, Qwen35BackendOps,
-    Qwen35Runtime, Qwen35Weights,
-};
 #[cfg(feature = "candle")]
 pub use session::HybridCacheState;
 pub use session::{

@@ -13,24 +13,28 @@ mod with_tracing;
 pub use model::{
     CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config,
     LinearAttentionBenchResult as MinimalQwen35LinearAttentionBenchResult,
-    LinearAttentionLayerSpec as MinimalQwen35LinearAttentionLayerSpec, ModelForCausalLM,
+    LinearAttentionLayerSpec as MinimalQwen35LinearAttentionLayerSpec,
+    LinearAttentionTrace as MinimalQwen35LinearAttentionTrace, ModelForCausalLM,
     NativeCacheState as MinimalQwen35NativeCacheState,
     NativeFullAttentionCacheState as MinimalQwen35NativeFullAttentionCacheState,
     NativeLayerCacheState as MinimalQwen35NativeLayerCacheState,
     NativeLinearAttentionCacheState as MinimalQwen35NativeLinearAttentionCacheState,
-    LinearAttentionTrace as MinimalQwen35LinearAttentionTrace,
-    StateBuffer as MinimalQwen35StateBuffer,
-    TextConfig as MinimalQwen35TextConfig,
+    StateBuffer as MinimalQwen35StateBuffer, TextConfig as MinimalQwen35TextConfig,
 };
 
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
-use crate::{ModelPackage, PreparedPackageSummary, Result, WeightLoadStats};
 #[cfg(feature = "hf")]
 use crate::HfHubModelSource;
+use crate::{
+    ModelPackage, PreparedPackageProfile, PreparedPackageSummary, PreparedQwen35DirectMetadata,
+    Result, RuntimeError, TargetSpec, WeightLoadStats,
+};
 #[cfg(any(feature = "hf", test))]
 use builder::WeightBuilder;
 use prepared::PreparedTensorSource;
@@ -57,6 +61,68 @@ pub struct MinimalQwen35LoadTrace {
     pub immutable_embedding_runtime_mode: String,
     pub immutable_linear_requested: bool,
     pub deferred_linear_count: usize,
+    pub package_profile: Option<PreparedPackageProfile>,
+    pub direct_runtime_active: bool,
+    pub direct_runtime_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinimalQwen35DirectRuntimeProfile {
+    HipDirectGfx11V1,
+    HipDirectRdna35V1,
+}
+
+impl MinimalQwen35DirectRuntimeProfile {
+    fn from_package_profile(profile: PreparedPackageProfile) -> Option<Self> {
+        match profile {
+            PreparedPackageProfile::HipDirectGfx11V1 => Some(Self::HipDirectGfx11V1),
+            PreparedPackageProfile::HipDirectRdna35V1 => Some(Self::HipDirectRdna35V1),
+            PreparedPackageProfile::StandardPrepared => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HipDirectGfx11V1 => "hip-direct-gfx11-v1",
+            Self::HipDirectRdna35V1 => "hip-direct-rdna35-v1",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MinimalQwen35DirectRuntime {
+    profile: MinimalQwen35DirectRuntimeProfile,
+    target: TargetSpec,
+    metadata: PreparedQwen35DirectMetadata,
+    decode_hidden_ping: MinimalQwen35StateBuffer,
+    decode_hidden_pong: MinimalQwen35StateBuffer,
+    decode_logits: MinimalQwen35StateBuffer,
+}
+
+impl MinimalQwen35DirectRuntime {
+    pub fn profile(&self) -> MinimalQwen35DirectRuntimeProfile {
+        self.profile
+    }
+
+    pub fn target(&self) -> &TargetSpec {
+        &self.target
+    }
+
+    pub fn metadata(&self) -> &PreparedQwen35DirectMetadata {
+        &self.metadata
+    }
+
+    pub fn decode_hidden_ping(&self) -> &MinimalQwen35StateBuffer {
+        &self.decode_hidden_ping
+    }
+
+    pub fn decode_hidden_pong(&self) -> &MinimalQwen35StateBuffer {
+        &self.decode_hidden_pong
+    }
+
+    pub fn decode_logits(&self) -> &MinimalQwen35StateBuffer {
+        &self.decode_logits
+    }
 }
 
 #[derive(Debug)]
@@ -65,12 +131,14 @@ pub struct MinimalQwen35Runner {
     pub weights: MinimalQwen35Weights,
     model: ModelForCausalLM,
     device: Device,
+    direct_runtime: Option<MinimalQwen35DirectRuntime>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MinimalQwen35LoadMode {
     DirectHf,
     NativeStore,
+    HipDirect,
 }
 
 impl MinimalQwen35LoadMode {
@@ -79,12 +147,128 @@ impl MinimalQwen35LoadMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "direct" | "hf" | "direct-hf" => Some(Self::DirectHf),
             "prepared" | "prepared-candle" | "native" | "native-store" => Some(Self::NativeStore),
+            "hip-direct" | "direct-hip" => Some(Self::HipDirect),
             _ => None,
         }
     }
 }
 
 impl MinimalQwen35Runner {
+    fn direct_hip_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_direct_hip_execution_env<T>(
+        enabled: bool,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        if !enabled {
+            return f();
+        }
+        let _guard = DirectHipExecutionEnvGuard::activate(Self::direct_hip_env_lock());
+        f()
+    }
+
+    fn build_direct_runtime(
+        device: &Device,
+        config: &MinimalQwen35Config,
+        package: &ModelPackage,
+    ) -> Result<MinimalQwen35DirectRuntime> {
+        let target = package.target_spec();
+        if target.backend != crate::BackendKind::Hip {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "direct HIP runtime requires a HIP package, got {}:{}",
+                    package.manifest().target_backend,
+                    package.manifest().target_family
+                ),
+            });
+        }
+        let metadata =
+            package
+                .manifest()
+                .qwen35_direct
+                .clone()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "qwen35-hip-direct",
+                    message: "package is missing qwen35 direct metadata".to_string(),
+                })?;
+        let profile = MinimalQwen35DirectRuntimeProfile::from_package_profile(
+            package.manifest().package_profile,
+        )
+        .ok_or_else(|| RuntimeError::External {
+            context: "qwen35-hip-direct",
+            message: "package profile is not a HIP direct profile".to_string(),
+        })?;
+        let expected_layer_types = config.text_config.clone().normalized().layer_types;
+        if expected_layer_types.len() != metadata.layers.len() {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "layer count mismatch between config ({}) and direct package ({})",
+                    expected_layer_types.len(),
+                    metadata.layers.len()
+                ),
+            });
+        }
+        for (expected_idx, (expected, actual)) in expected_layer_types
+            .iter()
+            .zip(metadata.layers.iter())
+            .enumerate()
+        {
+            if actual.layer_idx != expected_idx || actual.layer_type != *expected {
+                return Err(RuntimeError::External {
+                    context: "qwen35-hip-direct",
+                    message: format!(
+                        "direct package layer schedule mismatch at layer {expected_idx}: expected `{expected}`, got `{}`",
+                        actual.layer_type
+                    ),
+                });
+            }
+        }
+        if metadata.num_hidden_layers != 24
+            || metadata.linear_attention_layer_ids.len() != 18
+            || metadata.full_attention_layer_ids.len() != 6
+        {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "direct HIP runtime currently supports only Qwen3.5-0.8B hybrid schedule (24 layers, 18 linear, 6 full); package has {} / {} / {}",
+                    metadata.num_hidden_layers,
+                    metadata.linear_attention_layer_ids.len(),
+                    metadata.full_attention_layer_ids.len()
+                ),
+            });
+        }
+        let backend = backend_buffer_api::for_device(device);
+        let scratch_dtype = DType::BF16;
+        let decode_hidden_ping = backend.zeros_state(
+            device,
+            scratch_dtype,
+            &[1, 1, config.text_config.hidden_size],
+        )?;
+        let decode_hidden_pong = backend.zeros_state(
+            device,
+            scratch_dtype,
+            &[1, 1, config.text_config.hidden_size],
+        )?;
+        let decode_logits = backend.zeros_state(
+            device,
+            scratch_dtype,
+            &[1, 1, config.text_config.vocab_size],
+        )?;
+        Ok(MinimalQwen35DirectRuntime {
+            profile,
+            target,
+            metadata,
+            decode_hidden_ping,
+            decode_hidden_pong,
+            decode_logits,
+        })
+    }
+
     fn hidden_states_on_runner_device(
         &self,
         hidden_states: &MinimalQwen35StateBuffer,
@@ -108,29 +292,30 @@ impl MinimalQwen35Runner {
         }
         #[cfg(feature = "hf")]
         {
-        let source = HfHubModelSource::new()?;
-        let artifacts = source.snapshot(model_id)?;
-        let config: MinimalQwen35Config =
-            serde_json::from_slice(&std::fs::read(&artifacts.config_path)?)?;
-        let vb = unsafe {
-            WeightBuilder::from_mmaped_safetensors(
-                &artifacts.weight_paths,
-                candle_core::DType::F16,
-                device,
-            )?
-        };
-        let model = ModelForCausalLM::new(&config, vb)?;
-        Ok(Self {
-            config,
-            weights: MinimalQwen35Weights {
-                model_id: artifacts.model_id,
-                revision: artifacts.revision,
-                tokenizer_path: artifacts.tokenizer_path,
-                package_root: PathBuf::new(),
-            },
-            model,
-            device: device.clone(),
-        })
+            let source = HfHubModelSource::new()?;
+            let artifacts = source.snapshot(model_id)?;
+            let config: MinimalQwen35Config =
+                serde_json::from_slice(&std::fs::read(&artifacts.config_path)?)?;
+            let vb = unsafe {
+                WeightBuilder::from_mmaped_safetensors(
+                    &artifacts.weight_paths,
+                    candle_core::DType::F16,
+                    device,
+                )?
+            };
+            let model = ModelForCausalLM::new(&config, vb)?;
+            Ok(Self {
+                config,
+                weights: MinimalQwen35Weights {
+                    model_id: artifacts.model_id,
+                    revision: artifacts.revision,
+                    tokenizer_path: artifacts.tokenizer_path,
+                    package_root: PathBuf::new(),
+                },
+                model,
+                device: device.clone(),
+                direct_runtime: None,
+            })
         }
     }
 
@@ -157,6 +342,47 @@ impl MinimalQwen35Runner {
             },
             model,
             device: device.clone(),
+            direct_runtime: None,
+        })
+    }
+
+    pub fn load_hip_direct_for_device(model_id: &str, device: &Device) -> Result<Self> {
+        let package_profile =
+            PreparedPackageProfile::qwen35_hip_direct_for_target(&TargetSpec::detect(device))
+                .ok_or_else(|| RuntimeError::External {
+                    context: "qwen35-hip-direct",
+                    message: format!(
+                        "direct HIP runtime requires a gfx11 HIP target, got {}",
+                        TargetSpec::detect(device).family
+                    ),
+                })?;
+        let package = Arc::new(
+            ModelPackage::resolve_or_build_qwen35_minimal_with_profile(
+                model_id,
+                device,
+                package_profile,
+            )
+            .map_err(|err| crate::RuntimeError::External {
+                context: "model-store",
+                message: err.to_string(),
+            })?,
+        );
+        let config: MinimalQwen35Config =
+            serde_json::from_slice(&std::fs::read(package.config_path())?)?;
+        let source = PreparedTensorSource::new(package.clone(), device.clone());
+        let model = ModelForCausalLM::from_prepared(&config, source)?;
+        let direct_runtime = Some(Self::build_direct_runtime(device, &config, &package)?);
+        Ok(Self {
+            config,
+            weights: MinimalQwen35Weights {
+                model_id: package.manifest().model_id.clone(),
+                revision: package.manifest().revision.clone(),
+                tokenizer_path: package.tokenizer_path(),
+                package_root: package.root().to_path_buf(),
+            },
+            model,
+            device: device.clone(),
+            direct_runtime,
         })
     }
 
@@ -175,26 +401,26 @@ impl MinimalQwen35Runner {
             })?,
         );
         let package_resolve_millis = package_started.elapsed().as_secs_f64() * 1000.0;
-        let package_stats = package.stats().map_err(|err| crate::RuntimeError::External {
-            context: "model-store",
-            message: err.to_string(),
-        })?;
+        let package_stats = package
+            .stats()
+            .map_err(|err| crate::RuntimeError::External {
+                context: "model-store",
+                message: err.to_string(),
+            })?;
         let config_started = Instant::now();
         let config: MinimalQwen35Config =
             serde_json::from_slice(&std::fs::read(package.config_path())?)?;
         let config_parse_millis = config_started.elapsed().as_secs_f64() * 1000.0;
         let model_started = Instant::now();
         let source = PreparedTensorSource::new_profiled(package.clone(), device.clone());
-        let model = ModelForCausalLM::from_prepared(
-            &config,
-            source.clone(),
-        )?;
+        let model = ModelForCausalLM::from_prepared(&config, source.clone())?;
         let model_build_millis = model_started.elapsed().as_secs_f64() * 1000.0;
         let weight_load_stats = source.load_stats();
         let immutable_embedding_requested = model.immutable_embedding_requested();
         let immutable_embedding_active = model.immutable_embedding_active();
-        let immutable_embedding_fallback_reason =
-            model.immutable_embedding_fallback_reason().map(str::to_string);
+        let immutable_embedding_fallback_reason = model
+            .immutable_embedding_fallback_reason()
+            .map(str::to_string);
         let immutable_embedding_runtime_mode = model.immutable_embedding_runtime_mode().to_string();
         let immutable_linear_requested = model.immutable_linear_requested();
         let deferred_linear_count = model.deferred_linear_count();
@@ -210,6 +436,7 @@ impl MinimalQwen35Runner {
                 },
                 model,
                 device: device.clone(),
+                direct_runtime: None,
             },
             MinimalQwen35LoadTrace {
                 package_resolve_millis: Some(package_resolve_millis),
@@ -224,6 +451,9 @@ impl MinimalQwen35Runner {
                 immutable_embedding_runtime_mode,
                 immutable_linear_requested,
                 deferred_linear_count,
+                package_profile: Some(package.manifest().package_profile),
+                direct_runtime_active: false,
+                direct_runtime_profile: None,
             },
         ))
     }
@@ -236,6 +466,7 @@ impl MinimalQwen35Runner {
         match mode {
             MinimalQwen35LoadMode::DirectHf => Self::load_from_hf_direct_f16(model_id, device),
             MinimalQwen35LoadMode::NativeStore => Self::load_native_for_device(model_id, device),
+            MinimalQwen35LoadMode::HipDirect => Self::load_hip_direct_for_device(model_id, device),
         }
     }
 
@@ -258,6 +489,14 @@ impl MinimalQwen35Runner {
         Self::load_with_mode(model_id, device, mode)
     }
 
+    pub fn direct_runtime(&self) -> Option<&MinimalQwen35DirectRuntime> {
+        self.direct_runtime.as_ref()
+    }
+
+    pub fn direct_runtime_active(&self) -> bool {
+        self.direct_runtime.is_some()
+    }
+
     pub fn load_from_hf_f16(model_id: &str, device: &Device) -> Result<Self> {
         Self::load_for_device(model_id, device)
     }
@@ -270,23 +509,27 @@ impl MinimalQwen35Runner {
         &self,
         input_ids: &Tensor,
     ) -> Result<MinimalQwen35StateBuffer> {
-        let input_ids = if input_ids.device().same_device(&self.device) {
-            input_ids.clone()
-        } else {
-            input_ids.to_device(&self.device)?
-        };
-        Ok(self.model.hidden_states_from_input_ids(&input_ids)?)
+        Self::with_direct_hip_execution_env(self.direct_runtime.is_some(), || {
+            let input_ids = if input_ids.device().same_device(&self.device) {
+                input_ids.clone()
+            } else {
+                input_ids.to_device(&self.device)?
+            };
+            Ok(self.model.hidden_states_from_input_ids(&input_ids)?)
+        })
     }
 
     pub fn prefill_from_hidden_states(
         &mut self,
         hidden_states: &MinimalQwen35StateBuffer,
     ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35KvCache)> {
-        let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
-        let logits = self
-            .model
-            .forward_hidden_states(&MinimalQwen35StateBuffer::from_tensor(hidden_states)?, 0)?;
-        Ok((logits, self.model.cache_state()))
+        Self::with_direct_hip_execution_env(self.direct_runtime.is_some(), || {
+            let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
+            let logits = self
+                .model
+                .forward_hidden_states(&MinimalQwen35StateBuffer::from_tensor(hidden_states)?, 0)?;
+            Ok((logits, self.model.cache_state()))
+        })
     }
 
     pub fn decode_from_hidden_state(
@@ -294,17 +537,17 @@ impl MinimalQwen35Runner {
         hidden_state_t: &MinimalQwen35StateBuffer,
         cache: &mut MinimalQwen35KvCache,
     ) -> Result<MinimalQwen35StateBuffer> {
-        let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
-        self.model.restore_cache_state(cache)?;
-        let seqlen_offset = cache.sequence_length();
-        let logits = self
-            .model
-            .forward_hidden_states(
+        Self::with_direct_hip_execution_env(self.direct_runtime.is_some(), || {
+            let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
+            self.model.restore_cache_state(cache)?;
+            let seqlen_offset = cache.sequence_length();
+            let logits = self.model.forward_hidden_states(
                 &MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?,
                 seqlen_offset,
             )?;
-        *cache = self.model.cache_state();
-        Ok(logits)
+            *cache = self.model.cache_state();
+            Ok(logits)
+        })
     }
 
     pub fn linear_attention_layer_ids(&self) -> Vec<usize> {
@@ -325,9 +568,12 @@ impl MinimalQwen35Runner {
         seqlen_offset: usize,
         repeats: usize,
     ) -> Result<MinimalQwen35LinearAttentionBenchResult> {
-        Ok(self
-            .model
-            .bench_linear_attention_layer(input_ids, target_layer, seqlen_offset, repeats)?)
+        Ok(self.model.bench_linear_attention_layer(
+            input_ids,
+            target_layer,
+            seqlen_offset,
+            repeats,
+        )?)
     }
 
     pub fn trace_linear_attention_layer(
@@ -351,5 +597,84 @@ impl MinimalQwen35Runner {
 
     pub fn restore_cache_state(&mut self, state: &MinimalQwen35KvCache) -> Result<()> {
         Ok(self.model.restore_cache_state(state)?)
+    }
+}
+
+struct DirectHipExecutionEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    saved: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl DirectHipExecutionEnvGuard {
+    fn activate(lock: &'static Mutex<()>) -> Self {
+        let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut saved = Vec::with_capacity(DIRECT_HIP_EXECUTION_ENV.len());
+        for (key, value) in DIRECT_HIP_EXECUTION_ENV {
+            saved.push((key, std::env::var_os(key)));
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        }
+        Self {
+            _lock: guard,
+            saved,
+        }
+    }
+}
+
+impl Drop for DirectHipExecutionEnvGuard {
+    fn drop(&mut self) {
+        for (key, prior) in self.saved.iter().rev() {
+            unsafe {
+                if let Some(value) = prior {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+}
+
+const DIRECT_HIP_EXECUTION_ENV: [(&str, &str); 11] = [
+    ("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL", "1"),
+    ("CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL", "1"),
+    ("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_PREFILL", "1"),
+    ("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_DECODE", "1"),
+    ("DOTCACHE_QWEN35_HIP_CHUNK_SINGLE_PREFILL", "1"),
+    ("DOTCACHE_QWEN35_HIP_MULTI_CHUNK_SCAN_PREFILL", "1"),
+    ("CANDLE_QWEN35_DELTA_SCAN_MODE", "prebatched-local"),
+    ("DOTCACHE_QWEN35_DELTA_KERNEL_MIN_SEQUENCE", "1"),
+    ("CANDLE_QWEN35_DELTA_STATE_SCAN_KERNEL", "1"),
+    ("CANDLE_QWEN35_DELTA_CHUNK_FUSED_KERNEL", "1"),
+    ("CANDLE_QWEN35_DELTA_FULL_KERNEL", "1"),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::{DirectHipExecutionEnvGuard, DIRECT_HIP_EXECUTION_ENV, MinimalQwen35Runner};
+
+    #[test]
+    fn direct_hip_execution_env_guard_sets_and_restores_process_env() {
+        const KEY: &str = "CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL";
+        unsafe {
+            std::env::remove_var(KEY);
+            std::env::set_var("CANDLE_QWEN35_DELTA_SCAN_MODE", "torch-like");
+        }
+        {
+            let _guard =
+                DirectHipExecutionEnvGuard::activate(MinimalQwen35Runner::direct_hip_env_lock());
+            for (key, value) in DIRECT_HIP_EXECUTION_ENV {
+                assert_eq!(std::env::var(key).ok().as_deref(), Some(value));
+            }
+        }
+        assert!(std::env::var_os(KEY).is_none());
+        assert_eq!(
+            std::env::var("CANDLE_QWEN35_DELTA_SCAN_MODE").ok().as_deref(),
+            Some("torch-like")
+        );
+        unsafe {
+            std::env::remove_var("CANDLE_QWEN35_DELTA_SCAN_MODE");
+        }
     }
 }
