@@ -6030,6 +6030,90 @@ fn mapped_cumsum_last_dim_hip_host_buffer(xs: &HipMappedHostBuffer) -> Result<Op
     )))
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn owned_cumsum_last_dim_hip_device_buffer(xs: &HipDeviceBuffer) -> Result<Option<HipTensor>> {
+    let Some((ordinal, dtype, shape, _strides, input_ptr)) = xs.candle_view_launch_spec()? else {
+        return Ok(None);
+    };
+    let cols = *shape.last().ok_or_else(|| {
+        candle_core::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
+    })?;
+    let rows = HipNativeBuffer::elem_count(&shape) / cols;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape.clone(), dtype, xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_cumsum_last_dim(
+            hip::dtype_code(dtype)?,
+            ordinal,
+            rows,
+            cols,
+            input_ptr,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-cumsum-last-dim-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn owned_cumsum_last_dim_hip_device_buffer(xs: &HipDeviceBuffer) -> Result<Option<HipTensor>> {
+    let _ = xs;
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn causal_mask_hip_owned_device(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<HipTensor>> {
+    let ordinal = match device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let kv_len = tgt_len + seqlen_offset;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_size, 1, tgt_len, kv_len],
+        dtype,
+        device,
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_causal_mask(
+            hip::dtype_code(dtype)?,
+            ordinal,
+            batch_size,
+            tgt_len,
+            seqlen_offset,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-causal-mask-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn causal_mask_hip_owned_device(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (device, dtype, batch_size, tgt_len, seqlen_offset);
+    Ok(None)
+}
+
 #[cfg(not(feature = "qwen35-minimal-hip"))]
 fn mapped_cumsum_last_dim_hip_host_buffer(
     xs: &HipMappedHostBuffer,
@@ -12615,6 +12699,11 @@ pub(crate) fn causal_mask(
     tgt_len: usize,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
+    if let Some(device_out) =
+        causal_mask_hip_owned_device(device, dtype, batch_size, tgt_len, seqlen_offset)?
+    {
+        return Ok(device_out);
+    }
     if let Some(host) =
         causal_mask_hip_host_buffer(device, dtype, batch_size, tgt_len, seqlen_offset)?
     {
@@ -12647,6 +12736,9 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
     }
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
     if let Some(xs) = xs_hip.0 .0.direct_materialized_device_buffer() {
+        if let Some(out) = owned_cumsum_last_dim_hip_device_buffer(xs)? {
+            return Ok(out);
+        }
         if let HipDeviceStorage::MappedHostBuffer(mapped) = &xs.storage {
             if let Some(out) = mapped_cumsum_last_dim_hip_host_buffer(mapped)? {
                 return Ok(out);
