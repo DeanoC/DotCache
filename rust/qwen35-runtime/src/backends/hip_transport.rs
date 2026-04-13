@@ -7315,6 +7315,79 @@ fn mapped_linear_prefill_conv_hip_host_buffer(
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+fn linear_prefill_conv_hip_owned_device(
+    mixed_qkv: &Tensor,
+    weights: &Tensor,
+    seq_len: usize,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let weights = weights.contiguous()?;
+    if !mixed_qkv.device().is_hip() || !weights.device().same_device(mixed_qkv.device()) {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (Storage::Hip(mixed_qkv_storage), Storage::Hip(weights_storage)) =
+        (&*mixed_qkv_storage, &*weights_storage)
+    else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous() && weights_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, total_len) = mixed_qkv_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    if weights_conv_dim != conv_dim
+        || weights_kernel_size != kernel_size
+        || total_len < seq_len + kernel_size.saturating_sub(1)
+    {
+        return Ok(None);
+    }
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_size, seq_len, conv_dim],
+        mixed_qkv.dtype(),
+        mixed_qkv.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_prefill_conv_pack(
+            hip::dtype_code(mixed_qkv.dtype())?,
+            mixed_qkv.device().as_hip_device()?.ordinal(),
+            batch_size,
+            conv_dim,
+            total_len,
+            seq_len,
+            kernel_size,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-linear-prefill-conv-pack-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn linear_prefill_conv_hip_owned_device(
+    mixed_qkv: &Tensor,
+    weights: &Tensor,
+    seq_len: usize,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (mixed_qkv, weights, seq_len, kernel_size);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 fn mapped_linear_stateful_conv_hip_host_buffer(
     mixed_qkv: &HipMappedHostBuffer,
     prev_state: &HipMappedHostBuffer,
@@ -7401,6 +7474,96 @@ fn mapped_linear_stateful_conv_hip_host_buffer(
 fn mapped_linear_stateful_conv_hip_host_buffer(
     mixed_qkv: &HipMappedHostBuffer,
     prev_state: &HipMappedHostBuffer,
+    weights: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (mixed_qkv, prev_state, weights, kernel_size);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn linear_stateful_conv_hip_owned_device(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_state = prev_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    if !(mixed_qkv.device().is_hip()
+        && prev_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_state_storage, prev_state_layout) = prev_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_state_storage),
+        Storage::Hip(weights_storage),
+    ) = (&*mixed_qkv_storage, &*prev_state_storage, &*weights_storage)
+    else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_state_layout.is_contiguous()
+        && weights_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    if state_batch != batch_size
+        || state_conv_dim != conv_dim
+        || weights_conv_dim != conv_dim
+        || weights_kernel_size != kernel_size
+        || mixed_qkv.dtype() != prev_state.dtype()
+        || mixed_qkv.dtype() != weights.dtype()
+    {
+        return Ok(None);
+    }
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_size, seq_len, conv_dim],
+        mixed_qkv.dtype(),
+        mixed_qkv.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_stateful_conv(
+            hip::dtype_code(mixed_qkv.dtype())?,
+            mixed_qkv.device().as_hip_device()?.ordinal(),
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_state_storage.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("linear-stateful-conv-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn linear_stateful_conv_hip_owned_device(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
     weights: &Tensor,
     kernel_size: usize,
 ) -> Result<Option<HipTensor>> {
@@ -7524,6 +7687,142 @@ fn mapped_linear_stateful_conv_value_decay_with_state_hip_host_buffer(
     a: &HipMappedHostBuffer,
     dt_bias: &HipMappedHostBuffer,
     a_log_exp: &HipMappedHostBuffer,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, kernel_size);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+#[allow(clippy::too_many_arguments)]
+fn linear_stateful_conv_value_decay_with_state_hip_owned_device(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_state = prev_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a = a.contiguous()?;
+    let dt_bias = dt_bias.contiguous()?;
+    let a_log_exp = a_log_exp.contiguous()?;
+    if !(mixed_qkv.device().is_hip()
+        && prev_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device())
+        && a.device().same_device(mixed_qkv.device())
+        && dt_bias.device().same_device(mixed_qkv.device())
+        && a_log_exp.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_state_storage, prev_state_layout) = prev_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (a_storage, a_layout) = a.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_state_storage),
+        Storage::Hip(weights_storage),
+        Storage::Hip(a_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+    ) = (
+        &*mixed_qkv_storage,
+        &*prev_state_storage,
+        &*weights_storage,
+        &*a_storage,
+        &*dt_bias_storage,
+        &*a_log_exp_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_state_layout.is_contiguous()
+        && weights_layout.is_contiguous()
+        && a_layout.is_contiguous()
+        && dt_bias_layout.is_contiguous()
+        && a_log_exp_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    let (a_batch, a_seq_len, num_heads) = a_layout.shape().dims3()?;
+    if state_batch != batch_size
+        || state_conv_dim != conv_dim
+        || weights_conv_dim != conv_dim
+        || weights_kernel_size != kernel_size
+        || a_batch != batch_size
+        || a_seq_len != seq_len
+        || dt_bias_layout.shape().elem_count() != num_heads
+        || a_log_exp_layout.shape().elem_count() != num_heads
+        || mixed_qkv.dtype() != prev_state.dtype()
+        || mixed_qkv.dtype() != weights.dtype()
+        || mixed_qkv.dtype() != a.dtype()
+        || mixed_qkv.dtype() != dt_bias.dtype()
+        || mixed_qkv.dtype() != a_log_exp.dtype()
+    {
+        return Ok(None);
+    }
+    let flat_width = seq_len * (conv_dim + num_heads) + conv_dim * state_len;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_size, flat_width],
+        mixed_qkv.dtype(),
+        mixed_qkv.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
+            hip::dtype_code(mixed_qkv.dtype())?,
+            mixed_qkv.device().as_hip_device()?.ordinal(),
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            num_heads,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_state_storage.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
+            a_storage.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error(
+            "linear-stateful-conv-value-decay-with-state-owned-device",
+            status,
+        ));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+#[allow(clippy::too_many_arguments)]
+fn linear_stateful_conv_value_decay_with_state_hip_owned_device(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
     kernel_size: usize,
 ) -> Result<Option<HipTensor>> {
     let _ = (mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, kernel_size);
@@ -7675,6 +7974,185 @@ fn mapped_linear_decode_step_hip_host_buffer(
     dt_bias: &HipMappedHostBuffer,
     a_log_exp: &HipMappedHostBuffer,
     initial_state: &HipMappedHostBuffer,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (
+        mixed_qkv,
+        prev_conv_state,
+        weights,
+        a_beta_raw,
+        dt_bias,
+        a_log_exp,
+        initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    );
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+#[allow(clippy::too_many_arguments)]
+fn linear_decode_step_hip_owned_device(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    initial_state: &Tensor,
+    num_v_heads: usize,
+    head_k_dim: usize,
+    head_v_dim: usize,
+    kernel_size: usize,
+    head_repeat: usize,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let prev_conv_state = prev_conv_state.contiguous()?;
+    let weights = weights.contiguous()?;
+    let a_beta_raw = a_beta_raw.contiguous()?;
+    let dt_bias = dt_bias.contiguous()?;
+    let a_log_exp = a_log_exp.contiguous()?;
+    let initial_state = initial_state.contiguous()?;
+    if !(mixed_qkv.device().is_hip()
+        && prev_conv_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device())
+        && a_beta_raw.device().same_device(mixed_qkv.device())
+        && dt_bias.device().same_device(mixed_qkv.device())
+        && a_log_exp.device().same_device(mixed_qkv.device())
+        && initial_state.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_conv_state_storage, prev_conv_state_layout) = prev_conv_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (a_beta_raw_storage, a_beta_raw_layout) = a_beta_raw.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (initial_state_storage, initial_state_layout) = initial_state.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_conv_state_storage),
+        Storage::Hip(weights_storage),
+        Storage::Hip(a_beta_raw_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+        Storage::Hip(initial_state_storage),
+    ) = (
+        &*mixed_qkv_storage,
+        &*prev_conv_state_storage,
+        &*weights_storage,
+        &*a_beta_raw_storage,
+        &*dt_bias_storage,
+        &*a_log_exp_storage,
+        &*initial_state_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_conv_state_layout.is_contiguous()
+        && weights_layout.is_contiguous()
+        && a_beta_raw_layout.is_contiguous()
+        && dt_bias_layout.is_contiguous()
+        && a_log_exp_layout.is_contiguous()
+        && initial_state_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    if initial_state.dtype() != DType::F32 {
+        return Ok(None);
+    }
+    let (batch_size, _conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (_, _, state_len) = prev_conv_state_layout.shape().dims3()?;
+    if seq_len != 1 {
+        return Ok(None);
+    }
+    let packed = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_size * num_v_heads, 2 * head_k_dim + head_v_dim + 2],
+        DType::F32,
+        mixed_qkv.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(packed_buffer) = &packed.storage else {
+        return Ok(None);
+    };
+    let ordinal = mixed_qkv.device().as_hip_device()?.ordinal();
+    let prepare_status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_decode_prepare(
+            hip::dtype_code(mixed_qkv.dtype())?,
+            ordinal,
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            state_len,
+            kernel_size,
+            head_repeat,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_conv_state_storage
+                .raw_device_ptr_with_offset(prev_conv_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            a_beta_raw_storage.raw_device_ptr_with_offset(a_beta_raw_layout.start_offset())?
+                as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            packed_buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if prepare_status != 0 {
+        return Err(hip::hip_error("linear-decode-prepare-owned-device", prepare_status));
+    }
+    let output_width = num_v_heads * head_v_dim + num_v_heads * head_k_dim * head_v_dim;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_size, output_width],
+        DType::F32,
+        mixed_qkv.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(out_buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let apply_status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_decode_apply(
+            ordinal,
+            batch_size,
+            num_v_heads,
+            head_k_dim,
+            head_v_dim,
+            packed_buffer.raw_device_ptr() as *const c_void,
+            initial_state_storage.raw_device_ptr_with_offset(initial_state_layout.start_offset())?
+                as *const c_void,
+            out_buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if apply_status != 0 {
+        return Err(hip::hip_error("linear-decode-apply-owned-device", apply_status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+#[allow(clippy::too_many_arguments)]
+fn linear_decode_step_hip_owned_device(
+    mixed_qkv: &Tensor,
+    prev_conv_state: &Tensor,
+    weights: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    initial_state: &Tensor,
     num_v_heads: usize,
     head_k_dim: usize,
     head_v_dim: usize,
@@ -13717,6 +14195,9 @@ pub(crate) fn linear_prefill_conv(
     seq_len: usize,
     kernel_size: usize,
 ) -> Result<HipTensor> {
+    if let Some(device_out) = linear_prefill_conv_hip_owned_device(mixed_qkv, weights, seq_len, kernel_size)? {
+        return Ok(device_out);
+    }
     let mixed_qkv_hip = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
     if let Some(mixed_qkv) = mixed_qkv_hip.0 .0.direct_materialized_device_buffer() {
         if let HipDeviceStorage::MappedHostBuffer(mapped) = &mixed_qkv.storage {
@@ -13744,6 +14225,9 @@ pub(crate) fn linear_stateful_conv(
     weights: &Tensor,
     kernel_size: usize,
 ) -> Result<HipTensor> {
+    if let Some(device_out) = linear_stateful_conv_hip_owned_device(mixed_qkv, prev_state, weights, kernel_size)? {
+        return Ok(device_out);
+    }
     let mixed_qkv_hip = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
     let prev_state_hip = HipTensor::from_scaffold_tensor(prev_state.clone());
     if let (Some(mixed_qkv), Some(prev_state)) = (
@@ -13793,6 +14277,22 @@ pub(crate) fn linear_decode_step(
     kernel_size: usize,
     head_repeat: usize,
 ) -> Result<HipTensor> {
+    if let Some(device_out) = linear_decode_step_hip_owned_device(
+        mixed_qkv,
+        prev_conv_state,
+        weights,
+        a_beta_raw,
+        dt_bias,
+        a_log_exp,
+        initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    )? {
+        return Ok(device_out);
+    }
     let mixed_qkv_hip = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
     let prev_conv_state_hip = HipTensor::from_scaffold_tensor(prev_conv_state.clone());
     let a_beta_raw_hip = HipTensor::from_scaffold_tensor(a_beta_raw.clone());
@@ -13888,6 +14388,17 @@ pub(crate) fn linear_stateful_conv_value_decay_with_state(
     a_log_exp: &Tensor,
     kernel_size: usize,
 ) -> Result<HipTensor> {
+    if let Some(device_out) = linear_stateful_conv_value_decay_with_state_hip_owned_device(
+        mixed_qkv,
+        prev_state,
+        weights,
+        a,
+        dt_bias,
+        a_log_exp,
+        kernel_size,
+    )? {
+        return Ok(device_out);
+    }
     let mixed_qkv_hip = HipTensor::from_scaffold_tensor(mixed_qkv.clone());
     let prev_state_hip = HipTensor::from_scaffold_tensor(prev_state.clone());
     let a_hip = HipTensor::from_scaffold_tensor(a.clone());
