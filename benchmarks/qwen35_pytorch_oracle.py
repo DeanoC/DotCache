@@ -15,6 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--prompt-ids", required=True)
     parser.add_argument("--max-new-tokens", type=int, required=True)
+    parser.add_argument("--dtype", choices=["fp32", "bf16"], default="fp32")
     return parser.parse_args()
 
 
@@ -27,7 +28,7 @@ def main() -> None:
     load_started = time.perf_counter()
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        torch_dtype=torch.float32,
+        torch_dtype=torch.float32 if args.dtype == "fp32" else torch.bfloat16,
         trust_remote_code=True,
     )
     model.eval()

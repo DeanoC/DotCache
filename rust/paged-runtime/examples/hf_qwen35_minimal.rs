@@ -158,6 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         NativeDevice,
         None,
         Pytorch,
+        PytorchBf16,
     }
 
     impl OracleMode {
@@ -178,10 +179,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "native-device" | "native" | "device" => Ok(Self::NativeDevice),
                 "none" => Ok(Self::None),
                 "pytorch" => Ok(Self::Pytorch),
+                "pytorch-bf16" | "pytorch_bf16" | "bf16-pytorch" => Ok(Self::PytorchBf16),
                 other => Err(RuntimeError::External {
                     context: "oracle",
                     message: format!(
-                        "unsupported oracle `{other}`, expected cpu, native-device, none, or pytorch"
+                        "unsupported oracle `{other}`, expected cpu, native-device, none, pytorch, or pytorch-bf16"
                     ),
                 }),
             }
@@ -195,6 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Self::NativeDevice => f.write_str("native-device"),
                 Self::None => f.write_str("none"),
                 Self::Pytorch => f.write_str("pytorch"),
+                Self::PytorchBf16 => f.write_str("pytorch-bf16"),
             }
         }
     }
@@ -588,6 +591,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         model_id: &str,
         prompt_ids: &[u32],
         max_new_tokens: usize,
+        dtype: &str,
     ) -> Result<PytorchOracleRecord> {
         let prompt_ids = prompt_ids
             .iter()
@@ -602,6 +606,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .arg(prompt_ids)
             .arg("--max-new-tokens")
             .arg(max_new_tokens.to_string())
+            .arg("--dtype")
+            .arg(dtype)
             .output()
             .map_err(|err| RuntimeError::External {
                 context: "pytorch oracle",
@@ -753,7 +759,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct|hip-direct] [--oracle cpu|native-device|none|pytorch] [--device-only] [--record-json <path>]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct|hip-direct] [--oracle cpu|native-device|none|pytorch|pytorch-bf16] [--device-only] [--record-json <path>]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();
@@ -799,10 +805,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Some(MinimalQwen35LoadMode::NativeStore),
         ),
         OracleMode::None => (cpu_device.clone(), None),
-        OracleMode::Pytorch => (cpu_device.clone(), None),
+        OracleMode::Pytorch | OracleMode::PytorchBf16 => (cpu_device.clone(), None),
     };
     let (mut oracle_runner, oracle_load_elapsed) = if device_only
-        || matches!(oracle_mode, OracleMode::None | OracleMode::Pytorch)
+        || matches!(oracle_mode, OracleMode::None | OracleMode::Pytorch | OracleMode::PytorchBf16)
     {
         (None, std::time::Duration::ZERO)
     } else {
@@ -825,10 +831,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if prompt_ids.is_empty() {
         return Err(RuntimeError::EmptyInput { context: "prompt" }.into());
     }
-    let pytorch_oracle = if device_only || !matches!(oracle_mode, OracleMode::Pytorch) {
+    let pytorch_oracle = if device_only
+        || !matches!(oracle_mode, OracleMode::Pytorch | OracleMode::PytorchBf16)
+    {
         None
     } else {
-        Some(run_pytorch_oracle(&model_id, &prompt_ids, max_new_tokens)?)
+        let dtype = match oracle_mode {
+            OracleMode::Pytorch => "fp32",
+            OracleMode::PytorchBf16 => "bf16",
+            _ => unreachable!(),
+        };
+        Some(run_pytorch_oracle(&model_id, &prompt_ids, max_new_tokens, dtype)?)
     };
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
@@ -1431,6 +1444,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         oracle_device: match oracle_mode {
             OracleMode::None => "none".to_string(),
             OracleMode::Pytorch => "pytorch-cpu".to_string(),
+            OracleMode::PytorchBf16 => "pytorch-cpu-bf16".to_string(),
             _ => device_label(&oracle_device).to_string(),
         },
         device_only,
