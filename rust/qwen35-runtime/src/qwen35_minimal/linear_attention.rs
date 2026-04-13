@@ -2275,6 +2275,10 @@ impl GatedDeltaNet {
             &core_attn_out,
             &[batch_size, seq_len, self.value_dim],
         )?;
+        let gated_norm_gate_input = backend.reshape_tensor_to_buffer(
+            z.tensor(),
+            &[batch_size, seq_len, self.value_dim],
+        )?;
         let gated_norm = self
             .norm
             .forward_buffer(
@@ -2301,6 +2305,7 @@ impl GatedDeltaNet {
             LinearAttentionCoreTrace {
                 post_conv_mixed_qkv,
                 pre_gated_norm_output,
+                gated_norm_gate_input,
                 post_gated_norm_output,
             },
             output,

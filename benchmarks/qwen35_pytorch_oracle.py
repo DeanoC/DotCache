@@ -47,6 +47,7 @@ def main() -> None:
     first_layer_linear_a_output = None
     first_layer_linear_post_conv_output = None
     first_layer_linear_pre_norm_output = None
+    first_layer_linear_norm_gate_input = None
     first_layer_linear_norm_output = None
     first_layer_token_mixer_output = None
     first_layer_post_attention_layernorm_output = None
@@ -106,6 +107,11 @@ def main() -> None:
         nonlocal first_layer_linear_pre_norm_output
         tensor = capture_tensor(inputs[0])
         first_layer_linear_pre_norm_output = tensor.reshape(input_ids.shape[0], input_ids.shape[1], -1)
+        nonlocal first_layer_linear_norm_gate_input
+        gate_tensor = capture_tensor(inputs[1])
+        first_layer_linear_norm_gate_input = gate_tensor.reshape(
+            input_ids.shape[0], input_ids.shape[1], -1
+        )
 
     def post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal first_layer_post_attention_layernorm_output
@@ -177,6 +183,7 @@ def main() -> None:
         or first_layer_linear_a_output is None
         or first_layer_linear_post_conv_output is None
         or first_layer_linear_pre_norm_output is None
+        or first_layer_linear_norm_gate_input is None
         or first_layer_linear_norm_output is None
         or first_layer_token_mixer_output is None
         or first_layer_post_attention_layernorm_output is None
@@ -221,6 +228,7 @@ def main() -> None:
         "first_layer_linear_a_output": first_layer_linear_a_output.tolist(),
         "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output.tolist(),
         "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
+        "first_layer_linear_norm_gate_input": first_layer_linear_norm_gate_input.tolist(),
         "first_layer_linear_norm_output": first_layer_linear_norm_output.tolist(),
         "first_layer_token_mixer_output": first_layer_token_mixer_output.tolist(),
         "first_layer_post_attention_layernorm_output": first_layer_post_attention_layernorm_output.tolist(),
