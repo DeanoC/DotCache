@@ -256,23 +256,43 @@ impl MinimalQwen35Runner {
                 ),
             });
         }
+        if metadata.decode_phases.is_empty() {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP runtime requires at least one decode phase".to_string(),
+            });
+        }
         let backend = backend_buffer_api::for_device(device);
         let scratch_dtype = DType::BF16;
-        let decode_hidden_ping = backend.zeros_state(
-            device,
-            scratch_dtype,
-            &[1, 1, config.text_config.hidden_size],
-        )?;
-        let decode_hidden_pong = backend.zeros_state(
-            device,
-            scratch_dtype,
-            &[1, 1, config.text_config.hidden_size],
-        )?;
-        let decode_logits = backend.zeros_state(
-            device,
-            scratch_dtype,
-            &[1, 1, config.text_config.vocab_size],
-        )?;
+        let decode_hidden_ping_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "decode_hidden_ping")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing decode_hidden_ping workspace".to_string(),
+            })?;
+        let decode_hidden_pong_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "decode_hidden_pong")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing decode_hidden_pong workspace".to_string(),
+            })?;
+        let decode_logits_entry = metadata
+            .workspace
+            .iter()
+            .find(|entry| entry.name == "decode_logits")
+            .ok_or_else(|| RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct HIP metadata missing decode_logits workspace".to_string(),
+            })?;
+        let decode_hidden_ping =
+            backend.zeros_state(device, scratch_dtype, &decode_hidden_ping_entry.dims)?;
+        let decode_hidden_pong =
+            backend.zeros_state(device, scratch_dtype, &decode_hidden_pong_entry.dims)?;
+        let decode_logits = backend.zeros_state(device, scratch_dtype, &decode_logits_entry.dims)?;
         Ok(MinimalQwen35DirectRuntime {
             profile,
             target,

@@ -116,13 +116,31 @@ pub struct PreparedQwen35DirectLayerEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectPhaseEntry {
+    pub layer_type: String,
+    pub start_layer_idx: usize,
+    pub end_layer_idx: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectWorkspaceEntry {
+    pub name: String,
+    pub dtype: PreparedDType,
+    pub dims: Vec<usize>,
+    pub layout: TensorLayoutTag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedQwen35DirectMetadata {
     pub profile: PreparedPackageProfile,
     pub vocab_size: usize,
     pub hidden_size: usize,
     pub num_hidden_layers: usize,
     pub max_position_embeddings: usize,
+    pub activation_dtype: PreparedDType,
     pub layers: Vec<PreparedQwen35DirectLayerEntry>,
+    pub decode_phases: Vec<PreparedQwen35DirectPhaseEntry>,
+    pub workspace: Vec<PreparedQwen35DirectWorkspaceEntry>,
     pub full_attention_layer_ids: Vec<usize>,
     pub linear_attention_layer_ids: Vec<usize>,
 }
@@ -1267,7 +1285,7 @@ fn maybe_qwen35_direct_metadata(
     let mut layers = Vec::with_capacity(layer_types.len());
     let mut full_attention_layer_ids = Vec::new();
     let mut linear_attention_layer_ids = Vec::new();
-    for (layer_idx, layer_type) in layer_types.into_iter().enumerate() {
+    for (layer_idx, layer_type) in layer_types.iter().cloned().enumerate() {
         match layer_type.as_str() {
             "full_attention" => full_attention_layer_ids.push(layer_idx),
             "linear_attention" => linear_attention_layer_ids.push(layer_idx),
@@ -1278,13 +1296,52 @@ fn maybe_qwen35_direct_metadata(
             layer_type,
         });
     }
+    let mut decode_phases = Vec::new();
+    let mut start_layer_idx = 0usize;
+    while start_layer_idx < layer_types.len() {
+        let layer_type = layer_types[start_layer_idx].clone();
+        let mut end_layer_idx = start_layer_idx + 1;
+        while end_layer_idx < layer_types.len() && layer_types[end_layer_idx] == layer_type {
+            end_layer_idx += 1;
+        }
+        decode_phases.push(PreparedQwen35DirectPhaseEntry {
+            layer_type,
+            start_layer_idx,
+            end_layer_idx,
+        });
+        start_layer_idx = end_layer_idx;
+    }
+    let activation_dtype = PreparedDType::BF16;
+    let workspace = vec![
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "decode_hidden_ping".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.hidden_size],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "decode_hidden_pong".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.hidden_size],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "decode_logits".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.vocab_size],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+    ];
     Some(PreparedQwen35DirectMetadata {
         profile: package_profile,
         vocab_size: config.text_config.vocab_size,
         hidden_size: config.text_config.hidden_size,
         num_hidden_layers: config.text_config.num_hidden_layers,
         max_position_embeddings: config.text_config.max_position_embeddings,
+        activation_dtype,
         layers,
+        decode_phases,
+        workspace,
         full_attention_layer_ids,
         linear_attention_layer_ids,
     })
@@ -1816,8 +1873,15 @@ mod tests {
             maybe_qwen35_direct_metadata(&config, PreparedPackageProfile::HipDirectGfx11V1)
                 .expect("direct metadata should exist");
         assert_eq!(metadata.layers.len(), 24);
+        assert_eq!(metadata.activation_dtype, PreparedDType::BF16);
         assert_eq!(metadata.linear_attention_layer_ids.len(), 18);
         assert_eq!(metadata.full_attention_layer_ids.len(), 6);
+        assert_eq!(metadata.decode_phases.len(), 12);
+        assert_eq!(metadata.decode_phases[0].layer_type, "linear_attention");
+        assert_eq!(metadata.decode_phases[0].start_layer_idx, 0);
+        assert_eq!(metadata.decode_phases[0].end_layer_idx, 3);
+        assert_eq!(metadata.workspace.len(), 3);
+        assert_eq!(metadata.workspace[0].name, "decode_hidden_ping");
         assert_eq!(
             metadata.full_attention_layer_ids,
             vec![3, 7, 11, 15, 19, 23]

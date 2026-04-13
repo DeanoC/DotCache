@@ -2,8 +2,6 @@ use super::{
     MinimalQwen35DirectRuntime, MinimalQwen35KvCache, MinimalQwen35RuntimeProfile,
     MinimalQwen35StateBuffer, ModelForCausalLM, Result,
 };
-use dotcache_model_store::PreparedQwen35DirectMetadata;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DirectHipDecodePhase {
     layer_type: &'static str,
@@ -68,7 +66,7 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         } else {
             self.runtime.decode_hidden_pong = hidden_state_t.clone();
         }
-        let phases = Self::decode_phases(self.runtime.metadata())?;
+        let phases = self.decode_phases()?;
         for phase in phases {
             let current_xs = if active_slot_is_ping {
                 self.runtime.decode_hidden_ping.clone()
@@ -143,9 +141,8 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
         Ok((xs, profile))
     }
 
-    fn decode_phases(
-        metadata: &PreparedQwen35DirectMetadata,
-    ) -> Result<Vec<DirectHipDecodePhase>> {
+    fn decode_phases(&self) -> Result<Vec<DirectHipDecodePhase>> {
+        let metadata = self.runtime.metadata();
         if metadata.layers.len() != metadata.num_hidden_layers {
             return Err(crate::RuntimeError::External {
                 context: "qwen35-hip-direct",
@@ -156,10 +153,9 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
                 ),
             });
         }
-        let mut phases = Vec::new();
-        let mut start_layer_idx = 0usize;
-        while start_layer_idx < metadata.layers.len() {
-            let current = match metadata.layers[start_layer_idx].layer_type.as_str() {
+        let mut phases = Vec::with_capacity(metadata.decode_phases.len());
+        for phase in metadata.decode_phases.iter() {
+            let layer_type = match phase.layer_type.as_str() {
                 "linear_attention" => "linear_attention",
                 "full_attention" => "full_attention",
                 other => {
@@ -171,18 +167,11 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
                     });
                 }
             };
-            let mut end_layer_idx = start_layer_idx + 1;
-            while end_layer_idx < metadata.layers.len()
-                && metadata.layers[end_layer_idx].layer_type == current
-            {
-                end_layer_idx += 1;
-            }
             phases.push(DirectHipDecodePhase {
-                layer_type: current,
-                start_layer_idx,
-                end_layer_idx,
+                layer_type,
+                start_layer_idx: phase.start_layer_idx,
+                end_layer_idx: phase.end_layer_idx,
             });
-            start_layer_idx = end_layer_idx;
         }
         if phases.is_empty() {
             return Err(crate::RuntimeError::External {
