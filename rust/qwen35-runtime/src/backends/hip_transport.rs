@@ -162,6 +162,14 @@ enum HipDeviceStorage {
 
 impl HipDeviceStorage {
     fn from_tensor(tensor: Tensor) -> Self {
+        if tensor.device().is_hip() {
+            if let Some(buffer) = HipOwnedDeviceBuffer::from_device_tensor_copy(&tensor)
+                .ok()
+                .flatten()
+            {
+                return Self::OwnedDeviceBuffer(buffer);
+            }
+        }
         if !tensor.device().is_hip() {
             if let Some(bytes) =
                 HipNativeBuffer::tensor_to_host_float_bytes(&tensor, tensor.dtype()).ok().flatten()
