@@ -7454,7 +7454,7 @@ pub(crate) fn delta_state_update(
     value: &Tensor,
     use_kernel: bool,
 ) -> Result<Tensor> {
-    if use_kernel {
+    if use_kernel && matches!(prev_state_scaled.device().location(), DeviceLocation::Metal { .. }) {
         prev_state_scaled.apply_op3_no_bwd(weighted_key, value, &DeltaStateUpdate)
     } else {
         weighted_key
