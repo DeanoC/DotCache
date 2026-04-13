@@ -71,6 +71,7 @@ fn execute_full_decode_layer(
     full_attention_qkv: &StateBuffer,
     full_attention_key: &StateBuffer,
     full_attention_value: &StateBuffer,
+    full_attention_output_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
     let mut profile = RuntimeProfile::default();
@@ -107,6 +108,9 @@ fn execute_full_decode_layer(
         &value_states,
         &gate,
     )?;
+    let xs = phase_context
+        .backend
+        .copy_state_into_scratch(&xs, full_attention_output_scratch)?;
     drop(context);
     self_attn.commit_direct_decode_kv_cache(appended_k, appended_v);
     let xs = phase_context.backend.add(&residual, &xs)?;
@@ -160,6 +164,7 @@ fn execute_direct_decode_full_phase_unchecked(
     full_attention_qkv: &StateBuffer,
     full_attention_key: &StateBuffer,
     full_attention_value: &StateBuffer,
+    full_attention_output_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let mut profile = RuntimeProfile::default();
     let mut xs = xs.clone();
@@ -190,6 +195,7 @@ fn execute_direct_decode_full_phase_unchecked(
                 full_attention_qkv,
                 full_attention_key,
                 full_attention_value,
+                full_attention_output_scratch,
             )?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
@@ -283,6 +289,7 @@ pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
     full_attention_qkv: &StateBuffer,
     full_attention_key: &StateBuffer,
     full_attention_value: &StateBuffer,
+    full_attention_output_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     execute_direct_decode_full_phase_unchecked(
         model,
@@ -294,6 +301,7 @@ pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         full_attention_qkv,
         full_attention_key,
         full_attention_value,
+        full_attention_output_scratch,
     )
 }
 
@@ -356,6 +364,7 @@ pub(super) fn model_direct_decode_full_phase_profiled_hip_v1_unchecked(
     full_attention_qkv: &StateBuffer,
     full_attention_key: &StateBuffer,
     full_attention_value: &StateBuffer,
+    full_attention_output_scratch: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         &mut model.language_model,
@@ -367,6 +376,7 @@ pub(super) fn model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         full_attention_qkv,
         full_attention_key,
         full_attention_value,
+        full_attention_output_scratch,
     )
 }
 
