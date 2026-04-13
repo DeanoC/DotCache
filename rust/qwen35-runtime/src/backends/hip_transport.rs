@@ -245,28 +245,32 @@ impl HipDeviceStorage {
         let Self::CandleTensor(tensor) = self else {
             return Ok(None);
         };
-        if !tensor.is_contiguous() {
-            return Ok(None);
-        }
-        let (storage, layout) = tensor.storage_and_layout();
-        if !layout.is_contiguous() {
-            return Ok(None);
-        }
-        let bytes = match &*storage {
-            candle_core::Storage::Cpu(storage) => {
-                HipNativeBuffer::cpu_storage_to_bytes(storage, tensor.dtype())
+        let try_extract = |tensor: &Tensor| -> Result<Option<HipHostBuffer>> {
+            let (storage, layout) = tensor.storage_and_layout();
+            if !layout.is_contiguous() {
+                return Ok(None);
             }
-            _ => HipNativeBuffer::tensor_to_host_float_bytes(tensor, tensor.dtype())?,
+            let bytes = match &*storage {
+                candle_core::Storage::Cpu(storage) => {
+                    HipNativeBuffer::cpu_storage_to_bytes(storage, tensor.dtype())
+                }
+                _ => HipNativeBuffer::tensor_to_host_bytes(tensor, tensor.dtype())?,
+            };
+            let Some(bytes) = bytes else {
+                return Ok(None);
+            };
+            Ok(Some(HipHostBuffer {
+                bytes,
+                shape: tensor.dims().to_vec(),
+                dtype: tensor.dtype(),
+                device: tensor.device().clone(),
+            }))
         };
-        let Some(bytes) = bytes else {
-            return Ok(None);
-        };
-        Ok(Some(HipHostBuffer {
-            bytes,
-            shape: tensor.dims().to_vec(),
-            dtype: tensor.dtype(),
-            device: tensor.device().clone(),
-        }))
+        if let Some(buffer) = try_extract(tensor)? {
+            return Ok(Some(buffer));
+        }
+        let contiguous = tensor.contiguous()?;
+        try_extract(&contiguous)
     }
 }
 
