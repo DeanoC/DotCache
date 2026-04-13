@@ -2327,6 +2327,11 @@ impl HipDeviceBuffer {
             return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = cast_hip_owned_device(&tensor, dtype)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from cast owned device".into())
+            })?);
+        }
         if let Some(out) = cast_hip_host_buffer(&tensor, dtype)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from cast host buffer".into())
@@ -2346,6 +2351,11 @@ impl HipDeviceBuffer {
             return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = exp_hip_owned_device(&tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from exp owned device".into())
+            })?);
+        }
         if let Some(out) = exp_hip_host_buffer(&tensor)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from exp host buffer".into())
@@ -2384,6 +2394,11 @@ impl HipDeviceBuffer {
             return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = sigmoid_hip_owned_device(&tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from sigmoid owned device".into())
+            })?);
+        }
         if let Some(out) = sigmoid_hip_host_buffer(&tensor)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from sigmoid host buffer".into())
@@ -2579,6 +2594,11 @@ impl HipDeviceBuffer {
             return Ok(out);
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = recip_hip_owned_device(&tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from recip owned device".into())
+            })?);
+        }
         if let Some(out) = recip_hip_host_buffer(&tensor)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from recip host buffer".into())
@@ -5827,6 +5847,40 @@ fn exp_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     )))
 }
 
+fn exp_hip_owned_device(xs: &Tensor) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+    let xs = xs.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, xs.dtype(), xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_exp(
+            hip::dtype_code(xs.dtype())?,
+            ordinal,
+            layout.shape().elem_count(),
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-exp-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
 fn recip_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_recip_host_buffer(xs)? else {
         return Ok(None);
@@ -5839,6 +5893,40 @@ fn recip_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
             device: xs.device().clone(),
         }),
     )))
+}
+
+fn recip_hip_owned_device(xs: &Tensor) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+    let xs = xs.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, xs.dtype(), xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_recip(
+            hip::dtype_code(xs.dtype())?,
+            ordinal,
+            layout.shape().elem_count(),
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-recip-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
 }
 
 fn sigmoid_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
@@ -5855,6 +5943,40 @@ fn sigmoid_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
     )))
 }
 
+fn sigmoid_hip_owned_device(xs: &Tensor) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+    let xs = xs.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, xs.dtype(), xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_sigmoid(
+            hip::dtype_code(xs.dtype())?,
+            ordinal,
+            layout.shape().elem_count(),
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-sigmoid-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
 fn cast_hip_host_buffer(xs: &Tensor, dtype: DType) -> Result<Option<HipTensor>> {
     let Some((bytes, shape)) = hip_cast_host_buffer(xs, dtype)? else {
         return Ok(None);
@@ -5867,6 +5989,41 @@ fn cast_hip_host_buffer(xs: &Tensor, dtype: DType) -> Result<Option<HipTensor>> 
             device: xs.device().clone(),
         }),
     )))
+}
+
+fn cast_hip_owned_device(xs: &Tensor, dtype: DType) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+    let xs = xs.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, dtype, xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_cast(
+            hip::dtype_code(xs.dtype())?,
+            hip::dtype_code(dtype)?,
+            ordinal,
+            layout.shape().elem_count(),
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("hip-cast-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
 }
 
 fn binary_broadcast_hip_host_buffer(
