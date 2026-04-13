@@ -4885,6 +4885,12 @@ impl HipStorage {
         {
             return Ok(Self::from_native_buffer(native));
         }
+        if let (Some(lhs), Some(rhs)) = (
+            self.0.try_materialize_device_buffer()?,
+            rhs.0.try_materialize_device_buffer()?,
+        ) {
+            return Ok(Self::from_device_buffer(lhs.matmul(&rhs)?));
+        }
         let lhs = self.materialize()?;
         let rhs = rhs.materialize()?;
         Ok(Self::from_tensor(lhs.matmul(&rhs)?))
