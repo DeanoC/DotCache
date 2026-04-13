@@ -2080,6 +2080,63 @@ impl GatedDeltaNet {
         Ok((output, recurrent_state, profile))
     }
 
+    fn project_direct_decode_inputs(
+        &self,
+        hidden_states: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer, RuntimeProfile)> {
+        let device = hidden_states.device();
+        let backend = backend_buffer_api::for_device(device);
+        let mut profile = RuntimeProfile::default();
+        let (batch_size, seq_len, _) = hidden_states.dims3()?;
+        let qkv_start = profile_start(device)?;
+        let mixed_qkv = backend.tensor_to_buffer(
+            self.in_proj_qkv
+                .forward_buffer(hidden_states)?
+                .tensor()
+                .transpose(1, 2)?,
+        )?;
+        let z = backend.reshape_tensor_to_buffer(
+            self.in_proj_z.forward_buffer(hidden_states)?.tensor(),
+            &[batch_size, seq_len, self.num_v_heads, self.head_v_dim],
+        )?;
+        let beta_raw = self.in_proj_b.forward_buffer(hidden_states)?;
+        let a = self.in_proj_a.forward_buffer(hidden_states)?;
+        profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
+        Ok((mixed_qkv, z, beta_raw, a, profile))
+    }
+
+    fn run_direct_decode_core(
+        &mut self,
+        hidden_dtype: DType,
+        hidden_states: &StateBuffer,
+        mixed_qkv: &StateBuffer,
+        z: &StateBuffer,
+        beta_raw: &StateBuffer,
+        a: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, RuntimeProfile)> {
+        let device = hidden_states.device();
+        let (_, seq_len, _) = hidden_states.dims3()?;
+        if !use_hip_combined_linear_decode(device, seq_len) {
+            candle::bail!(
+                "direct-hip-v1 linear decode currently requires the HIP combined decode path"
+            );
+        }
+        let (batch_size, _, _) = hidden_states.dims3()?;
+        self.linear_decode_projected(
+            hidden_dtype,
+            batch_size,
+            seq_len,
+            mixed_qkv,
+            z,
+            beta_raw,
+            a,
+        )
+    }
+
+    fn commit_direct_decode_recurrent_state(&mut self, recurrent_state: StateBuffer) {
+        self.recurrent_state = Some(recurrent_state);
+    }
+
     fn forward_profiled(
         &mut self,
         hidden_states: &Tensor,
@@ -2116,31 +2173,12 @@ impl GatedDeltaNet {
         }
         let total_start = profile_start(device)?;
         let mut profile = RuntimeProfile::default();
-        let (batch_size, seq_len, _) = hidden_states.dims3()?;
-
-        let qkv_start = profile_start(device)?;
-        let backend = backend_buffer_api::for_device(device);
-        let mixed_qkv = backend.tensor_to_buffer(
-            self.in_proj_qkv
-                .forward_buffer(hidden_states)?
-                .tensor()
-                .transpose(1, 2)?,
-        )?;
-        let z = backend.reshape_tensor_to_buffer(
-            self.in_proj_z.forward_buffer(hidden_states)?.tensor(),
-            &[batch_size, seq_len, self.num_v_heads, self.head_v_dim],
-        )?;
-        let beta_raw = self.in_proj_b.forward_buffer(hidden_states)?;
-        let a = self.in_proj_a.forward_buffer(hidden_states)?;
-        profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
-
-        if !use_hip_combined_linear_decode(device, seq_len) {
-            candle::bail!("direct-hip-v1 linear decode currently requires the HIP combined decode path");
-        }
-        let (output, recurrent_state, linear_profile) = self.linear_decode_projected(
+        let (mixed_qkv, z, beta_raw, a, projection_profile) =
+            self.project_direct_decode_inputs(hidden_states)?;
+        profile.add_assign(&projection_profile);
+        let (output, recurrent_state, linear_profile) = self.run_direct_decode_core(
             hidden_states.tensor().dtype(),
-            batch_size,
-            seq_len,
+            hidden_states,
             &mixed_qkv,
             &z,
             &beta_raw,
@@ -2148,7 +2186,7 @@ impl GatedDeltaNet {
         )?;
         profile.add_assign(&linear_profile);
         profile.linear_attention_millis += profile_elapsed(total_start, device)?;
-        self.recurrent_state = Some(recurrent_state);
+        self.commit_direct_decode_recurrent_state(recurrent_state);
         Ok((output, profile))
     }
 
