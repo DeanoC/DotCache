@@ -727,42 +727,6 @@ impl TextModel {
         direct_decoder::validate_text_model_direct_hip_metadata(self, metadata)
     }
 
-    pub(crate) fn direct_decode_linear_phase_profiled_hip_v1(
-        &mut self,
-        metadata: &PreparedQwen35DirectMetadata,
-        start_layer_idx: usize,
-        end_layer_idx: usize,
-        xs: &StateBuffer,
-        seqlen_offset: usize,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        direct_decoder::text_model_direct_decode_linear_phase_profiled_hip_v1(
-            self,
-            metadata,
-            start_layer_idx,
-            end_layer_idx,
-            xs,
-            seqlen_offset,
-        )
-    }
-
-    pub(crate) fn direct_decode_full_phase_profiled_hip_v1(
-        &mut self,
-        metadata: &PreparedQwen35DirectMetadata,
-        start_layer_idx: usize,
-        end_layer_idx: usize,
-        xs: &StateBuffer,
-        seqlen_offset: usize,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        direct_decoder::text_model_direct_decode_full_phase_profiled_hip_v1(
-            self,
-            metadata,
-            start_layer_idx,
-            end_layer_idx,
-            xs,
-            seqlen_offset,
-        )
-    }
-
     pub(crate) fn finalize_direct_decode_hidden_hip_v1(
         &mut self,
         xs: &StateBuffer,
@@ -970,42 +934,6 @@ impl ModelForCausalLM {
         metadata: &PreparedQwen35DirectMetadata,
     ) -> Result<()> {
         direct_decoder::model_validate_direct_hip_metadata(self, metadata)
-    }
-
-    pub(crate) fn direct_decode_linear_phase_profiled_hip_v1(
-        &mut self,
-        metadata: &PreparedQwen35DirectMetadata,
-        start_layer_idx: usize,
-        end_layer_idx: usize,
-        xs: &StateBuffer,
-        seqlen_offset: usize,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        direct_decoder::model_direct_decode_linear_phase_profiled_hip_v1(
-            self,
-            metadata,
-            start_layer_idx,
-            end_layer_idx,
-            xs,
-            seqlen_offset,
-        )
-    }
-
-    pub(crate) fn direct_decode_full_phase_profiled_hip_v1(
-        &mut self,
-        metadata: &PreparedQwen35DirectMetadata,
-        start_layer_idx: usize,
-        end_layer_idx: usize,
-        xs: &StateBuffer,
-        seqlen_offset: usize,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        direct_decoder::model_direct_decode_full_phase_profiled_hip_v1(
-            self,
-            metadata,
-            start_layer_idx,
-            end_layer_idx,
-            xs,
-            seqlen_offset,
-        )
     }
 
     pub(crate) fn finalize_direct_decode_logits_hip_v1(

@@ -264,19 +264,6 @@ pub(super) fn validate_text_model_direct_hip_metadata(
     Ok(())
 }
 
-pub(super) fn text_model_direct_decode_linear_phase_profiled_hip_v1(
-    model: &mut TextModel,
-    metadata: &PreparedQwen35DirectMetadata,
-    start_layer_idx: usize,
-    end_layer_idx: usize,
-    xs: &StateBuffer,
-    seqlen_offset: usize,
-) -> Result<(StateBuffer, RuntimeProfile)> {
-    let _ = seqlen_offset;
-    validate_text_model_direct_hip_metadata(model, metadata)?;
-    execute_direct_decode_linear_phase_unchecked(model, metadata, start_layer_idx, end_layer_idx, xs)
-}
-
 pub(super) fn text_model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
     model: &mut TextModel,
     metadata: &PreparedQwen35DirectMetadata,
@@ -285,25 +272,6 @@ pub(super) fn text_model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
     xs: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     execute_direct_decode_linear_phase_unchecked(model, metadata, start_layer_idx, end_layer_idx, xs)
-}
-
-pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1(
-    model: &mut TextModel,
-    metadata: &PreparedQwen35DirectMetadata,
-    start_layer_idx: usize,
-    end_layer_idx: usize,
-    xs: &StateBuffer,
-    seqlen_offset: usize,
-) -> Result<(StateBuffer, RuntimeProfile)> {
-    validate_text_model_direct_hip_metadata(model, metadata)?;
-    execute_direct_decode_full_phase_unchecked(
-        model,
-        metadata,
-        start_layer_idx,
-        end_layer_idx,
-        xs,
-        seqlen_offset,
-    )
 }
 
 pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
@@ -359,24 +327,6 @@ pub(super) fn model_validate_direct_hip_metadata(
     validate_text_model_direct_hip_metadata(&model.language_model, metadata)
 }
 
-pub(super) fn model_direct_decode_linear_phase_profiled_hip_v1(
-    model: &mut ModelForCausalLM,
-    metadata: &PreparedQwen35DirectMetadata,
-    start_layer_idx: usize,
-    end_layer_idx: usize,
-    xs: &StateBuffer,
-    seqlen_offset: usize,
-) -> Result<(StateBuffer, RuntimeProfile)> {
-    text_model_direct_decode_linear_phase_profiled_hip_v1(
-        &mut model.language_model,
-        metadata,
-        start_layer_idx,
-        end_layer_idx,
-        xs,
-        seqlen_offset,
-    )
-}
-
 pub(super) fn model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
     model: &mut ModelForCausalLM,
     metadata: &PreparedQwen35DirectMetadata,
@@ -390,24 +340,6 @@ pub(super) fn model_direct_decode_linear_phase_profiled_hip_v1_unchecked(
         start_layer_idx,
         end_layer_idx,
         xs,
-    )
-}
-
-pub(super) fn model_direct_decode_full_phase_profiled_hip_v1(
-    model: &mut ModelForCausalLM,
-    metadata: &PreparedQwen35DirectMetadata,
-    start_layer_idx: usize,
-    end_layer_idx: usize,
-    xs: &StateBuffer,
-    seqlen_offset: usize,
-) -> Result<(StateBuffer, RuntimeProfile)> {
-    text_model_direct_decode_full_phase_profiled_hip_v1(
-        &mut model.language_model,
-        metadata,
-        start_layer_idx,
-        end_layer_idx,
-        xs,
-        seqlen_offset,
     )
 }
 
