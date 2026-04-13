@@ -2080,7 +2080,7 @@ impl GatedDeltaNet {
         Ok((output, recurrent_state, profile))
     }
 
-    fn project_direct_decode_inputs(
+    pub(super) fn project_direct_decode_inputs(
         &self,
         hidden_states: &StateBuffer,
     ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer, RuntimeProfile)> {
@@ -2105,7 +2105,7 @@ impl GatedDeltaNet {
         Ok((mixed_qkv, z, beta_raw, a, profile))
     }
 
-    fn run_direct_decode_core(
+    pub(super) fn run_direct_decode_core(
         &mut self,
         hidden_dtype: DType,
         hidden_states: &StateBuffer,
@@ -2133,7 +2133,7 @@ impl GatedDeltaNet {
         )
     }
 
-    fn commit_direct_decode_recurrent_state(&mut self, recurrent_state: StateBuffer) {
+    pub(super) fn commit_direct_decode_recurrent_state(&mut self, recurrent_state: StateBuffer) {
         self.recurrent_state = Some(recurrent_state);
     }
 

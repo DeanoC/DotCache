@@ -21,8 +21,19 @@ fn execute_linear_decode_layer(
             candle::bail!("direct-hip-v1 linear decode expected linear-attention layer")
         }
     };
-    let (xs, layer_profile) = linear_attn.forward_profiled_direct_decode_v1(&xs_norm)?;
-    profile.add_assign(&layer_profile);
+    let (mixed_qkv, z, beta_raw, a, projection_profile) =
+        linear_attn.project_direct_decode_inputs(&xs_norm)?;
+    profile.add_assign(&projection_profile);
+    let (xs, recurrent_state, linear_profile) = linear_attn.run_direct_decode_core(
+        xs.tensor().dtype(),
+        &xs_norm,
+        &mixed_qkv,
+        &z,
+        &beta_raw,
+        &a,
+    )?;
+    linear_attn.commit_direct_decode_recurrent_state(recurrent_state);
+    profile.add_assign(&linear_profile);
     let xs = backend.add(&residual, &xs)?;
     let residual = xs.clone();
     let xs = layer.post_attention_layernorm.forward_buffer(&xs)?;
