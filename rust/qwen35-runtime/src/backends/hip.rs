@@ -208,6 +208,45 @@ pub(crate) fn prepare_full_attention_inputs(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_full_attention_inputs_into_scratch(
+    q_and_gate: &StateBuffer,
+    k_proj: &StateBuffer,
+    v_proj: &StateBuffer,
+    gate_scratch: &StateBuffer,
+    query_scratch: &StateBuffer,
+    key_scratch: &StateBuffer,
+    value_scratch: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_norm_weight: &Tensor,
+    q_norm_eps: f64,
+    k_norm_weight: &Tensor,
+    k_norm_eps: f64,
+) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+    transport::prepare_full_attention_inputs_into_scratch(
+        q_and_gate,
+        k_proj,
+        v_proj,
+        gate_scratch,
+        query_scratch,
+        key_scratch,
+        value_scratch,
+        b_sz,
+        q_len,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        q_norm_weight,
+        q_norm_eps,
+        k_norm_weight,
+        k_norm_eps,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_linear_attention_inputs(
     mixed_qkv: &Tensor,
     beta_raw: &StateBuffer,

@@ -1650,10 +1650,14 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         k_norm_weight: &Tensor,
         k_norm_eps: f64,
     ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
-        let (query_states, gate, key_states, value_states) = backends::hip::prepare_full_attention_inputs(
+        backends::hip::prepare_full_attention_inputs_into_scratch(
             q_and_gate,
             k_proj,
             v_proj,
+            gate_scratch,
+            query_scratch,
+            key_scratch,
+            value_scratch,
             b_sz,
             q_len,
             num_heads,
@@ -1663,13 +1667,7 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
             q_norm_eps,
             k_norm_weight,
             k_norm_eps,
-        )?;
-        Ok((
-            backends::hip::copy_state_into_scratch(&query_states, query_scratch)?,
-            backends::hip::copy_state_into_scratch(&gate, gate_scratch)?,
-            backends::hip::copy_state_into_scratch(&key_states, key_scratch)?,
-            backends::hip::copy_state_into_scratch(&value_states, value_scratch)?,
-        ))
+        )
     }
     fn prepare_linear_attention_inputs(
         &self,

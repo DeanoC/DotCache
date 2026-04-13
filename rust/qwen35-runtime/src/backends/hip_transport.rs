@@ -13038,6 +13038,46 @@ pub(crate) fn prepare_full_attention_inputs(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_full_attention_inputs_into_scratch(
+    q_and_gate: &StateBuffer,
+    k_proj: &StateBuffer,
+    v_proj: &StateBuffer,
+    gate_scratch: &StateBuffer,
+    query_scratch: &StateBuffer,
+    key_scratch: &StateBuffer,
+    value_scratch: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_norm_weight: &Tensor,
+    q_norm_eps: f64,
+    k_norm_weight: &Tensor,
+    k_norm_eps: f64,
+) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+    let (query_states, gate, key_states, value_states) = prepare_full_attention_inputs_hip(
+        q_and_gate,
+        k_proj,
+        v_proj,
+        b_sz,
+        q_len,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        q_norm_weight,
+        q_norm_eps,
+        k_norm_weight,
+        k_norm_eps,
+    )?;
+    let query_states = copy_state_into_scratch(&query_states.into_state_buffer()?, query_scratch)?;
+    let gate = copy_state_into_scratch(&gate.into_state_buffer()?, gate_scratch)?;
+    let key_states = copy_state_into_scratch(&key_states.into_state_buffer()?, key_scratch)?;
+    let value_states = copy_state_into_scratch(&value_states.into_state_buffer()?, value_scratch)?;
+    Ok((query_states, gate, key_states, value_states))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn prepare_linear_attention_inputs_host_buffers(
     mixed_qkv: &HipHostBuffer,
     beta_raw: &HipHostBuffer,
