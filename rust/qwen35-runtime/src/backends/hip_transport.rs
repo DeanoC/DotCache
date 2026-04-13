@@ -8388,6 +8388,73 @@ fn embedding_lookup_hip_host_buffer(
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+fn embedding_lookup_hip_owned_device(
+    embeddings: &Tensor,
+    indexes: &Tensor,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let embeddings = embeddings.contiguous()?;
+    let indexes = indexes.contiguous()?;
+    if !(embeddings.device().is_hip() && indexes.device().same_device(embeddings.device())) {
+        return Ok(None);
+    }
+    let (embeddings_storage, embeddings_layout) = embeddings.storage_and_layout();
+    let (indexes_storage, indexes_layout) = indexes.storage_and_layout();
+    let (Storage::Hip(embeddings_storage), Storage::Hip(indexes_storage)) =
+        (&*embeddings_storage, &*indexes_storage)
+    else {
+        return Ok(None);
+    };
+    if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let ordinal = embeddings.device().as_hip_device()?.ordinal();
+    let dtype_code = hip::dtype_code(embeddings.dtype())?;
+    let index_dtype_code = hip::index_dtype_code(indexes.dtype())?;
+    let (vocab_size, hidden_size) = embeddings_layout.shape().dims2()?;
+    let token_count = indexes_layout.shape().elem_count();
+    let mut shape = indexes_layout.shape().dims().to_vec();
+    shape.push(hidden_size);
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        shape,
+        embeddings.dtype(),
+        embeddings.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+            dtype_code,
+            index_dtype_code,
+            ordinal,
+            token_count,
+            vocab_size,
+            hidden_size,
+            embeddings_storage.raw_device_ptr_with_offset(embeddings_layout.start_offset())?
+                as *const c_void,
+            indexes_storage.raw_device_ptr_with_offset(indexes_layout.start_offset())?
+                as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("embedding-lookup-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn embedding_lookup_hip_owned_device(
+    embeddings: &Tensor,
+    indexes: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let _ = (embeddings, indexes);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 fn mapped_embedding_lookup_hip_host_buffer(
     embeddings: &HipMappedHostBuffer,
     indexes: &HipMappedHostBuffer,
@@ -8468,6 +8535,64 @@ fn immutable_embedding_lookup_hip_host_buffer(
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+fn immutable_embedding_lookup_hip_owned_device(
+    embedding: &ImmutableEmbedding,
+    indexes: &Tensor,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let indexes = indexes.contiguous()?;
+    if !indexes.device().is_hip() {
+        return Ok(None);
+    }
+    let (indexes_storage, indexes_layout) = indexes.storage_and_layout();
+    let Storage::Hip(indexes_storage) = &*indexes_storage else {
+        return Ok(None);
+    };
+    if !indexes_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let ordinal = indexes.device().as_hip_device()?.ordinal();
+    let dtype_code = hip::dtype_code(embedding.dtype())?;
+    let index_dtype_code = hip::index_dtype_code(indexes.dtype())?;
+    let token_count = indexes_layout.shape().elem_count();
+    let mut shape = indexes_layout.shape().dims().to_vec();
+    shape.push(embedding.hidden_size());
+    let embedding_ptr = embedding.registered_device_ptr(ordinal)?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, embedding.dtype(), indexes.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+            dtype_code,
+            index_dtype_code,
+            ordinal,
+            token_count,
+            embedding.vocab_size(),
+            embedding.hidden_size(),
+            embedding_ptr as *const c_void,
+            indexes_storage.raw_device_ptr_with_offset(indexes_layout.start_offset())?
+                as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("immutable-embedding-lookup-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn immutable_embedding_lookup_hip_owned_device(
+    embedding: &ImmutableEmbedding,
+    indexes: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let _ = (embedding, indexes);
+    Ok(None)
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 fn mapped_immutable_embedding_lookup_hip_host_buffer(
     embedding: &ImmutableEmbedding,
     indexes: &HipMappedHostBuffer,
@@ -8544,6 +8669,67 @@ fn output_projection_hip_host_buffer(
             device: hidden_states.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn output_projection_hip_owned_device(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &Tensor,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let hidden_states = hidden_states.contiguous()?;
+    if !hidden_states.device().is_hip() {
+        return Ok(None);
+    }
+    let (hidden_storage, hidden_layout) = hidden_states.storage_and_layout();
+    let Storage::Hip(hidden_storage) = &*hidden_storage else {
+        return Ok(None);
+    };
+    if !hidden_layout.is_contiguous() {
+        return Ok(None);
+    }
+    let ordinal = hidden_states.device().as_hip_device()?.ordinal();
+    let dims = hidden_layout.shape().dims();
+    let hidden_size = *dims
+        .last()
+        .ok_or_else(|| candle_core::Error::Msg("hidden state rank must be >= 1".into()))?;
+    if hidden_size != embedding.hidden_size() {
+        return Ok(None);
+    }
+    let rows = hidden_layout.shape().elem_count() / hidden_size;
+    let mut shape = dims.to_vec();
+    *shape.last_mut().expect("validated non-empty dims") = embedding.vocab_size();
+    let weight_ptr = embedding.registered_device_ptr(ordinal)?;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, embedding.dtype(), hidden_states.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_output_projection_lookup(
+            hip::dtype_code(embedding.dtype())?,
+            ordinal,
+            rows,
+            embedding.hidden_size(),
+            embedding.vocab_size(),
+            hidden_storage.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
+            weight_ptr,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("immutable-output-projection-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn output_projection_hip_owned_device(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &Tensor,
+) -> Result<Option<HipTensor>> {
+    let _ = (embedding, hidden_states);
+    Ok(None)
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
@@ -15014,6 +15200,9 @@ mod tests {
 }
 
 pub(crate) fn embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<HipTensor> {
+    if let Some(device_out) = embedding_lookup_hip_owned_device(embeddings, indexes)? {
+        return Ok(device_out);
+    }
     let embeddings_hip = HipTensor::from_scaffold_tensor(embeddings.clone());
     let indexes_hip = HipTensor::from_scaffold_tensor(indexes.clone());
     if let (Some(embeddings), Some(indexes)) = (
@@ -15049,6 +15238,9 @@ pub(crate) fn immutable_embedding_lookup(
     embedding: &ImmutableEmbedding,
     indexes: &Tensor,
 ) -> Result<HipTensor> {
+    if let Some(device_out) = immutable_embedding_lookup_hip_owned_device(embedding, indexes)? {
+        return Ok(device_out);
+    }
     let indexes_hip = HipTensor::from_scaffold_tensor(indexes.clone());
     if let Some(indexes) = indexes_hip.0 .0.direct_materialized_device_buffer() {
         if let HipDeviceStorage::MappedHostBuffer(indexes_mapped) = &indexes.storage {
@@ -15071,6 +15263,9 @@ pub(crate) fn output_projection(
     embedding: &ImmutableEmbedding,
     hidden_states: &Tensor,
 ) -> Result<HipTensor> {
+    if let Some(device_out) = output_projection_hip_owned_device(embedding, hidden_states)? {
+        return Ok(device_out);
+    }
     let hidden_states_hip = HipTensor::from_scaffold_tensor(hidden_states.clone());
     if let Some(hidden_states) = hidden_states_hip.0 .0.direct_materialized_device_buffer() {
         if let HipDeviceStorage::MappedHostBuffer(hidden_states_mapped) = &hidden_states.storage {
