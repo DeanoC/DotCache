@@ -13832,6 +13832,28 @@ impl FullAttention {
         )
     }
 
+    fn forward_profiled_direct_decode_v1(
+        &mut self,
+        xs: &StateBuffer,
+        seqlen_offset: usize,
+        layer_id: usize,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        let (_, q_len, _) = xs.dims3()?;
+        if q_len != 1 {
+            candle::bail!(
+                "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={q_len}"
+            );
+        }
+        let mut no_external = None;
+        self.forward_profiled_with_external_buffer(
+            xs,
+            None,
+            seqlen_offset,
+            layer_id,
+            &mut no_external,
+        )
+    }
+
     #[allow(dead_code)]
     fn forward(
         &mut self,
@@ -16208,14 +16230,8 @@ impl DecoderLayer {
                 xs
             }
             LayerKind::Full(self_attn) => {
-                let mut no_external = None;
-                let (xs, layer_profile) = self_attn.forward_profiled_with_external_buffer(
-                    &xs_norm,
-                    None,
-                    seqlen_offset,
-                    layer_id,
-                    &mut no_external,
-                )?;
+                let (xs, layer_profile) =
+                    self_attn.forward_profiled_direct_decode_v1(&xs_norm, seqlen_offset, layer_id)?;
                 profile.add_assign(&layer_profile);
                 xs
             }
