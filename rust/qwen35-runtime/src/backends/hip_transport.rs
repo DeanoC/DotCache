@@ -2722,6 +2722,11 @@ impl HipDeviceBuffer {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.l2norm(eps)?));
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = l2norm_hip_owned_device(&tensor, eps)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from l2norm owned device".into())
+            })?);
+        }
         if let Some(out) = l2norm_hip_host_buffer(&tensor, eps)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from l2norm host buffer".into())
@@ -2747,6 +2752,11 @@ impl HipDeviceBuffer {
             ));
         }
         let tensor = self.materialize_tensor()?;
+        if let Some(out) = rms_norm_hip_owned_device(&tensor, weight, eps, add_unit_offset)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from rms_norm owned device".into())
+            })?);
+        }
         if let Some(out) = rms_norm_hip_host_buffer(&tensor, weight, eps, add_unit_offset)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from rms_norm host buffer".into())
@@ -2792,6 +2802,13 @@ impl HipDeviceBuffer {
         }
         let hidden = self.materialize_tensor()?;
         let gate_tensor = gate.materialize_tensor()?;
+        if let Some(out) = rms_norm_gated_hip_owned_device(&hidden, &gate_tensor, weight, eps)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg(
+                    "expected direct device buffer from rms_norm_gated owned device".into(),
+                )
+            })?);
+        }
         if let Some(out) = rms_norm_gated_hip_host_buffer(&hidden, &gate_tensor, weight, eps)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg(
@@ -2823,6 +2840,11 @@ impl HipDeviceBuffer {
         let a_tensor = self.materialize_tensor()?;
         let dt_bias_tensor = dt_bias.materialize_tensor()?;
         let a_log_exp_tensor = a_log_exp.materialize_tensor()?;
+        if let Some(out) = value_decay_hip_owned_device(&a_tensor, &dt_bias_tensor, &a_log_exp_tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from value_decay owned device".into())
+            })?);
+        }
         if let Some(out) = value_decay_hip_host_buffer(&a_tensor, &dt_bias_tensor, &a_log_exp_tensor)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from value_decay host buffer".into())
@@ -2880,6 +2902,11 @@ impl HipDeviceBuffer {
         }
         let tensor = self.materialize_tensor()?;
         let up_tensor = up.materialize_tensor()?;
+        if let Some(out) = swiglu_mul_hip_owned_device(&tensor, &up_tensor)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from swiglu_mul owned device".into())
+            })?);
+        }
         if let Some(out) = swiglu_mul_hip_host_buffer(&tensor, &up_tensor)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
                 candle_core::Error::Msg("expected direct device buffer from swiglu_mul host buffer".into())
@@ -6583,6 +6610,46 @@ fn l2norm_hip_host_buffer(xs: &Tensor, eps: f64) -> Result<Option<HipTensor>> {
             device: xs.device().clone(),
         }),
     )))
+}
+
+fn l2norm_hip_owned_device(xs: &Tensor, eps: f64) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+    let xs = xs.contiguous()?;
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let shape = layout.shape().dims().to_vec();
+    let n_cols = *shape
+        .last()
+        .ok_or_else(|| candle_core::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
+    let n_rows = HipNativeBuffer::elem_count(&shape) / n_cols;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, xs.dtype(), xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_l2norm(
+            hip::dtype_code(xs.dtype())?,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("dotcache-hip-l2norm-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
