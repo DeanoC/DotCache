@@ -2,6 +2,90 @@ use super::{
     MinimalQwen35DirectRuntime, MinimalQwen35KvCache, MinimalQwen35RuntimeProfile,
     MinimalQwen35StateBuffer, ModelForCausalLM, Result,
 };
+
+fn decode_phase_from_hidden_state(
+    model: &mut ModelForCausalLM,
+    metadata: &crate::PreparedQwen35DirectMetadata,
+    xs: &MinimalQwen35StateBuffer,
+    seqlen_offset: usize,
+    layer_type: &str,
+    start_layer_idx: usize,
+    end_layer_idx: usize,
+) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
+    match layer_type {
+        "linear_attention" => Ok(model.direct_decode_linear_phase_profiled_hip_v1(
+            metadata,
+            start_layer_idx,
+            end_layer_idx,
+            xs,
+            seqlen_offset,
+        )?),
+        "full_attention" => Ok(model.direct_decode_full_phase_profiled_hip_v1(
+            metadata,
+            start_layer_idx,
+            end_layer_idx,
+            xs,
+            seqlen_offset,
+        )?),
+        other => Err(crate::RuntimeError::External {
+            context: "qwen35-hip-direct",
+            message: format!("unsupported direct-hip-v1 decode phase type: {other}"),
+        }),
+    }
+}
+
+struct DirectHipDecodeWorkspace<'a> {
+    ping: &'a mut MinimalQwen35StateBuffer,
+    pong: &'a mut MinimalQwen35StateBuffer,
+    active_slot_is_ping: bool,
+}
+
+impl<'a> DirectHipDecodeWorkspace<'a> {
+    fn new(
+        ping: &'a mut MinimalQwen35StateBuffer,
+        pong: &'a mut MinimalQwen35StateBuffer,
+        active_slot_is_ping: bool,
+    ) -> Self {
+        Self {
+            ping,
+            pong,
+            active_slot_is_ping,
+        }
+    }
+
+    fn seed_input(&mut self, hidden_state_t: &MinimalQwen35StateBuffer) {
+        if self.active_slot_is_ping {
+            *self.ping = hidden_state_t.clone();
+        } else {
+            *self.pong = hidden_state_t.clone();
+        }
+    }
+
+    fn active(&self) -> &MinimalQwen35StateBuffer {
+        if self.active_slot_is_ping {
+            self.ping
+        } else {
+            self.pong
+        }
+    }
+
+    fn store_next(&mut self, next_xs: MinimalQwen35StateBuffer) {
+        if self.active_slot_is_ping {
+            *self.pong = next_xs;
+        } else {
+            *self.ping = next_xs;
+        }
+    }
+
+    fn advance(&mut self) {
+        self.active_slot_is_ping = !self.active_slot_is_ping;
+    }
+
+    fn active_slot_is_ping(&self) -> bool {
+        self.active_slot_is_ping
+    }
+}
+
 pub(crate) struct DirectHipQwen35V1Executor<'a> {
     model: &'a mut ModelForCausalLM,
     runtime: &'a mut MinimalQwen35DirectRuntime,
@@ -52,98 +136,51 @@ impl<'a> DirectHipQwen35V1Executor<'a> {
                 ),
             });
         }
-        let mut profile = MinimalQwen35RuntimeProfile::default();
-        let mut active_slot_is_ping = self.runtime.next_hidden_slot_is_ping;
-        if active_slot_is_ping {
-            self.runtime.decode_hidden_ping = hidden_state_t.clone();
-        } else {
-            self.runtime.decode_hidden_pong = hidden_state_t.clone();
-        }
         self.validate_decode_phases()?;
-        let phase_count = self.runtime.metadata().decode_phases.len();
-        for phase_idx in 0..phase_count {
-            let (layer_type, start_layer_idx, end_layer_idx) = {
-                let phase = &self.runtime.metadata().decode_phases[phase_idx];
+        let metadata = self.runtime.metadata().clone();
+        let phase_specs: Vec<(String, usize, usize)> = self
+            .runtime
+            .metadata()
+            .decode_phases
+            .iter()
+            .map(|phase| {
                 (
                     phase.layer_type.clone(),
                     phase.start_layer_idx,
                     phase.end_layer_idx,
                 )
-            };
-            let current_xs = if active_slot_is_ping {
-                self.runtime.decode_hidden_ping.clone()
-            } else {
-                self.runtime.decode_hidden_pong.clone()
-            };
-            let (next_xs, phase_profile) = self.decode_phase_from_hidden_state(
-                &current_xs,
+            })
+            .collect();
+        let mut profile = MinimalQwen35RuntimeProfile::default();
+        let mut workspace = DirectHipDecodeWorkspace::new(
+            &mut self.runtime.decode_hidden_ping,
+            &mut self.runtime.decode_hidden_pong,
+            self.runtime.next_hidden_slot_is_ping,
+        );
+        workspace.seed_input(hidden_state_t);
+        for (layer_type, start_layer_idx, end_layer_idx) in phase_specs.iter() {
+            let (next_xs, phase_profile) = decode_phase_from_hidden_state(
+                self.model,
+                &metadata,
+                workspace.active(),
                 seqlen_offset,
                 layer_type.as_str(),
-                start_layer_idx,
-                end_layer_idx,
+                *start_layer_idx,
+                *end_layer_idx,
             )?;
             profile.add_assign(&phase_profile);
-            if active_slot_is_ping {
-                self.runtime.decode_hidden_pong = next_xs;
-            } else {
-                self.runtime.decode_hidden_ping = next_xs;
-            }
-            active_slot_is_ping = !active_slot_is_ping;
+            workspace.store_next(next_xs);
+            workspace.advance();
         }
-        let active_hidden = if active_slot_is_ping {
-            &self.runtime.decode_hidden_ping
-        } else {
-            &self.runtime.decode_hidden_pong
-        };
+        let active_hidden = workspace.active();
         let (logits, finalize_profile) =
             self.model.finalize_direct_decode_logits_hip_v1(active_hidden)?;
         profile.add_assign(&finalize_profile);
         *cache = self.model.cache_state();
-        self.runtime.next_hidden_slot_is_ping = active_slot_is_ping;
+        self.runtime.next_hidden_slot_is_ping = workspace.active_slot_is_ping();
         self.runtime.decode_logits = logits.clone();
         self.runtime.last_decode_sequence_length = seqlen_offset + 1;
         Ok((logits, profile))
-    }
-
-    fn decode_phase_from_hidden_state(
-        &mut self,
-        xs: &MinimalQwen35StateBuffer,
-        seqlen_offset: usize,
-        layer_type: &str,
-        start_layer_idx: usize,
-        end_layer_idx: usize,
-    ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
-        match layer_type {
-            "linear_attention" | "full_attention" => {}
-            other => {
-                return Err(crate::RuntimeError::External {
-                    context: "qwen35-hip-direct",
-                    message: format!("unsupported direct-hip-v1 decode phase type: {other}"),
-                });
-            }
-        }
-        match layer_type {
-            "linear_attention" => Ok(self.model.direct_decode_linear_phase_profiled_hip_v1(
-                self.runtime.metadata(),
-                start_layer_idx,
-                end_layer_idx,
-                xs,
-                seqlen_offset,
-            )?),
-            "full_attention" => Ok(self.model.direct_decode_full_phase_profiled_hip_v1(
-                self.runtime.metadata(),
-                start_layer_idx,
-                end_layer_idx,
-                xs,
-                seqlen_offset,
-            )?),
-            other => {
-                return Err(crate::RuntimeError::External {
-                    context: "qwen35-hip-direct",
-                    message: format!("unsupported direct-hip-v1 decode phase type: {other}"),
-                });
-            }
-        }
     }
 
     fn validate_decode_phases(&self) -> Result<()> {

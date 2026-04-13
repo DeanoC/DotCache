@@ -1092,7 +1092,6 @@ impl FullAttention {
                 "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={q_len}"
             );
         }
-        let backend = backend_buffer_api::for_device(device);
         let full_start = profile_start(device)?;
         let mut profile = RuntimeProfile::default();
         let (
