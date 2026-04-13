@@ -1,6 +1,12 @@
 # Qwen3.5 Stage 9 `state_cache_roadmap` First-Divergence Localization (2026-04-13)
 
-This note isolates the strongest current public repro for the broader DotCache-family vs dense boundary.
+This note records the pre-fix public repro that was used to isolate the strongest structural divergence before the handoff sequence-length fix.
+
+Current status:
+
+- it is now resolved on the fixed tree after
+  [qwen35_stage9_state_cache_roadmap_root_cause_20260413.md](./qwen35_stage9_state_cache_roadmap_root_cause_20260413.md)
+- this doc is kept for historical continuity and as a repro reference
 
 Single-case repro manifest:
 
@@ -12,7 +18,7 @@ Source artifact used for the current read:
 
 ## Why this case
 
-`state_cache_roadmap` is the best current structural repro because:
+`state_cache_roadmap` was the best structural repro in the pre-fix set because:
 
 - the serving-family divergence starts extremely early
 - it shows a non-trivial mixed frontier
@@ -50,12 +56,11 @@ This means the repro becomes informative almost immediately after the first gene
 That makes this a better debugging repro than `performance_journal`, which diverges later and stays closer to pure `M0`.
 
 ## Current interpretation
+The key pre-fix read was:
 
-The important read is not just that this case diverges from dense. It is that:
-
-- real mixed matches hand exactly
-- non-`M0` and conservative also line up with the same serving-family output
-- so the first-divergence question is now:
+- real mixed matched hand exactly
+- non-`M0` and conservative also lined up with the same serving-family output
+- the first-divergence question was:
   - what internal quantity separates the broader DotCache-family path from dense by token `2` on this prompt?
 
 ## Recommended next debugging step

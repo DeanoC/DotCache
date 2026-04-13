@@ -1,6 +1,14 @@
 # Qwen3.5 Stage 9 `state_cache_roadmap` First-Divergence Localization on CUDA (2026-04-13)
 
-This note records the CUDA-side single-case repro for the strongest current public DotCache-family vs dense boundary.
+This note records the CUDA-side pre-fix single-case repro that mirrored the same MPS output divergence in `state_cache_roadmap`.
+
+Current status:
+
+- the fixed-tree handoff correction now removes this as a correctness boundary
+- this note is maintained as a historical pre-fix repro reference
+- current residual interpretation is covered in
+  [qwen35_stage9_state_cache_roadmap_root_cause_20260413.md](./qwen35_stage9_state_cache_roadmap_root_cause_20260413.md) and
+  [qwen35_stage9_round2_postfix_mps_20260413.md](./qwen35_stage9_round2_postfix_mps_20260413.md)
 
 Single-case repro manifest:
 
@@ -90,12 +98,11 @@ That means the repro is backend-consistent at the output and execution-shape lev
 
 ## Current interpretation
 
-Best current read after the single-case CUDA repro:
+Best pre-fix read after the CUDA repro:
 
-- this remains a shared DotCache-family vs dense boundary
-- it is not CUDA-only
+- this was a shared DotCache-family vs dense boundary and not CUDA-only
 - it is not a Stage 9 mixed-only regression
-- the earliest externally visible divergence is still generated token `2`
+- the earliest externally visible divergence was still generated token `2`
 
 So this manifest is the right canonical CUDA target for any deeper instrumentation that tries to answer:
 
