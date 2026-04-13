@@ -108,7 +108,9 @@ Important CUDA observation:
 - the updated real-mixed CUDA path is no longer just a research lane on every corpus
 - it now beats the same-tree non-`M0` baseline on all three portable corpora
 - the remaining CUDA work is about increasing headroom, not proving mixed viability
-- a late `performance_journal` tail diff is now classified as a tie-boundary residual and is not a Stage 9 mixed execution regression
+- the remaining `performance_journal` tail diff is now localized to tiny upstream mixed-path numeric drift before argmax
+- forced CUDA capture shows direct-`M0` / `final_mix` matches float32 recompute very closely, so `final_mix` is not the correctness bug
+- that leaves CUDA focused on performance headroom, especially `final_mix` and `direct_m0_score`, rather than correctness closure
 
 ## CUDA baselines on the same portable corpus
 

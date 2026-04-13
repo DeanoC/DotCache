@@ -364,16 +364,22 @@ So the current best cheap recommendation is surprisingly simple:
 After the fixed `state_cache_roadmap` handoff handling, the substantial divergence family is gone:
 
 - `state_cache_roadmap` now matches dense in the fixed-tree round-2 suites
-- `submission_execution_plan` is no longer part of the core two-case suspect pair, and is tracked separately as a cousin-case that is resolved in MPS post-fix reruns
+- `submission_execution_plan` is no longer part of the core two-case suspect pair, and is now resolved on both MPS and CUDA fixed-tree reruns
 
 The remaining `performance_journal` residue is now a late tied-token boundary rather than a Stage 9 mixed regression:
 
-- CUDA fixed-tree dense and serving generate:
+- CUDA fixed-tree dense / non-`M0` / conservative generate:
   - `[198, 220, 471, 1510, 77518, 28, 15, 7561]`
-- in the tied step, `logit[15]` and `logit[16]` are both `20.625`
-- dense-vs-serving deltas for that step are zero
+- CUDA fixed-tree real mixed generates:
+  - `[198, 220, 471, 1510, 77518, 28, 16, 7561]`
+- at the disputed step:
+  - dense token `15` = `20.625`, token `16` = `20.625`
+  - non-`M0` token `15` = `20.625`, token `16` = `20.625`
+  - real mixed token `15` = `20.625`, token `16` = `20.640625`
+- the first real-mixed vs non-`M0` drift appears upstream at full-attention layer `3`
+- forced capture shows direct-`M0` / `final_mix` matches a float32 recompute on the same inputs to within about `5.7e-06`
 
-That behavior is best treated as a backend-sensitive dense tie-break and not a priority serving-path blocker.
+That behavior is best treated as tiny upstream mixed-path numeric drift before argmax, not a `final_mix` helper bug and not a priority serving-path blocker.
 
 That is not the final policy yet, but it is the strongest current small-policy candidate to test in the live runtime.
 
@@ -394,7 +400,7 @@ The current state is good enough to say:
 - real mixed key-side `M0` execution is real
 - the best real mixed `bias` path is now the measured serving winner on the main MPS benchmarks
 
-The remaining work is mainly about confidence, portability, and understanding the residual hard frontier, not about proving basic viability anymore.
+The remaining work is mainly about portability and performance headroom, not about proving correctness or basic viability anymore.
 
 ## CUDA read so far
 

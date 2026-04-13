@@ -105,5 +105,10 @@ Additional same-tree CUDA read:
 Residual tie-boundary classification:
 
 - the fixed handoff path closes the substantive `performance_journal` and `state_cache_roadmap` structural divergence narrative
-- on this fixed-tree CUDA run, `performance_journal` now resolves to `[198, 220, 471, 1510, 77518, 28, 15, 7561]` with a tied final-branch score at `15` vs `16`
-- this is now interpreted as a late-stage dense tie-break, not a Stage 9 mixed execution regression
+- on fixed-tree CUDA, `state_cache_roadmap` and `submission_execution_plan` now match dense in all three serving lanes
+- the only remaining public residual is `performance_journal`, where dense / non-`M0` / conservative produce `[198, 220, 471, 1510, 77518, 28, 15, 7561]` and real mixed produces `[198, 220, 471, 1510, 77518, 28, 16, 7561]`
+- the tied-step diagnostic shows this is not a `final_mix` bug:
+  - dense and non-`M0` remain exactly tied at `15` vs `16`
+  - real mixed nudges token `16` slightly higher before argmax
+  - the first drift appears upstream at full-attention layer `3`
+- this is now interpreted as tiny upstream mixed-path numeric drift before argmax, not a Stage 9 mixed-only correctness blocker
