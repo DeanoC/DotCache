@@ -2324,6 +2324,19 @@ impl HipDeviceBuffer {
     }
 
     pub(crate) fn zeros(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<Self> {
+        if device.is_hip() {
+            let out = Self::from_raw_hip_device_output(dims, dtype, device)?;
+            let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+                candle_core::bail!("expected owned HIP device buffer for zeros");
+            };
+            hip::memset_device_bytes(
+                device.as_hip_device()?.ordinal(),
+                buffer.raw_device_ptr() as *mut c_void,
+                0,
+                buffer.len_bytes,
+            )?;
+            return Ok(out);
+        }
         Ok(Self::from_tensor(Tensor::zeros(dims.as_slice(), dtype, device)?))
     }
 
