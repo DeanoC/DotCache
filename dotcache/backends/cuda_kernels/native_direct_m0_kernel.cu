@@ -17,6 +17,7 @@ constexpr int kBlockSize = 16;
 constexpr int kWordsPerGroup = 8;
 constexpr int kThreads = 256;
 constexpr int kMaxTokens = 256;
+constexpr int kMaxBlocks = 32;
 
 __device__ __forceinline__ float block_reduce_max(float value, float* scratch) {
     const int tid = threadIdx.x;
@@ -290,6 +291,74 @@ __global__ void softmax_value_context_kernel(
     }
 }
 
+template <typename IndexT, typename ValueT>
+__global__ void softmax_value_stream_stats_kernel(
+    const float* __restrict__ logits,
+    const IndexT* __restrict__ token_block_ids,
+    const ValueT* __restrict__ values,
+    float* __restrict__ h_out,
+    float* __restrict__ m_out,
+    float* __restrict__ l_out,
+    float* __restrict__ block_max_out,
+    float* __restrict__ block_mass_num_out,
+    int token_count,
+    int block_count,
+    int head_dim,
+    float query_scale) {
+    __shared__ float s_reduce[kThreads];
+    __shared__ float s_scaled_logits[kMaxTokens];
+    __shared__ float s_weights[kMaxTokens];
+
+    const int q_idx = blockIdx.x;
+    const int tid = threadIdx.x;
+
+    float local_max = -INFINITY;
+    if (tid < token_count) {
+        const float scaled = logits[q_idx * token_count + tid] * query_scale;
+        s_scaled_logits[tid] = scaled;
+        local_max = scaled;
+    }
+    const float row_max = block_reduce_max(local_max, s_reduce);
+
+    float local_denom = 0.0f;
+    if (tid < token_count) {
+        const float scaled = s_scaled_logits[tid];
+        const float weight = isfinite(scaled) ? expf(scaled - row_max) : 0.0f;
+        s_weights[tid] = weight;
+        local_denom = weight;
+    }
+    const float denom = block_reduce_sum(local_denom, s_reduce);
+
+    if (tid == 0) {
+        m_out[q_idx] = row_max;
+        l_out[q_idx] = denom;
+    }
+    if (tid < block_count) {
+        float block_max = -INFINITY;
+        float block_mass = 0.0f;
+        for (int token_idx = 0; token_idx < token_count; ++token_idx) {
+            if (static_cast<int>(token_block_ids[token_idx]) != tid) {
+                continue;
+            }
+            block_max = fmaxf(block_max, s_scaled_logits[token_idx]);
+            block_mass += s_weights[token_idx];
+        }
+        block_max_out[q_idx * block_count + tid] = block_max;
+        block_mass_num_out[q_idx * block_count + tid] = block_mass;
+    }
+    for (int dim_idx = tid; dim_idx < head_dim; dim_idx += blockDim.x) {
+        float acc = 0.0f;
+        for (int token_idx = 0; token_idx < token_count; ++token_idx) {
+            const float weight = s_weights[token_idx];
+            if (weight == 0.0f) {
+                continue;
+            }
+            acc += weight * static_cast<float>(values[token_idx * head_dim + dim_idx]);
+        }
+        h_out[q_idx * head_dim + dim_idx] = acc;
+    }
+}
+
 }  // namespace
 
 torch::Tensor fused_selected_blocks_context_cuda_launcher(
@@ -543,4 +612,96 @@ torch::Tensor softmax_value_context_cuda_launcher(
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
+}
+
+std::vector<torch::Tensor> softmax_value_stream_stats_cuda_launcher(
+    torch::Tensor logits,
+    torch::Tensor token_block_ids,
+    torch::Tensor values,
+    int64_t block_count,
+    double query_scale) {
+    c10::cuda::CUDAGuard device_guard(logits.device());
+
+    const int query_count = static_cast<int>(logits.size(0));
+    const int token_count = static_cast<int>(logits.size(1));
+    const int head_dim = static_cast<int>(values.size(1));
+    const int block_count_i = static_cast<int>(block_count);
+
+    auto h = torch::zeros({query_count, head_dim}, logits.options().dtype(torch::kFloat32));
+    auto m = torch::full({query_count}, -std::numeric_limits<float>::infinity(), logits.options().dtype(torch::kFloat32));
+    auto l = torch::zeros({query_count}, logits.options().dtype(torch::kFloat32));
+    auto block_max = torch::full({query_count, std::max(block_count_i, 1)}, -std::numeric_limits<float>::infinity(), logits.options().dtype(torch::kFloat32));
+    auto block_mass_num = torch::zeros({query_count, std::max(block_count_i, 1)}, logits.options().dtype(torch::kFloat32));
+    if (query_count == 0 || token_count == 0 || head_dim == 0) {
+        return {h, m, l, block_max, block_mass_num};
+    }
+
+    const dim3 grid(query_count);
+    const dim3 block(kThreads);
+    auto stream = at::cuda::getDefaultCUDAStream();
+
+    if (token_block_ids.scalar_type() == torch::kInt64) {
+        if (values.scalar_type() == torch::kFloat16) {
+            softmax_value_stream_stats_kernel<int64_t, at::Half><<<grid, block, 0, stream>>>(
+                logits.data_ptr<float>(),
+                token_block_ids.data_ptr<int64_t>(),
+                values.data_ptr<at::Half>(),
+                h.data_ptr<float>(),
+                m.data_ptr<float>(),
+                l.data_ptr<float>(),
+                block_max.data_ptr<float>(),
+                block_mass_num.data_ptr<float>(),
+                token_count,
+                block_count_i,
+                head_dim,
+                static_cast<float>(query_scale));
+        } else {
+            softmax_value_stream_stats_kernel<int64_t, float><<<grid, block, 0, stream>>>(
+                logits.data_ptr<float>(),
+                token_block_ids.data_ptr<int64_t>(),
+                values.data_ptr<float>(),
+                h.data_ptr<float>(),
+                m.data_ptr<float>(),
+                l.data_ptr<float>(),
+                block_max.data_ptr<float>(),
+                block_mass_num.data_ptr<float>(),
+                token_count,
+                block_count_i,
+                head_dim,
+                static_cast<float>(query_scale));
+        }
+    } else {
+        if (values.scalar_type() == torch::kFloat16) {
+            softmax_value_stream_stats_kernel<int32_t, at::Half><<<grid, block, 0, stream>>>(
+                logits.data_ptr<float>(),
+                token_block_ids.data_ptr<int32_t>(),
+                values.data_ptr<at::Half>(),
+                h.data_ptr<float>(),
+                m.data_ptr<float>(),
+                l.data_ptr<float>(),
+                block_max.data_ptr<float>(),
+                block_mass_num.data_ptr<float>(),
+                token_count,
+                block_count_i,
+                head_dim,
+                static_cast<float>(query_scale));
+        } else {
+            softmax_value_stream_stats_kernel<int32_t, float><<<grid, block, 0, stream>>>(
+                logits.data_ptr<float>(),
+                token_block_ids.data_ptr<int32_t>(),
+                values.data_ptr<float>(),
+                h.data_ptr<float>(),
+                m.data_ptr<float>(),
+                l.data_ptr<float>(),
+                block_max.data_ptr<float>(),
+                block_mass_num.data_ptr<float>(),
+                token_count,
+                block_count_i,
+                head_dim,
+                static_cast<float>(query_scale));
+        }
+    }
+
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return {h, m, l, block_max, block_mass_num};
 }

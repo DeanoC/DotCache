@@ -105,12 +105,14 @@ def _load_native_direct_m0_ops():
         native_direct_m0_available,
         native_direct_m0_final_mix_available,
         softmax_value_context_cuda,
+        softmax_value_stream_stats_cuda,
     )
 
     return (
         fused_selected_blocks_context_cuda,
         fused_selected_blocks_stream_stats_cuda,
         softmax_value_context_cuda,
+        softmax_value_stream_stats_cuda,
         native_direct_m0_available,
         native_direct_m0_final_mix_available,
     )
@@ -3724,6 +3726,7 @@ def _decode_selected_blocks_direct_m0_torch(
         fused_selected_blocks_context_cuda,
         fused_selected_blocks_stream_stats_cuda,
         softmax_value_context_cuda,
+        softmax_value_stream_stats_cuda,
         native_direct_m0_available,
         native_direct_m0_final_mix_available,
     ) = _load_native_direct_m0_ops()
@@ -4601,6 +4604,49 @@ def _decode_selected_blocks_direct_m0_torch(
         if detailed_mixed_timing:
             _synchronize_torch_device(q_slice)
             final_mix_start = time.perf_counter()
+        use_native_stream_stats_final_mix = (
+            collect_stream_stats
+            and attn_weights is None
+            and token_block_ids is not None
+            and str(query_tensor.device.type) == "cuda"
+            and native_direct_m0_final_mix_available()
+            and int(logits.shape[-1]) > 0
+            and int(logits.shape[-1]) <= 256
+            and int(len(token_counts)) <= 32
+        )
+        if use_native_stream_stats_final_mix:
+            if detailed_mixed_timing:
+                _synchronize_torch_device(q_slice)
+                timing["final_mix_logits_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
+                final_mix_softmax_start = time.perf_counter()
+            head_h, head_m, head_l, head_block_max, head_block_mass = softmax_value_stream_stats_cuda(
+                logits=logits.contiguous(),
+                token_block_ids=token_block_ids,
+                values=gathered_values[int(kv_head)],
+                block_count=int(len(token_counts)),
+                query_scale=query_scale,
+            )
+            context = head_h / head_l[:, None].clamp_min(1e-8)
+            if detailed_mixed_timing:
+                _synchronize_torch_device(q_slice)
+                timing["final_mix_softmax_ms"] += (time.perf_counter() - final_mix_softmax_start) * 1000.0
+                timing["final_mix_value_ms"] += 0.0
+                timing["final_mix_ms"] += (time.perf_counter() - final_mix_start) * 1000.0
+            output[head_index_tensor] = context
+            assert tranche_m is not None
+            assert tranche_l is not None
+            assert tranche_h is not None
+            assert block_mass_numerators is not None
+            assert block_max_logits is not None
+            tranche_m.index_copy_(0, head_index_tensor, head_m.to(dtype=torch.float32))
+            tranche_l.index_copy_(0, head_index_tensor, head_l.to(dtype=torch.float32))
+            tranche_h.index_copy_(0, head_index_tensor, head_h.to(dtype=torch.float32))
+            block_mass_numerators.index_copy_(0, head_index_tensor, head_block_mass.to(dtype=torch.float32))
+            block_max_logits[:] = torch.maximum(
+                block_max_logits,
+                head_block_max.to(dtype=torch.float32).max(dim=0).values,
+            )
+            continue
         logits = logits * float(query_scale)
         if int(logits.shape[-1]) > 0 and token_block_ids is not None and block_max_logits is not None:
             token_max_logits = logits.max(dim=0).values.to(dtype=torch.float32)

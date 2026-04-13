@@ -138,3 +138,21 @@ def softmax_value_context_cuda(
         values,
         float(query_scale),
     )
+
+
+def softmax_value_stream_stats_cuda(
+    *,
+    logits: Any,
+    token_block_ids: Any,
+    values: Any,
+    block_count: int,
+    query_scale: float,
+):
+    ext = _load_extension()
+    return ext.softmax_value_stream_stats_cuda(
+        logits,
+        token_block_ids,
+        values,
+        int(block_count),
+        float(query_scale),
+    )
