@@ -16439,8 +16439,8 @@ pub(crate) fn cumsum_last_dim(xs: &Tensor) -> Result<HipTensor> {
         return Ok(host);
     }
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
-    if let Some(xs) = xs_hip.0 .0.direct_materialized_device_buffer() {
-        if let Some(out) = owned_cumsum_last_dim_hip_device_buffer(xs)? {
+    if let Some(xs) = xs_hip.try_materialized_device_buffer()? {
+        if let Some(out) = owned_cumsum_last_dim_hip_device_buffer(&xs)? {
             return Ok(out);
         }
         if let HipDeviceStorage::MappedHostBuffer(mapped) = &xs.storage {
@@ -16465,6 +16465,9 @@ pub(crate) fn l2norm(xs: &Tensor, eps: f64) -> Result<HipTensor> {
         return Ok(host);
     }
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
+    if let Some(xs) = xs_hip.try_materialized_device_buffer()? {
+        return Ok(HipTensor::from_device_buffer(xs.l2norm(eps)?));
+    }
     Ok(l2norm_hip(&xs_hip, eps)?)
 }
 
