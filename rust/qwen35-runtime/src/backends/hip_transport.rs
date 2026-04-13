@@ -8272,6 +8272,104 @@ fn mapped_full_attention_prefill_hip_host_buffer(
     Ok(None)
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn full_attention_prefill_hip_owned_device(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<HipTensor>> {
+    use candle_core::Storage;
+
+    let query = query.contiguous()?;
+    let key = key.contiguous()?;
+    let value = value.contiguous()?;
+    if !(query.device().is_hip()
+        && key.device().same_device(query.device())
+        && value.device().same_device(query.device()))
+    {
+        return Ok(None);
+    }
+    let (query_storage, query_layout) = query.storage_and_layout();
+    let (key_storage, key_layout) = key.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (Storage::Hip(query_storage), Storage::Hip(key_storage), Storage::Hip(value_storage)) =
+        (&*query_storage, &*key_storage, &*value_storage)
+    else {
+        return Ok(None);
+    };
+    if !(query_layout.is_contiguous() && key_layout.is_contiguous() && value_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let [batch_size, q_heads, q_len, head_dim] = *query_layout.shape().dims() else {
+        return Ok(None);
+    };
+    let [key_batch, kv_heads, kv_len, key_head_dim] = *key_layout.shape().dims() else {
+        return Ok(None);
+    };
+    let [value_batch, value_kv_heads, value_kv_len, value_head_dim] = *value_layout.shape().dims()
+    else {
+        return Ok(None);
+    };
+    if query.dtype() != key.dtype()
+        || query.dtype() != value.dtype()
+        || key_batch != batch_size
+        || value_batch != batch_size
+        || value_kv_heads != kv_heads
+        || value_kv_len != kv_len
+        || key_head_dim != head_dim
+        || value_head_dim != head_dim
+    {
+        return Ok(None);
+    }
+    let out = HipDeviceBuffer::from_raw_hip_device_output(
+        vec![batch_size, q_heads, q_len, head_dim],
+        DType::F32,
+        query.device(),
+    )?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_full_attention_prefill(
+            hip::dtype_code(query.dtype())?,
+            query.device().as_hip_device()?.ordinal(),
+            batch_size,
+            q_heads,
+            kv_heads,
+            q_len,
+            kv_len,
+            head_dim,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+            query_storage.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error("full-attention-prefill-owned-device", status));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn full_attention_prefill_hip_owned_device(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<HipTensor>> {
+    let _ = (query, key, value, num_kv_groups, scale, seqlen_offset);
+    Ok(None)
+}
+
 fn embedding_lookup_hip_host_buffer(
     embeddings: &Tensor,
     indexes: &Tensor,
@@ -14520,6 +14618,11 @@ pub(crate) fn full_attention_prefill(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
+    if let Some(device_out) =
+        full_attention_prefill_hip_owned_device(query, key, value, num_kv_groups, scale, seqlen_offset)?
+    {
+        return Ok(device_out);
+    }
     let query_hip = HipTensor::from_scaffold_tensor(query.clone());
     let key_hip = HipTensor::from_scaffold_tensor(key.clone());
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
@@ -14593,6 +14696,11 @@ pub(crate) fn full_attention_decode(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<HipTensor> {
+    if let Some(device_out) =
+        full_attention_prefill_hip_owned_device(query, key, value, num_kv_groups, scale, seqlen_offset)?
+    {
+        return Ok(device_out);
+    }
     let query_hip = HipTensor::from_scaffold_tensor(query.clone());
     let key_hip = HipTensor::from_scaffold_tensor(key.clone());
     let value_hip = HipTensor::from_scaffold_tensor(value.clone());
