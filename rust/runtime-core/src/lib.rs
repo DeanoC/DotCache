@@ -129,26 +129,22 @@ fn detect_hip_family() -> Option<String> {
 }
 
 fn detect_cuda_family() -> Option<String> {
-    let output = std::process::Command::new("nvidia-smi").output().ok()?;
+    let output = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut seen_header = false;
-    for token in stdout.split_whitespace() {
-        if token == "CUDA" {
-            seen_header = true;
-            continue;
-        }
-        if seen_header {
-            let digits = token
-                .chars()
-                .filter(|ch| ch.is_ascii_digit())
-                .collect::<String>();
-            if digits.len() >= 2 {
-                return Some(format!("sm{digits}"));
-            }
-        }
+    let first = stdout.lines().next()?.trim();
+    let digits = first
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if digits.len() >= 2 {
+        Some(format!("sm{digits}"))
+    } else {
+        None
     }
-    None
 }

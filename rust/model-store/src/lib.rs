@@ -1473,13 +1473,7 @@ fn sanitize_path_component(value: &str) -> OsString {
 }
 
 fn detect_target_spec(device: &Device) -> Result<TargetSpec> {
-    let target = TargetSpec::detect(device);
-    if matches!(target.backend, BackendKind::Metal) {
-        return Err(ModelStoreError::UnsupportedBackend {
-            backend: "metal".to_string(),
-        });
-    }
-    Ok(target)
+    Ok(TargetSpec::detect(device))
 }
 
 fn align_up(value: u64, alignment: u64) -> u64 {
