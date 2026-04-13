@@ -19,6 +19,7 @@ pub use model::{
     NativeFullAttentionCacheState as MinimalQwen35NativeFullAttentionCacheState,
     NativeLayerCacheState as MinimalQwen35NativeLayerCacheState,
     NativeLinearAttentionCacheState as MinimalQwen35NativeLinearAttentionCacheState,
+    RuntimeProfile as MinimalQwen35RuntimeProfile,
     StateBuffer as MinimalQwen35StateBuffer, TextConfig as MinimalQwen35TextConfig,
 };
 
@@ -97,6 +98,9 @@ pub struct MinimalQwen35DirectRuntime {
     decode_hidden_ping: MinimalQwen35StateBuffer,
     decode_hidden_pong: MinimalQwen35StateBuffer,
     decode_logits: MinimalQwen35StateBuffer,
+    next_hidden_slot_is_ping: bool,
+    last_prefill_sequence_length: usize,
+    last_decode_sequence_length: usize,
 }
 
 impl MinimalQwen35DirectRuntime {
@@ -122,6 +126,14 @@ impl MinimalQwen35DirectRuntime {
 
     pub fn decode_logits(&self) -> &MinimalQwen35StateBuffer {
         &self.decode_logits
+    }
+
+    pub fn last_prefill_sequence_length(&self) -> usize {
+        self.last_prefill_sequence_length
+    }
+
+    pub fn last_decode_sequence_length(&self) -> usize {
+        self.last_decode_sequence_length
     }
 }
 
@@ -266,7 +278,144 @@ impl MinimalQwen35Runner {
             decode_hidden_ping,
             decode_hidden_pong,
             decode_logits,
+            next_hidden_slot_is_ping: true,
+            last_prefill_sequence_length: 0,
+            last_decode_sequence_length: 0,
         })
+    }
+
+    fn direct_runtime_mut(&mut self) -> Option<&mut MinimalQwen35DirectRuntime> {
+        self.direct_runtime.as_mut()
+    }
+
+    fn validate_direct_input_ids_v1(&self, input_ids: &Tensor) -> Result<()> {
+        let direct = self.direct_runtime.as_ref().ok_or_else(|| RuntimeError::External {
+            context: "qwen35-hip-direct",
+            message: "direct runtime requested without direct runtime state".to_string(),
+        })?;
+        let (batch_size, seq_len) = input_ids.dims2()?;
+        if batch_size != 1 {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "direct runtime currently supports only batch size 1, got {batch_size}"
+                ),
+            });
+        }
+        if seq_len == 0 {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: "direct runtime requires at least one input token".to_string(),
+            });
+        }
+        if seq_len > direct.metadata.max_position_embeddings {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "direct runtime prompt length {seq_len} exceeds max_position_embeddings {}",
+                    direct.metadata.max_position_embeddings
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_direct_hidden_states_v1(
+        &self,
+        hidden_states: &MinimalQwen35StateBuffer,
+        expected_seq_len: Option<usize>,
+        phase: &'static str,
+    ) -> Result<()> {
+        let direct = self.direct_runtime.as_ref().ok_or_else(|| RuntimeError::External {
+            context: "qwen35-hip-direct",
+            message: format!("direct runtime requested for {phase} without direct runtime state"),
+        })?;
+        let (batch_size, seq_len, hidden_size) = hidden_states.dims3()?;
+        if batch_size != 1 {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!("{phase} currently supports only batch size 1, got {batch_size}"),
+            });
+        }
+        if let Some(expected_seq_len) = expected_seq_len {
+            if seq_len != expected_seq_len {
+                return Err(RuntimeError::External {
+                    context: "qwen35-hip-direct",
+                    message: format!(
+                        "{phase} expected sequence length {expected_seq_len}, got {seq_len}"
+                    ),
+                });
+            }
+        }
+        if hidden_size != direct.metadata.hidden_size {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "{phase} hidden size mismatch: runtime={} input={hidden_size}",
+                    direct.metadata.hidden_size
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_direct_decode_v1(
+        &self,
+        hidden_state_t: &MinimalQwen35StateBuffer,
+        cache: &MinimalQwen35KvCache,
+    ) -> Result<()> {
+        self.validate_direct_hidden_states_v1(hidden_state_t, Some(1), "decode")?;
+        let direct = self.direct_runtime.as_ref().ok_or_else(|| RuntimeError::External {
+            context: "qwen35-hip-direct",
+            message: "direct runtime requested without direct runtime state".to_string(),
+        })?;
+        if cache.layers.len() != direct.metadata.num_hidden_layers {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "decode cache layer count mismatch: runtime={} cache={}",
+                    direct.metadata.num_hidden_layers,
+                    cache.layers.len()
+                ),
+            });
+        }
+        let next_position = cache.sequence_length() + 1;
+        if next_position > direct.metadata.max_position_embeddings {
+            return Err(RuntimeError::External {
+                context: "qwen35-hip-direct",
+                message: format!(
+                    "decode position {next_position} exceeds max_position_embeddings {}",
+                    direct.metadata.max_position_embeddings
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn stage_direct_decode_hidden(
+        direct: &mut MinimalQwen35DirectRuntime,
+        hidden_state_t: &MinimalQwen35StateBuffer,
+    ) {
+        if direct.next_hidden_slot_is_ping {
+            direct.decode_hidden_ping = hidden_state_t.clone();
+        } else {
+            direct.decode_hidden_pong = hidden_state_t.clone();
+        }
+        direct.next_hidden_slot_is_ping = !direct.next_hidden_slot_is_ping;
+    }
+
+    fn stage_direct_logits(
+        direct: &mut MinimalQwen35DirectRuntime,
+        logits: &MinimalQwen35StateBuffer,
+        sequence_length: usize,
+        is_prefill: bool,
+    ) {
+        direct.decode_logits = logits.clone();
+        if is_prefill {
+            direct.last_prefill_sequence_length = sequence_length;
+        } else {
+            direct.last_decode_sequence_length = sequence_length;
+        }
     }
 
     fn hidden_states_on_runner_device(
@@ -505,6 +654,105 @@ impl MinimalQwen35Runner {
         Self::load_for_device(model_id, device)
     }
 
+    fn direct_hidden_states_from_input_ids(
+        &mut self,
+        input_ids: &Tensor,
+    ) -> Result<MinimalQwen35StateBuffer> {
+        self.validate_direct_input_ids_v1(input_ids)?;
+        Self::with_direct_hip_execution_env(true, || {
+            let input_ids = if input_ids.device().same_device(&self.device) {
+                input_ids.clone()
+            } else {
+                input_ids.to_device(&self.device)?
+            };
+            Ok(self.model.hidden_states_from_input_ids(&input_ids)?)
+        })
+    }
+
+    fn direct_prefill_from_hidden_states(
+        &mut self,
+        hidden_states: &MinimalQwen35StateBuffer,
+    ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35KvCache)> {
+        self.validate_direct_hidden_states_v1(hidden_states, None, "prefill")?;
+        Self::with_direct_hip_execution_env(true, || {
+            let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
+            let hidden_states = MinimalQwen35StateBuffer::from_tensor(hidden_states)?;
+            let (_, seq_len, _) = hidden_states.dims3()?;
+            let logits = self.model.forward_hidden_states(&hidden_states, 0)?;
+            let cache = self.model.cache_state();
+            if let Some(direct) = self.direct_runtime_mut() {
+                Self::stage_direct_logits(direct, &logits, seq_len, true);
+            }
+            Ok((logits, cache))
+        })
+    }
+
+    fn direct_prefill_from_hidden_states_profiled(
+        &mut self,
+        hidden_states: &MinimalQwen35StateBuffer,
+    ) -> Result<(
+        MinimalQwen35StateBuffer,
+        MinimalQwen35KvCache,
+        MinimalQwen35RuntimeProfile,
+    )> {
+        self.validate_direct_hidden_states_v1(hidden_states, None, "prefill")?;
+        Self::with_direct_hip_execution_env(true, || {
+            let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
+            let hidden_states = MinimalQwen35StateBuffer::from_tensor(hidden_states)?;
+            let (_, seq_len, _) = hidden_states.dims3()?;
+            let (logits, profile) = self.model.forward_hidden_states_profiled(&hidden_states, 0)?;
+            let cache = self.model.cache_state();
+            if let Some(direct) = self.direct_runtime_mut() {
+                Self::stage_direct_logits(direct, &logits, seq_len, true);
+            }
+            Ok((logits, cache, profile))
+        })
+    }
+
+    fn direct_decode_from_hidden_state(
+        &mut self,
+        hidden_state_t: &MinimalQwen35StateBuffer,
+        cache: &mut MinimalQwen35KvCache,
+    ) -> Result<MinimalQwen35StateBuffer> {
+        self.validate_direct_decode_v1(hidden_state_t, cache)?;
+        Self::with_direct_hip_execution_env(true, || {
+            let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
+            let hidden_state_t = MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?;
+            self.model.restore_cache_state(cache)?;
+            let seqlen_offset = cache.sequence_length();
+            let logits = self.model.forward_hidden_states(&hidden_state_t, seqlen_offset)?;
+            *cache = self.model.cache_state();
+            if let Some(direct) = self.direct_runtime_mut() {
+                Self::stage_direct_decode_hidden(direct, &hidden_state_t);
+                Self::stage_direct_logits(direct, &logits, seqlen_offset + 1, false);
+            }
+            Ok(logits)
+        })
+    }
+
+    fn direct_decode_from_hidden_state_profiled(
+        &mut self,
+        hidden_state_t: &MinimalQwen35StateBuffer,
+        cache: &mut MinimalQwen35KvCache,
+    ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
+        self.validate_direct_decode_v1(hidden_state_t, cache)?;
+        Self::with_direct_hip_execution_env(true, || {
+            let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
+            let hidden_state_t = MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?;
+            self.model.restore_cache_state(cache)?;
+            let seqlen_offset = cache.sequence_length();
+            let (logits, profile) = self
+                .model
+                .forward_hidden_states_profiled(&hidden_state_t, seqlen_offset)?;
+            *cache = self.model.cache_state();
+            if let Some(direct) = self.direct_runtime_mut() {
+                Self::stage_direct_decode_hidden(direct, &hidden_state_t);
+                Self::stage_direct_logits(direct, &logits, seqlen_offset + 1, false);
+            }
+            Ok((logits, profile))
+        })
+    }
+
     pub fn hidden_states_from_input_ids(
         &self,
         input_ids: &Tensor,
@@ -523,6 +771,9 @@ impl MinimalQwen35Runner {
         &mut self,
         hidden_states: &MinimalQwen35StateBuffer,
     ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35KvCache)> {
+        if self.direct_runtime.is_some() {
+            return self.direct_prefill_from_hidden_states(hidden_states);
+        }
         Self::with_direct_hip_execution_env(self.direct_runtime.is_some(), || {
             let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
             let logits = self
@@ -532,11 +783,33 @@ impl MinimalQwen35Runner {
         })
     }
 
+    pub fn prefill_from_hidden_states_profiled(
+        &mut self,
+        hidden_states: &MinimalQwen35StateBuffer,
+    ) -> Result<(
+        MinimalQwen35StateBuffer,
+        MinimalQwen35KvCache,
+        MinimalQwen35RuntimeProfile,
+    )> {
+        if self.direct_runtime.is_some() {
+            return self.direct_prefill_from_hidden_states_profiled(hidden_states);
+        }
+        Self::with_direct_hip_execution_env(self.direct_runtime.is_some(), || {
+            let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
+            let hidden_states = MinimalQwen35StateBuffer::from_tensor(hidden_states)?;
+            let (logits, profile) = self.model.forward_hidden_states_profiled(&hidden_states, 0)?;
+            Ok((logits, self.model.cache_state(), profile))
+        })
+    }
+
     pub fn decode_from_hidden_state(
         &mut self,
         hidden_state_t: &MinimalQwen35StateBuffer,
         cache: &mut MinimalQwen35KvCache,
     ) -> Result<MinimalQwen35StateBuffer> {
+        if self.direct_runtime.is_some() {
+            return self.direct_decode_from_hidden_state(hidden_state_t, cache);
+        }
         Self::with_direct_hip_execution_env(self.direct_runtime.is_some(), || {
             let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
             self.model.restore_cache_state(cache)?;
@@ -548,6 +821,38 @@ impl MinimalQwen35Runner {
             *cache = self.model.cache_state();
             Ok(logits)
         })
+    }
+
+    pub fn decode_from_hidden_state_profiled(
+        &mut self,
+        hidden_state_t: &MinimalQwen35StateBuffer,
+        cache: &mut MinimalQwen35KvCache,
+    ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35RuntimeProfile)> {
+        if self.direct_runtime.is_some() {
+            return self.direct_decode_from_hidden_state_profiled(hidden_state_t, cache);
+        }
+        Self::with_direct_hip_execution_env(self.direct_runtime.is_some(), || {
+            let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
+            let hidden_state_t = MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?;
+            self.model.restore_cache_state(cache)?;
+            let seqlen_offset = cache.sequence_length();
+            let (logits, profile) = self
+                .model
+                .forward_hidden_states_profiled(&hidden_state_t, seqlen_offset)?;
+            *cache = self.model.cache_state();
+            Ok((logits, profile))
+        })
+    }
+
+    pub fn hidden_states_from_input_ids_direct(
+        &mut self,
+        input_ids: &Tensor,
+    ) -> Result<MinimalQwen35StateBuffer> {
+        if self.direct_runtime.is_some() {
+            self.direct_hidden_states_from_input_ids(input_ids)
+        } else {
+            self.hidden_states_from_input_ids(input_ids)
+        }
     }
 
     pub fn linear_attention_layer_ids(&self) -> Vec<usize> {

@@ -289,7 +289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let hidden_states = if let Some(cpu_runner) = cpu_runner.as_ref() {
         cpu_runner.hidden_states_from_input_ids(&input_ids)?
     } else {
-        device_runner.hidden_states_from_input_ids(&input_ids)?
+        device_runner.hidden_states_from_input_ids_direct(&input_ids)?
     };
 
     let (mut cpu_logits, mut cpu_cache, cpu_prefill_elapsed) =
@@ -353,7 +353,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         generated_ids.push(next_token);
 
         let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &cpu_device)?;
-        let device_hidden_state = device_runner.hidden_states_from_input_ids(&decode_input)?;
+        let device_hidden_state = device_runner.hidden_states_from_input_ids_direct(&decode_input)?;
         if let (Some(cpu_runner), Some(cpu_cache)) = (cpu_runner.as_mut(), cpu_cache.as_mut()) {
             let cpu_hidden_state = cpu_runner.hidden_states_from_input_ids(&decode_input)?;
             let cpu_decode_started = Instant::now();
