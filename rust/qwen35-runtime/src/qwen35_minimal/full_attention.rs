@@ -1307,11 +1307,7 @@ impl FullAttention {
             context.k_norm_weight,
             context.k_norm_eps,
         )?;
-        let query_states =
-            context.backend.copy_state_into_scratch(&query_states, context.query_workspace)?;
         let gate = context.backend.copy_state_into_scratch(&gate, context.gate_workspace)?;
-        let key_states =
-            context.backend.copy_state_into_scratch(&key_states, context.key_workspace)?;
         let value_states =
             context.backend.copy_state_into_scratch(&value_states, context.value_workspace)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
@@ -1320,6 +1316,10 @@ impl FullAttention {
         let (query_states, key_states) =
             self.rotary_emb
                 .apply_buffer(&query_states, &key_states, context.seqlen_offset)?;
+        let query_states =
+            context.backend.copy_state_into_scratch(&query_states, context.query_workspace)?;
+        let key_states =
+            context.backend.copy_state_into_scratch(&key_states, context.key_workspace)?;
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let kv_append_start = profile_start(device)?;
