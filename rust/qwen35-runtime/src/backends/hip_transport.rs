@@ -4984,6 +4984,13 @@ impl HipTensor {
         self.0.try_host_buffer()
     }
 
+    pub(crate) fn try_materialized_device_buffer(&self) -> Result<Option<HipDeviceBuffer>> {
+        if let Some(buffer) = self.0 .0.direct_materialized_device_buffer() {
+            return Ok(Some(buffer.clone()));
+        }
+        self.0 .0.try_materialize_device_buffer()
+    }
+
     pub(crate) fn contiguous(&self) -> Result<Self> {
         Ok(Self(self.0.contiguous()?))
     }
@@ -15773,8 +15780,8 @@ pub(crate) fn embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<
     let embeddings_hip = HipTensor::from_scaffold_tensor(embeddings.clone());
     let indexes_hip = HipTensor::from_scaffold_tensor(indexes.clone());
     if let (Some(embeddings), Some(indexes)) = (
-        embeddings_hip.0 .0.direct_materialized_device_buffer(),
-        indexes_hip.0 .0.direct_materialized_device_buffer(),
+        embeddings_hip.try_materialized_device_buffer()?,
+        indexes_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(embeddings_mapped),
@@ -15809,7 +15816,7 @@ pub(crate) fn immutable_embedding_lookup(
         return Ok(device_out);
     }
     let indexes_hip = HipTensor::from_scaffold_tensor(indexes.clone());
-    if let Some(indexes) = indexes_hip.0 .0.direct_materialized_device_buffer() {
+    if let Some(indexes) = indexes_hip.try_materialized_device_buffer()? {
         if let HipDeviceStorage::MappedHostBuffer(indexes_mapped) = &indexes.storage {
             if let Some(out) =
                 mapped_immutable_embedding_lookup_hip_host_buffer(embedding, indexes_mapped)?
@@ -15834,7 +15841,7 @@ pub(crate) fn output_projection(
         return Ok(device_out);
     }
     let hidden_states_hip = HipTensor::from_scaffold_tensor(hidden_states.clone());
-    if let Some(hidden_states) = hidden_states_hip.0 .0.direct_materialized_device_buffer() {
+    if let Some(hidden_states) = hidden_states_hip.try_materialized_device_buffer()? {
         if let HipDeviceStorage::MappedHostBuffer(hidden_states_mapped) = &hidden_states.storage {
             if let Some(out) =
                 mapped_output_projection_hip_host_buffer(embedding, hidden_states_mapped)?
@@ -15872,7 +15879,7 @@ pub(crate) fn rms_norm(
         return Ok(host);
     }
     let xs_hip = HipTensor::from_scaffold_tensor(xs.clone());
-    if xs_hip.0 .0.direct_materialized_device_buffer().is_some() {
+    if xs_hip.try_materialized_device_buffer()?.is_some() {
         return rms_norm_hip(&xs_hip, weight, eps, add_unit_offset);
     }
     if let Some(host) = rms_norm_host(&xs_hip, weight, eps, add_unit_offset)? {
@@ -15910,8 +15917,8 @@ pub(crate) fn rms_norm_gated(
     let hidden_states_hip = HipTensor::from_scaffold_tensor(hidden_states.clone());
     let gate_hip = HipTensor::from_scaffold_tensor(gate.clone());
     if let (Some(hidden_states), Some(gate)) = (
-        hidden_states_hip.0 .0.direct_materialized_device_buffer(),
-        gate_hip.0 .0.direct_materialized_device_buffer(),
+        hidden_states_hip.try_materialized_device_buffer()?,
+        gate_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(hidden_mapped),
@@ -15927,11 +15934,11 @@ pub(crate) fn rms_norm_gated(
         if hidden_states.storage.as_host_buffer().is_some() && gate.storage.as_host_buffer().is_some()
         {
             return Ok(HipTensor::from_device_buffer(
-                hidden_states.rms_norm_gated(gate, weight, eps)?,
+                hidden_states.rms_norm_gated(&gate, weight, eps)?,
             ));
         }
         return Ok(HipTensor::from_device_buffer(
-            hidden_states.rms_norm_gated(gate, weight, eps)?,
+            hidden_states.rms_norm_gated(&gate, weight, eps)?,
         ));
     }
     if let Some(host) = rms_norm_gated_host(&hidden_states_hip, &gate_hip, weight, eps)? {
@@ -15970,8 +15977,8 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
     let gate_hip = HipTensor::from_scaffold_tensor(gate.clone());
     let up_hip = HipTensor::from_scaffold_tensor(up.clone());
     if let (Some(gate), Some(up)) = (
-        gate_hip.0 .0.direct_materialized_device_buffer(),
-        up_hip.0 .0.direct_materialized_device_buffer(),
+        gate_hip.try_materialized_device_buffer()?,
+        up_hip.try_materialized_device_buffer()?,
     ) {
         if let (
             HipDeviceStorage::MappedHostBuffer(gate_mapped),
@@ -15983,9 +15990,9 @@ pub(crate) fn swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<HipTensor> {
             }
         }
         if gate.storage.as_host_buffer().is_some() && up.storage.as_host_buffer().is_some() {
-            return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(up)?));
+            return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(&up)?));
         }
-        return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(up)?));
+        return Ok(HipTensor::from_device_buffer(gate.swiglu_mul(&up)?));
     }
     if let Some(host) = swiglu_mul_host(&gate_hip, &up_hip)? {
         return materialize_host_result_as_device_leaf(host);
