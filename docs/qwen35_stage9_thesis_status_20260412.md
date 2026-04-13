@@ -191,6 +191,14 @@ Quick repeatability read on the real-mixed public-validation lane:
 
 So even with some run-to-run spread, the public-validation winner ordering remains comfortably intact.
 
+Same-tree CUDA public-validation read on that same corpus is now also checked in:
+
+- real mixed `bias`: `327.70 ms/step`
+- conservative certified `333.35 ms/step`
+- non-`M0` Stage 9 `339.66 ms/step`
+- exact-match still `1.0`
+- real mixed remains the same-tree winner
+
 ### 3. Repeatability
 
 The current numbers are strong, but the thesis should rest on stable runs rather than one especially lucky point.

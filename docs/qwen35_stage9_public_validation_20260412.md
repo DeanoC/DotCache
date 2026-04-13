@@ -49,6 +49,32 @@ That means real mixed is:
 - about `61.5%` faster than conservative certified
 - about `75.7%` faster than non-`M0` Stage 9
 
+### CUDA same-tree public-validation
+
+- [benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_public_validation/qwen35_persistent_real_mixed_probe.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_public_validation/qwen35_persistent_real_mixed_probe.md)
+  - bias `327.70 ms/step`
+- [benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_stage9_non_m0/qwen35_persistent_serving_policy_compare.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_stage9_non_m0/qwen35_persistent_serving_policy_compare.md)
+  - bias `339.66 ms/step`
+- [benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_conservative_priority_value_hybrid_ci16/qwen35_persistent_serving_policy_compare.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_conservative_priority_value_hybrid_ci16/qwen35_persistent_serving_policy_compare.md)
+  - bias `333.35 ms/step`
+
+On CUDA same-tree public-validation:
+
+- real mixed: `327.70 ms/step`
+- conservative certified: `333.35 ms/step`
+- non-`M0` Stage 9: `339.66 ms/step`
+- real mixed still wins, but margins are tighter than on large/broad/external
+- exact-match vs hand remains `1.0`
+
+Margin to call out:
+
+- real mixed is `1.69%` faster than conservative certified
+- real mixed is `3.52%` faster than non-`M0` Stage 9
+
+Observed caveat:
+
+- same-tree CUDA conservative and non-`M0` runs on this branch/runtime were checkpoint-light (`optional_selection=0`, `diverse_selection=0`) and do not recreate the older checkpoint-heavy behavior of earlier CUDA conservative checks.
+
 ## Per-case read
 
 Real mixed `bias` beat `hand` on all `6/6` cases and preserved exact-match throughout:

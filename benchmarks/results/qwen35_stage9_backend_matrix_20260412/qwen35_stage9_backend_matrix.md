@@ -7,6 +7,7 @@
 | large | real_mixed `1407.44` | real_mixed `374.06` |
 | broad | real_mixed `1627.72` | real_mixed `443.30` |
 | external | real_mixed `843.77` | real_mixed `240.84` |
+| public_validation | N/A | real_mixed `327.70` |
 
 ## Matrix
 
@@ -30,3 +31,6 @@
 | external | cuda | real_mixed | `240.84` | `243.39` | `1.000` | `0.333` |
 | external | cuda | non_m0 | `244.02` | `244.27` | `1.000` | `0.333` |
 | external | cuda | conservative | `380.85` | `381.95` | `1.000` | `0.333` |
+| public_validation | cuda | real_mixed | `327.70` | `N/A` | `1.000` | `N/A` |
+| public_validation | cuda | non_m0 | `339.66` | `N/A` | `1.000` | `N/A` |
+| public_validation | cuda | conservative | `333.35` | `N/A` | `1.000` | `N/A` |

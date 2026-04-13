@@ -1,6 +1,6 @@
 ## Qwen3.5 Stage 9 CUDA Real-Mixed Status (2026-04-12)
 
-Branch: `codex/qwen35-certified-streaming`
+Branch: `codex/stage9-public-validation`
 
 Portable-manifest CUDA real-mixed result bundles:
 
@@ -26,6 +26,25 @@ Current-tree CUDA non-`M0` `bias` results:
 - `large`: `388.78 ms/step`
 - `broad`: `465.40 ms/step`
 - `external`: `244.02 ms/step`
+
+CUDA same-tree public-validation bundles:
+
+- `benchmarks/results/qwen35_persistent_real_mixed_probe_cuda_repo_public_validation/`
+- `benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_stage9_non_m0/`
+- `benchmarks/results/qwen35_persistent_serving_policy_compare_cuda_repo_public_validation_conservative_priority_value_hybrid_ci16/`
+
+Current-tree CUDA public-validation `bias` results:
+
+- real-mixed: `327.70 ms/step`
+- non-`M0`: `339.66 ms/step`
+- conservative certified: `333.35 ms/step`
+
+Observed result:
+
+- real mixed is the same-tree winner for this broader public-validation set
+- real mixed margins are narrower, but still ahead of non-`M0` and conservative
+- exact-match rate remained `1.0` in the checked-in run
+- this run is checkpoint-light for conservative/non-`M0` vs the older checkpoint-heavy CUDA check baseline and should be interpreted as same-tree policy-level comparison
 
 Canonical config preserved:
 

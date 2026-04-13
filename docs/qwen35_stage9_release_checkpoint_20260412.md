@@ -93,3 +93,11 @@ Update:
 - cheap live exact-key fallback heuristics have now been tested too:
   - [benchmarks/results/qwen35_persistent_exact_key_live_policy_compare_20260412/qwen35_persistent_exact_key_live_policy_compare.md](/Users/deanocalver/.codex/worktrees/9f76/DotCache/benchmarks/results/qwen35_persistent_exact_key_live_policy_compare_20260412/qwen35_persistent_exact_key_live_policy_compare.md)
   - current baseline still wins in the live runtime, so no layer-15 heuristic is being promoted from that study
+
+Additional same-tree CUDA read:
+
+- public-validation corpus bundles now report:
+  - real mixed `327.70 ms/step`
+  - conservative certified `333.35 ms/step`
+  - non-`M0` Stage 9 `339.66 ms/step`
+- real mixed remains the same-tree winner on this broader public set
