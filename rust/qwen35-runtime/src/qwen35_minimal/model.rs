@@ -13868,7 +13868,8 @@ impl FullAttention {
         _layer_id: usize,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
         let device = xs.device();
-        let (_, q_len, _) = xs.dims3()?;
+        let output_dtype = xs.dtype();
+        let (b_sz, q_len, _) = xs.dims3()?;
         if q_len != 1 {
             candle::bail!(
                 "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={q_len}"
@@ -13877,7 +13878,6 @@ impl FullAttention {
         let backend = backend_buffer_api::for_device(device);
         let full_start = profile_start(device)?;
         let mut profile = RuntimeProfile::default();
-        let (b_sz, q_len, _) = xs.dims3()?;
 
         let qkv_start = profile_start(device)?;
         let q_and_gate = self.q_proj.forward_buffer(xs)?;
@@ -13906,9 +13906,10 @@ impl FullAttention {
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let kv_append_start = profile_start(device)?;
+        let prev_kv = self.kv_cache.as_ref();
         let appended_kv = backend.append_full_attention_kv_buffers(
-            self.kv_cache.as_ref().map(|(k, _)| k),
-            self.kv_cache.as_ref().map(|(_, v)| v),
+            prev_kv.map(|(k, _)| k),
+            prev_kv.map(|(_, v)| v),
             key_states.tensor(),
             value_states.tensor(),
         )?;
@@ -13927,7 +13928,7 @@ impl FullAttention {
 
         let kernel_start = profile_start(device)?;
         let attn_output = self.full_attention_decode_projected(
-            xs.tensor().dtype(),
+            output_dtype,
             b_sz,
             q_len,
             &query_states,
