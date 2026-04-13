@@ -163,11 +163,8 @@ enum HipDeviceStorage {
 impl HipDeviceStorage {
     fn from_tensor(tensor: Tensor) -> Self {
         if tensor.device().is_hip() {
-            if let Some(buffer) = HipOwnedDeviceBuffer::from_device_tensor_copy(&tensor)
-                .ok()
-                .flatten()
-            {
-                return Self::OwnedDeviceBuffer(buffer);
+            if let Some(storage) = import_hip_tensor_storage(&tensor).ok().flatten() {
+                return storage;
             }
         }
         if !tensor.device().is_hip() {
@@ -245,6 +242,29 @@ impl HipDeviceStorage {
             Self::PendingHostUpload(buffer) => buffer.upload_to_tensor(),
         }
     }
+}
+
+fn import_hip_tensor_storage(tensor: &Tensor) -> Result<Option<HipDeviceStorage>> {
+    if !tensor.device().is_hip() {
+        return Ok(None);
+    }
+    if let Some(buffer) = HipOwnedDeviceBuffer::from_device_tensor_copy(tensor).ok().flatten() {
+        return Ok(Some(HipDeviceStorage::OwnedDeviceBuffer(buffer)));
+    }
+    if let Some(host) = import_contiguous_hip_tensor_as_host_storage(tensor)? {
+        return Ok(Some(host));
+    }
+    if tensor.is_contiguous() {
+        return Ok(None);
+    }
+    let contiguous = tensor.contiguous()?;
+    if let Some(buffer) = HipOwnedDeviceBuffer::from_device_tensor_copy(&contiguous).ok().flatten() {
+        return Ok(Some(HipDeviceStorage::OwnedDeviceBuffer(buffer)));
+    }
+    if let Some(host) = import_contiguous_hip_tensor_as_host_storage(&contiguous)? {
+        return Ok(Some(host));
+    }
+    Ok(None)
 }
 
 #[derive(Debug)]
@@ -5140,16 +5160,19 @@ impl HipTensor {
 }
 
 fn from_kernel_tensor(tensor: Tensor) -> HipTensor {
-    if let Some(device) = HipOwnedDeviceBuffer::from_device_tensor_copy(&tensor).ok().flatten() {
-        return HipTensor::from_device_buffer(HipDeviceBuffer::from_owned_device_buffer(device));
-    }
-    if let Some(host) = import_kernel_tensor_as_host_leaf(&tensor).ok().flatten() {
-        return host;
+    if let Some(storage) = import_hip_tensor_storage(&tensor).ok().flatten() {
+        return HipTensor::from_device_buffer(HipDeviceBuffer {
+            shape: tensor.dims().to_vec(),
+            dtype: tensor.dtype(),
+            device: tensor.device().clone(),
+            storage,
+            view_ops: Vec::new(),
+        });
     }
     HipTensor::from_device_buffer(HipDeviceBuffer::from_tensor(tensor))
 }
 
-fn import_kernel_tensor_as_host_leaf(tensor: &Tensor) -> Result<Option<HipTensor>> {
+fn import_contiguous_hip_tensor_as_host_storage(tensor: &Tensor) -> Result<Option<HipDeviceStorage>> {
     if !tensor.device().is_hip() {
         return Ok(None);
     }
@@ -5164,14 +5187,12 @@ fn import_kernel_tensor_as_host_leaf(tensor: &Tensor) -> Result<Option<HipTensor
         _ => HipNativeBuffer::tensor_to_host_float_bytes(tensor, tensor.dtype())?,
     };
     let Some(bytes) = bytes else { return Ok(None); };
-    Ok(Some(HipTensor::from_device_buffer(
-        HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
-            bytes,
-            shape: tensor.dims().to_vec(),
-            dtype: tensor.dtype(),
-            device: tensor.device().clone(),
-        }),
-    )))
+    Ok(Some(HipDeviceStorage::from_host_buffer(HipHostBuffer {
+        bytes,
+        shape: tensor.dims().to_vec(),
+        dtype: tensor.dtype(),
+        device: tensor.device().clone(),
+    })))
 }
 
 pub(crate) fn state_buffer_from_host_bytes(
