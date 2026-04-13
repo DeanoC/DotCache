@@ -7,6 +7,7 @@ mod direct_hip;
 mod frontend;
 pub(crate) mod hip;
 mod hip_wrappers;
+mod linear_attention;
 pub(crate) mod model;
 mod ops;
 mod prepared;
