@@ -1,7 +1,9 @@
 #[cfg(feature = "qwen35-minimal")]
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use candle_core::Device;
-    use dotcache_paged_runtime::{MinimalQwen35Runner, Result, RuntimeError};
+    use dotcache_paged_runtime::{
+        MinimalQwen35LoadTrace, MinimalQwen35Runner, Result, RuntimeError,
+    };
     use serde::Serialize;
     use std::path::Path;
     use std::time::Instant;
@@ -101,14 +103,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     #[derive(Clone, Copy, Debug)]
     enum LoadMode {
-        Prepared,
+        Native,
         Direct,
     }
 
     impl std::fmt::Display for LoadMode {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                Self::Prepared => f.write_str("prepared"),
+                Self::Native => f.write_str("native"),
                 Self::Direct => f.write_str("direct"),
             }
         }
@@ -119,11 +121,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         fn from_str(value: &str) -> Result<Self> {
             match value.trim().to_ascii_lowercase().as_str() {
-                "prepared" => Ok(Self::Prepared),
+                "native" => Ok(Self::Native),
                 "direct" => Ok(Self::Direct),
                 other => Err(RuntimeError::External {
                     context: "load-mode",
-                    message: format!("unsupported load mode `{other}`, expected prepared or direct"),
+                    message: format!("unsupported load mode `{other}`, expected native or direct"),
                 }),
             }
         }
@@ -142,12 +144,44 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         device: String,
         load_mode: String,
         load_millis: f64,
+        package_resolve_millis: Option<f64>,
+        config_parse_millis: Option<f64>,
+        model_build_millis: Option<f64>,
         tokenizer_load_millis: f64,
         peak_rss_kib: u64,
         current_rss_kib: u64,
-        prepared_package_root: Option<String>,
+        package_root: Option<String>,
+        package_tensor_count: Option<usize>,
+        package_payload_bytes: Option<u64>,
+        package_weights_blob_bytes: Option<u64>,
+        package_total_bytes: Option<u64>,
+        package_standard_tensor_count: Option<usize>,
+        package_standard_bytes: Option<u64>,
+        package_prepacked_tensor_count: Option<usize>,
+        package_prepacked_bytes: Option<u64>,
+        weight_tensor_get_calls: Option<u64>,
+        weight_unique_tensors: Option<usize>,
+        weight_tensor_bytes: Option<u64>,
+        weight_tensor_load_millis: Option<f64>,
+        weight_top_by_bytes: Option<Vec<TensorLoadSummary>>,
+        weight_top_by_millis: Option<Vec<TensorLoadSummary>>,
+        immutable_embedding_requested: Option<bool>,
+        immutable_embedding_active: Option<bool>,
+        immutable_embedding_fallback_reason: Option<String>,
+        immutable_embedding_runtime_mode: Option<String>,
+        immutable_linear_requested: Option<bool>,
+        deferred_linear_count: Option<usize>,
+        first_prefill_millis: Option<f64>,
         tokenizer_path: String,
         revision: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct TensorLoadSummary {
+        name: String,
+        calls: u64,
+        bytes: u64,
+        millis: f64,
     }
 
     fn parse_args() -> Result<Args> {
@@ -155,11 +189,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let model_id = args.next().ok_or_else(|| RuntimeError::External {
             context: "hf_qwen35_minimal_load_bench",
             message:
-                "usage: hf_qwen35_minimal_load_bench <model_id> [--device cpu|cuda[:n]|hip[:n]] [--mode prepared|direct]"
+                "usage: hf_qwen35_minimal_load_bench <model_id> [--device cpu|cuda[:n]|hip[:n]] [--mode native|direct]"
                     .to_string(),
         })?;
         let mut device = DeviceSelector::Cpu;
-        let mut mode = LoadMode::Prepared;
+        let mut mode = LoadMode::Native;
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--device" => {
@@ -217,25 +251,144 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let args = parse_args()?;
     let device = args.device.resolve()?;
-    let load_started = Instant::now();
-    let runner = match args.mode {
-        LoadMode::Prepared => MinimalQwen35Runner::load_prepared_for_device(&args.model_id, &device)?,
-        LoadMode::Direct => MinimalQwen35Runner::load_from_hf_direct_f16(&args.model_id, &device)?,
+    let (mut runner, load_millis, load_trace) = match args.mode {
+        LoadMode::Native => {
+            let (runner, trace) =
+                MinimalQwen35Runner::load_native_for_device_profiled(&args.model_id, &device)?;
+            (runner, trace.total_load_millis, Some(trace))
+        }
+        LoadMode::Direct => {
+            let load_started = Instant::now();
+            let runner = MinimalQwen35Runner::load_from_hf_direct_f16(&args.model_id, &device)?;
+            let load_millis = load_started.elapsed().as_secs_f64() * 1000.0;
+            (runner, load_millis, None)
+        }
     };
-    let load_millis = load_started.elapsed().as_secs_f64() * 1000.0;
     let tokenizer_started = Instant::now();
-    let _tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path)?;
+    let tokenizer = Tokenizer::from_file(&runner.weights.tokenizer_path)?;
     let tokenizer_load_millis = tokenizer_started.elapsed().as_secs_f64() * 1000.0;
+    let first_prefill_millis = {
+        let encoded = tokenizer
+            .encode("Hello from DotCache", true)
+            .map_err(|err| RuntimeError::External {
+                context: "tokenizer",
+                message: err.to_string(),
+            })?;
+        let ids = encoded
+            .get_ids()
+            .iter()
+            .copied()
+            .map(i64::from)
+            .collect::<Vec<_>>();
+        let input_ids = candle_core::Tensor::new(ids, &Device::Cpu)?.reshape((1, encoded.len()))?;
+        let prefill_started = Instant::now();
+        let hidden_states = runner.hidden_states_from_input_ids(&input_ids)?;
+        let _ = runner.prefill_from_hidden_states(&hidden_states)?;
+        Some(prefill_started.elapsed().as_secs_f64() * 1000.0)
+    };
     let peak_rss_kib = read_proc_status_value_kib("VmHWM:")?;
     let current_rss_kib = read_proc_status_value_kib("VmRSS:")?;
 
-    let prepared_package_root = if runner.weights.prepared_package_root.as_os_str().is_empty() {
+    let package_root = if runner.weights.package_root.as_os_str().is_empty() {
         None
     } else {
         Some(
-            Path::new(&runner.weights.prepared_package_root)
+            Path::new(&runner.weights.package_root)
                 .display()
                 .to_string(),
+        )
+    };
+
+    let (
+        package_resolve_millis,
+        config_parse_millis,
+        model_build_millis,
+        package_tensor_count,
+        package_payload_bytes,
+        package_weights_blob_bytes,
+        package_total_bytes,
+        package_standard_tensor_count,
+        package_standard_bytes,
+        package_prepacked_tensor_count,
+        package_prepacked_bytes,
+        weight_tensor_get_calls,
+        weight_unique_tensors,
+        weight_tensor_bytes,
+        weight_tensor_load_millis,
+        weight_top_by_bytes,
+        weight_top_by_millis,
+        immutable_embedding_requested,
+        immutable_embedding_active,
+        immutable_embedding_fallback_reason,
+        immutable_embedding_runtime_mode,
+        immutable_linear_requested,
+        deferred_linear_count,
+    ) = if let Some(MinimalQwen35LoadTrace {
+        package_resolve_millis,
+        config_parse_millis,
+        model_build_millis,
+        package_stats,
+        weight_load_stats,
+        immutable_embedding_requested,
+        immutable_embedding_active,
+        immutable_embedding_fallback_reason,
+        immutable_embedding_runtime_mode,
+        immutable_linear_requested,
+        deferred_linear_count,
+        ..
+    }) = load_trace
+    {
+        (
+            package_resolve_millis,
+            Some(config_parse_millis),
+            Some(model_build_millis),
+            package_stats.as_ref().map(|stats| stats.tensor_count),
+            package_stats.as_ref().map(|stats| stats.payload_bytes),
+            package_stats.as_ref().map(|stats| stats.weights_blob_bytes),
+            package_stats.as_ref().map(|stats| stats.total_package_bytes),
+            package_stats.as_ref().map(|stats| stats.standard_tensor_count),
+            package_stats.as_ref().map(|stats| stats.standard_bytes),
+            package_stats.as_ref().map(|stats| stats.prepacked_tensor_count),
+            package_stats.as_ref().map(|stats| stats.prepacked_bytes),
+            weight_load_stats.as_ref().map(|stats| stats.tensor_get_calls),
+            weight_load_stats.as_ref().map(|stats| stats.unique_tensors),
+            weight_load_stats.as_ref().map(|stats| stats.tensor_bytes),
+            weight_load_stats.as_ref().map(|stats| stats.tensor_load_millis),
+            weight_load_stats.as_ref().map(|stats| {
+                stats
+                    .top_by_bytes
+                    .iter()
+                    .map(|entry| TensorLoadSummary {
+                        name: entry.name.clone(),
+                        calls: entry.calls,
+                        bytes: entry.bytes,
+                        millis: entry.millis,
+                    })
+                    .collect::<Vec<_>>()
+            }),
+            weight_load_stats.as_ref().map(|stats| {
+                stats
+                    .top_by_millis
+                    .iter()
+                    .map(|entry| TensorLoadSummary {
+                        name: entry.name.clone(),
+                        calls: entry.calls,
+                        bytes: entry.bytes,
+                        millis: entry.millis,
+                    })
+                    .collect::<Vec<_>>()
+            }),
+            Some(immutable_embedding_requested),
+            Some(immutable_embedding_active),
+            immutable_embedding_fallback_reason,
+            Some(immutable_embedding_runtime_mode),
+            Some(immutable_linear_requested),
+            Some(deferred_linear_count),
+        )
+    } else {
+        (
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None,
         )
     };
 
@@ -244,10 +397,34 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         device: args.device.to_string(),
         load_mode: args.mode.to_string(),
         load_millis,
+        package_resolve_millis,
+        config_parse_millis,
+        model_build_millis,
         tokenizer_load_millis,
         peak_rss_kib,
         current_rss_kib,
-        prepared_package_root,
+        package_root,
+        package_tensor_count,
+        package_payload_bytes,
+        package_weights_blob_bytes,
+        package_total_bytes,
+        package_standard_tensor_count,
+        package_standard_bytes,
+        package_prepacked_tensor_count,
+        package_prepacked_bytes,
+        weight_tensor_get_calls,
+        weight_unique_tensors,
+        weight_tensor_bytes,
+        weight_tensor_load_millis,
+        weight_top_by_bytes,
+        weight_top_by_millis,
+        immutable_embedding_requested,
+        immutable_embedding_active,
+        immutable_embedding_fallback_reason,
+        immutable_embedding_runtime_mode,
+        immutable_linear_requested,
+        deferred_linear_count,
+        first_prefill_millis,
         tokenizer_path: runner.weights.tokenizer_path.display().to_string(),
         revision: runner.weights.revision.clone(),
     };

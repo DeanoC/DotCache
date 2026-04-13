@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "model-store",
+    "paged-runtime",
+    "qwen35-runtime",
+    "runtime-core",
+]
+resolver = "2"

@@ -268,7 +268,8 @@ int linear_stateful_conv_value_decay_with_state_device(
     const size_t total_per_batch = static_cast<size_t>(seq_len) * out_width +
         static_cast<size_t>(conv_dim) * static_cast<size_t>(state_len);
     const size_t out_elems = static_cast<size_t>(batch_size) * total_per_batch;
-    const int default_block = (kernel_size == 4 && state_len == 3 && seq_len >= 2048) ? 128 : 256;
+    const int default_block =
+        (kernel_size == 4 && state_len == 3) ? ((seq_len <= 4) ? 256 : 128) : 256;
     const int override_block = linear_prefill_block_override();
     const int block = override_block > 0 ? override_block : default_block;
     const unsigned int grid = static_cast<unsigned int>((out_elems + block - 1) / block);
@@ -692,25 +693,47 @@ int delta_local_attn_scan_device(
 ) {
     ScopedHipDevice scoped(device_ordinal);
     if (k_head_dim > 256 || chunk_size > 64) return 112;
-    constexpr int block = 256;
-    const size_t total =
-        static_cast<size_t>(batch_heads) * static_cast<size_t>(num_chunks) *
-        static_cast<size_t>(chunk_size) * static_cast<size_t>(chunk_size);
-    const unsigned int grid = static_cast<unsigned int>((total + block - 1) / block);
-    hipLaunchKernelGGL(
-        HIP_KERNEL_NAME(dotcache_qwen35_delta_local_attn_scan_kernel<T>),
-        dim3(grid),
-        dim3(block),
-        0,
-        0,
-        batch_heads,
-        num_chunks,
-        chunk_size,
-        k_head_dim,
-        static_cast<const T*>(query_scan),
-        static_cast<const T*>(key_scan),
-        static_cast<const T*>(exp_g_scan),
-        static_cast<T*>(out));
+    if (chunk_size <= 4) {
+        constexpr int block = 256;
+        const size_t total =
+            static_cast<size_t>(batch_heads) * static_cast<size_t>(num_chunks) *
+            static_cast<size_t>(chunk_size) * static_cast<size_t>(chunk_size);
+        const unsigned int grid = static_cast<unsigned int>((total + block - 1) / block);
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_delta_local_attn_scan_flat_kernel<T>),
+            dim3(grid),
+            dim3(block),
+            0,
+            0,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            static_cast<const T*>(query_scan),
+            static_cast<const T*>(key_scan),
+            static_cast<const T*>(exp_g_scan),
+            static_cast<T*>(out));
+    } else {
+        const unsigned int block = chunk_size <= 32 ? 32u : 64u;
+        const size_t total_rows =
+            static_cast<size_t>(batch_heads) * static_cast<size_t>(num_chunks) *
+            static_cast<size_t>(chunk_size);
+        const unsigned int grid = static_cast<unsigned int>(total_rows);
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_delta_local_attn_scan_row_kernel<T>),
+            dim3(grid),
+            dim3(block),
+            0,
+            0,
+            batch_heads,
+            num_chunks,
+            chunk_size,
+            k_head_dim,
+            static_cast<const T*>(query_scan),
+            static_cast<const T*>(key_scan),
+            static_cast<const T*>(exp_g_scan),
+            static_cast<T*>(out));
+    }
     if (hipGetLastError() != hipSuccess) return 113;
     if (hipDeviceSynchronize() != hipSuccess) return 114;
     return 0;
@@ -781,6 +804,42 @@ int delta_attn_solve_scan_device(
         static_cast<T*>(out));
     if (hipGetLastError() != hipSuccess) return 119;
     if (hipDeviceSynchronize() != hipSuccess) return 120;
+    return 0;
+}
+
+template <typename T>
+int delta_attn_solve_from_inputs_device(
+    int device_ordinal,
+    int batch_heads,
+    int num_chunks,
+    int chunk_size,
+    int k_head_dim,
+    const void* k_beta_scan,
+    const void* key_scan,
+    const void* exp_g_scan,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    if (chunk_size > 64 || k_head_dim > 256) return 121;
+    constexpr int block = 1;
+    const unsigned int grid =
+        static_cast<unsigned int>(batch_heads * num_chunks);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_delta_attn_solve_from_inputs_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        batch_heads,
+        num_chunks,
+        chunk_size,
+        k_head_dim,
+        static_cast<const T*>(k_beta_scan),
+        static_cast<const T*>(key_scan),
+        static_cast<const T*>(exp_g_scan),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 122;
+    if (hipDeviceSynchronize() != hipSuccess) return 123;
     return 0;
 }
 
@@ -2116,6 +2175,56 @@ extern "C" int dotcache_qwen35_hip_delta_attn_solve_scan(
     }
 }
 
+extern "C" int dotcache_qwen35_hip_delta_attn_solve_from_inputs(
+    int dtype,
+    size_t device_ordinal,
+    size_t batch_heads,
+    size_t num_chunks,
+    size_t chunk_size,
+    size_t k_head_dim,
+    const void* k_beta_scan,
+    const void* key_scan,
+    const void* exp_g_scan,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return delta_attn_solve_from_inputs_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            k_beta_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    case 1:
+        return delta_attn_solve_from_inputs_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            k_beta_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    case 2:
+        return delta_attn_solve_from_inputs_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(batch_heads),
+            static_cast<int>(num_chunks),
+            static_cast<int>(chunk_size),
+            static_cast<int>(k_head_dim),
+            k_beta_scan,
+            key_scan,
+            exp_g_scan,
+            out);
+    default:
+        return 123;
+    }
+}
+
 extern "C" int dotcache_qwen35_hip_swiglu_mul(
     int dtype,
     size_t device_ordinal,
@@ -2259,6 +2368,77 @@ extern "C" int dotcache_qwen35_hip_embedding_lookup(
         }
     default:
         return 124;
+    }
+}
+
+template <typename T>
+int output_projection_lookup_device(
+    int device_ordinal,
+    int rows,
+    int hidden_size,
+    int vocab_size,
+    const void* hidden,
+    const void* weights,
+    void* out) {
+    ScopedHipDevice scoped(device_ordinal);
+    const int total_elems = rows * vocab_size;
+    const int block = 256;
+    const int grid = (total_elems + block - 1) / block;
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_output_projection_lookup_kernel<T>),
+        dim3(grid),
+        dim3(block),
+        0,
+        0,
+        rows,
+        hidden_size,
+        vocab_size,
+        static_cast<const T*>(hidden),
+        static_cast<const T*>(weights),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 11;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_output_projection_lookup(
+    int dtype,
+    size_t device_ordinal,
+    size_t rows,
+    size_t hidden_size,
+    size_t vocab_size,
+    const void* hidden,
+    const void* weights,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return output_projection_lookup_device<half>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(hidden_size),
+            static_cast<int>(vocab_size),
+            hidden,
+            weights,
+            out);
+    case 1:
+        return output_projection_lookup_device<float>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(hidden_size),
+            static_cast<int>(vocab_size),
+            hidden,
+            weights,
+            out);
+    case 2:
+        return output_projection_lookup_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(rows),
+            static_cast<int>(hidden_size),
+            static_cast<int>(vocab_size),
+            hidden,
+            weights,
+            out);
+    default:
+        return 122;
     }
 }
 

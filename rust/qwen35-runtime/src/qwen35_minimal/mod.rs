@@ -1,21 +1,38 @@
-mod hip;
-mod model;
+mod activation;
+mod backend_buffer_api;
+pub(crate) mod backend_ops;
+#[cfg(any(feature = "hf", test))]
+mod builder;
+pub(crate) mod hip;
+pub(crate) mod model;
+mod ops;
 mod prepared;
+mod rotary;
 mod with_tracing;
 
 pub use model::{
     CacheState as MinimalQwen35KvCache, Config as MinimalQwen35Config,
+    LinearAttentionBenchResult as MinimalQwen35LinearAttentionBenchResult,
     LinearAttentionLayerSpec as MinimalQwen35LinearAttentionLayerSpec, ModelForCausalLM,
+    NativeCacheState as MinimalQwen35NativeCacheState,
+    NativeFullAttentionCacheState as MinimalQwen35NativeFullAttentionCacheState,
+    NativeLayerCacheState as MinimalQwen35NativeLayerCacheState,
+    NativeLinearAttentionCacheState as MinimalQwen35NativeLinearAttentionCacheState,
+    LinearAttentionTrace as MinimalQwen35LinearAttentionTrace,
+    StateBuffer as MinimalQwen35StateBuffer,
     TextConfig as MinimalQwen35TextConfig,
 };
 
-use candle_core::{DType, Device, Tensor};
-use candle_nn::VarBuilder;
+use candle_core::{Device, Tensor};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::{HfHubModelSource, ModelPackage, PreparedPackageSummary, Result, WeightLoadStats};
+use crate::{ModelPackage, PreparedPackageSummary, Result, WeightLoadStats};
+#[cfg(feature = "hf")]
+use crate::HfHubModelSource;
+#[cfg(any(feature = "hf", test))]
+use builder::WeightBuilder;
 use prepared::PreparedTensorSource;
 
 #[derive(Debug, Clone)]
@@ -46,8 +63,8 @@ pub struct MinimalQwen35LoadTrace {
 pub struct MinimalQwen35Runner {
     pub config: MinimalQwen35Config,
     pub weights: MinimalQwen35Weights,
-    pub model: ModelForCausalLM,
-    pub device: Device,
+    model: ModelForCausalLM,
+    device: Device,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +85,11 @@ impl MinimalQwen35LoadMode {
 }
 
 impl MinimalQwen35Runner {
-    fn hidden_states_on_runner_device(&self, hidden_states: &Tensor) -> Result<Tensor> {
+    fn hidden_states_on_runner_device(
+        &self,
+        hidden_states: &MinimalQwen35StateBuffer,
+    ) -> Result<Tensor> {
+        let hidden_states = hidden_states.tensor();
         if hidden_states.device().same_device(&self.device) {
             Ok(hidden_states.clone())
         } else {
@@ -77,12 +98,26 @@ impl MinimalQwen35Runner {
     }
 
     pub fn load_from_hf_direct_f16(model_id: &str, device: &Device) -> Result<Self> {
+        #[cfg(not(feature = "hf"))]
+        {
+            let _ = (model_id, device);
+            return Err(crate::RuntimeError::External {
+                context: "qwen35-runtime",
+                message: "direct HF loading requires the `hf` feature".to_string(),
+            });
+        }
+        #[cfg(feature = "hf")]
+        {
         let source = HfHubModelSource::new()?;
         let artifacts = source.snapshot(model_id)?;
         let config: MinimalQwen35Config =
             serde_json::from_slice(&std::fs::read(&artifacts.config_path)?)?;
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&artifacts.weight_paths, DType::F16, device)?
+            WeightBuilder::from_mmaped_safetensors(
+                &artifacts.weight_paths,
+                candle_core::DType::F16,
+                device,
+            )?
         };
         let model = ModelForCausalLM::new(&config, vb)?;
         Ok(Self {
@@ -96,6 +131,7 @@ impl MinimalQwen35Runner {
             model,
             device: device.clone(),
         })
+        }
     }
 
     pub fn load_native_for_device(model_id: &str, device: &Device) -> Result<Self> {
@@ -230,7 +266,10 @@ impl MinimalQwen35Runner {
         Self::load_for_device(model_id, device)
     }
 
-    pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
+    pub fn hidden_states_from_input_ids(
+        &self,
+        input_ids: &Tensor,
+    ) -> Result<MinimalQwen35StateBuffer> {
         let input_ids = if input_ids.device().same_device(&self.device) {
             input_ids.clone()
         } else {
@@ -241,29 +280,76 @@ impl MinimalQwen35Runner {
 
     pub fn prefill_from_hidden_states(
         &mut self,
-        hidden_states: &Tensor,
-    ) -> Result<(Tensor, MinimalQwen35KvCache)> {
+        hidden_states: &MinimalQwen35StateBuffer,
+    ) -> Result<(MinimalQwen35StateBuffer, MinimalQwen35KvCache)> {
         let hidden_states = self.hidden_states_on_runner_device(hidden_states)?;
         let logits = self
             .model
-            .forward_hidden_states(&hidden_states, 0)?
-            .to_dtype(DType::F32)?;
+            .forward_hidden_states(&MinimalQwen35StateBuffer::from_tensor(hidden_states)?, 0)?;
         Ok((logits, self.model.cache_state()))
     }
 
     pub fn decode_from_hidden_state(
         &mut self,
-        hidden_state_t: &Tensor,
+        hidden_state_t: &MinimalQwen35StateBuffer,
         cache: &mut MinimalQwen35KvCache,
-    ) -> Result<Tensor> {
+    ) -> Result<MinimalQwen35StateBuffer> {
         let hidden_state_t = self.hidden_states_on_runner_device(hidden_state_t)?;
         self.model.restore_cache_state(cache)?;
         let seqlen_offset = cache.sequence_length();
         let logits = self
             .model
-            .forward_hidden_states(&hidden_state_t, seqlen_offset)?
-            .to_dtype(DType::F32)?;
+            .forward_hidden_states(
+                &MinimalQwen35StateBuffer::from_tensor(hidden_state_t)?,
+                seqlen_offset,
+            )?;
         *cache = self.model.cache_state();
         Ok(logits)
+    }
+
+    pub fn linear_attention_layer_ids(&self) -> Vec<usize> {
+        self.model.linear_attention_layer_ids()
+    }
+
+    pub fn linear_attention_layer_spec(
+        &self,
+        layer_id: usize,
+    ) -> Result<MinimalQwen35LinearAttentionLayerSpec> {
+        Ok(self.model.linear_attention_layer_spec(layer_id)?)
+    }
+
+    pub fn bench_linear_attention_layer(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+        repeats: usize,
+    ) -> Result<MinimalQwen35LinearAttentionBenchResult> {
+        Ok(self
+            .model
+            .bench_linear_attention_layer(input_ids, target_layer, seqlen_offset, repeats)?)
+    }
+
+    pub fn trace_linear_attention_layer(
+        &mut self,
+        input_ids: &Tensor,
+        target_layer: usize,
+        seqlen_offset: usize,
+    ) -> Result<MinimalQwen35LinearAttentionTrace> {
+        Ok(self
+            .model
+            .trace_linear_attention_layer(input_ids, target_layer, seqlen_offset)?)
+    }
+
+    pub fn clear_kv_cache(&mut self) {
+        self.model.clear_kv_cache();
+    }
+
+    pub fn cache_state(&self) -> MinimalQwen35KvCache {
+        self.model.cache_state()
+    }
+
+    pub fn restore_cache_state(&mut self, state: &MinimalQwen35KvCache) -> Result<()> {
+        Ok(self.model.restore_cache_state(state)?)
     }
 }

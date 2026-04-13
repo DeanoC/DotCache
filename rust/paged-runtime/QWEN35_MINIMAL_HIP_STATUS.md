@@ -62,6 +62,56 @@ The combined HIP linear decode path still exists only as an experiment. It reduc
 traffic, but on this UMA host it is slower than the split decode path, so it should remain gated
 unless it is re-evaluated on a discrete ROCm system.
 
+## Current Loader Path
+
+The default model-loading path is now `native`.
+
+What that means in practice:
+
+- package creation and reuse is owned by the `dotcache-model-store` crate
+- the runtime resolves a backend/family-specific local package under `~/.cache/dotcache/model-packages/`
+- the package-backed path is the default runtime path
+- the old direct Hugging Face path remains only as a fallback/debug path
+
+The public minimal-loader modes are now:
+
+- `native`
+- `direct`
+
+The runtime also accepts:
+
+- `DOTCACHE_QWEN35_LOAD_MODE=native|direct`
+
+On this host, `native` is the right default. Representative `0.8B` HIP load-bench numbers:
+
+- `native`: `load_millis≈3268`, `peak_rss_kib≈3286752`
+- `direct`: `load_millis≈4849`, `peak_rss_kib≈3294900`
+
+Important constraint:
+
+- peak RSS is still close to `direct`
+- the package bytes are mmap-backed, but backend execution storage still owns a separate live copy
+- true shared-weight execution on UMA is future backend work, not part of the current loader design
+
+The default `native` load path is now also unprofiled. Package/tensor timing collection still exists,
+but only through the profiled load-bench path; the normal runtime load path no longer pays that
+per-tensor accounting overhead.
+
+Current package behavior on the native path:
+
+- if a qwen35-minimal tensor is fully replaced by a package-built prepacked form, the raw tensor is
+  no longer stored in the package
+- the current examples are:
+  - `conv1d.weight` -> `conv1d.weight.__dotcache_depthwise_squeezed`
+  - `dt_bias` -> `dt_bias.__dotcache_head_bias_reshaped`
+  - `A_log` -> `A_log.__dotcache_head_exp_reshaped`
+- that reduced native reuse load time materially without changing steady-state execution behavior
+- the converter also now drops entire tensor trees that the minimal runtime does not consume:
+  - `model.visual.*`
+  - `mtp.*`
+- the native package for the minimal runtime is now text-only rather than a copy of unused
+  multimodal and auxiliary weights
+
 ## Confirmed Model Size Ceiling On This Host
 
 The minimal HIP path has now been smoke-tested beyond `0.8B` on the current host.
@@ -85,6 +135,112 @@ Important detail:
 
 So the current practical upper bound to document for this specific machine/runtime combination is
 `Qwen/Qwen3.5-4B`.
+
+Representative native HIP load-bench results on this host:
+
+- `Qwen/Qwen3.5-0.8B`: `load_millis≈3233`, `peak_rss_kib≈3286988`
+- `Qwen/Qwen3.5-2B`: `load_millis≈6425`, `peak_rss_kib≈4773872`
+- `Qwen/Qwen3.5-4B`: `load_millis≈9713`, `peak_rss_kib≈5519760`
+
+## Immutable Embedding Status
+
+There is now an experimental immutable HIP path for:
+
+- `embed_tokens.weight`
+- tied `lm_head`
+
+It is gated by:
+
+- `DOTCACHE_QWEN35_IMMUTABLE_EMBED=1`
+
+This path is a real loader-side RAM win on this UMA host, but it is not a general default.
+
+Measured behavior:
+
+- `0.8B`
+  - eager: `peak_rss_kib≈3289196`, `first_prefill_millis≈2478`
+  - immutable: `peak_rss_kib≈1798792`, `first_prefill_millis≈2478`
+- `2B`
+  - eager: `peak_rss_kib≈4778024`, `first_prefill_millis≈2187`
+  - immutable: `peak_rss_kib≈1799300`, `first_prefill_millis≈3392`
+- `4B`
+  - eager: `peak_rss_kib≈5523852`, `first_prefill_millis≈3649`
+  - immutable: `peak_rss_kib≈1952428`, `first_prefill_millis≈16804`
+
+So the current conclusion is:
+
+- immutable embedding/tied output is a strong RAM-reduction tool
+- it is acceptable at `0.8B` on this host
+- it shifts too much cost into first prefill at `2B` and `4B`
+- it should remain experimental and opt-in until there is a better transport/storage path
+
+## Deferred Linear Weight Status
+
+There is now an additional experimental loader path for large MLP weights:
+
+- `DOTCACHE_QWEN35_IMMUTABLE_LINEAR=1`
+
+This path does **not** run host-backed matmuls. Instead, it defers materialization of MLP linear
+weights and uploads them into normal HIP storage on first layer use.
+
+Current behavior:
+
+- scope: MLP `gate_proj`, `up_proj`, and `down_proj` only
+- large attention weights still load eagerly
+- deferred weight count observed in the load bench:
+  - `0.8B`: `72`
+  - `2B`: `72`
+  - `4B`: `96`
+
+Measured tradeoff on this host:
+
+- `0.8B`
+  - eager: `load_millis≈4123`, `first_prefill_millis≈2098`
+  - deferred: `load_millis≈4031`, `first_prefill_millis≈2247`
+- `2B`
+  - eager: `load_millis≈4255`, `first_prefill_millis≈2114`
+  - deferred: `load_millis≈3836`, `first_prefill_millis≈2523`
+- `4B`
+  - eager: `load_millis≈11188`, `first_prefill_millis≈4856`
+  - deferred: `load_millis≈6025`, `first_prefill_millis≈7109`
+
+So the current conclusion is:
+
+- deferred MLP upload is a real loader-side win
+- the benefit grows with model size
+- it meaningfully reduces eager weight materialization during native load
+- it pushes cost into first prefill, but on `4B` the total "load + first prefill" time is still
+  better than eager load
+- it should remain experimental until there is a clearer default policy by model size
+
+The policy is now size-aware:
+
+- `0.8B`: stays eager by default
+- `2B` and `4B`: enable deferred MLP materialization by default
+
+The current heuristic is based on estimated total MLP weight bytes for the model. The env still
+overrides the policy:
+
+- `DOTCACHE_QWEN35_IMMUTABLE_LINEAR=0|1|auto`
+
+There is also a second experimental target for the next real eager weight class:
+
+- `DOTCACHE_QWEN35_DEFERRED_IN_PROJ_QKV=1`
+
+That extends deferred one-shot upload to `linear_attn.in_proj_qkv.weight`. Initial `2B` signal on
+this host is small but non-negative:
+
+- auto deferred MLP only:
+  - `load_millis≈4617`
+  - `first_prefill_millis≈4032`
+  - `deferred_linear_count=72`
+- plus deferred `in_proj_qkv`:
+  - `load_millis≈4581`
+  - `first_prefill_millis≈3945`
+  - `deferred_linear_count=90`
+
+So `in_proj_qkv` is a plausible next loader-side target, but it is still experimental and not part
+of the default policy.
 
 ## Long-Context Benchmark Tools
 

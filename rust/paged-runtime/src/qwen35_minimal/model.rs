@@ -6,12 +6,10 @@ use super::prepared::PreparedTensorSource;
 use super::with_tracing::{linear_b, linear_no_bias, Linear};
 use candle::{DType, Device, DeviceLocation, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
-use candle_nn::{
-    conv1d_no_bias, embedding, kv_cache::KvCache, ops, Conv1d, Conv1dConfig, Embedding,
-    VarBuilder,
-};
+use candle_nn::{embedding, ops, Embedding, VarBuilder};
+use crate::ImmutableWeightHandle;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 fn elapsed_millis(start: Instant) -> f64 {
@@ -31,6 +29,35 @@ fn prepared_linear_no_bias(source: &PreparedTensorSource) -> Result<Linear> {
     Ok(Linear::new(source.get("weight")?, None))
 }
 
+fn build_prepared_linear_source_no_bias(
+    source: &PreparedTensorSource,
+    in_dim: usize,
+    out_dim: usize,
+    immutable_requested: bool,
+) -> Result<LinearSource> {
+    let eager = || prepared_linear_no_bias(source).map(LinearSource::Materialized);
+    if !immutable_requested || !source.device().is_hip() {
+        return eager();
+    }
+    let Some(handle) = source.get_immutable("weight")? else {
+        return eager();
+    };
+    let shape = handle.shape().to_vec();
+    if shape.len() != 2 || shape[0] != out_dim || shape[1] != in_dim {
+        return eager();
+    }
+    if !matches!(
+        handle.layout(),
+        crate::model_package::TensorLayout::StandardContiguous
+    ) {
+        return eager();
+    }
+    Ok(LinearSource::Deferred(DeferredLinear::new(
+        handle,
+        source.device().clone(),
+    )))
+}
+
 fn prepared_linear_b(source: &PreparedTensorSource, bias: bool) -> Result<Linear> {
     let weight = source.get("weight")?;
     let bias = if bias { Some(source.get("bias")?) } else { None };
@@ -41,8 +68,343 @@ fn prepared_embedding(source: &PreparedTensorSource, hidden_size: usize) -> Resu
     Ok(Embedding::new(source.get("weight")?, hidden_size))
 }
 
-fn prepared_conv1d_no_bias(source: &PreparedTensorSource, config: Conv1dConfig) -> Result<Conv1d> {
-    Ok(Conv1d::new(source.get("weight")?, None, config))
+fn prepared_dtype_to_candle(dtype: crate::model_package::PreparedDType) -> Option<DType> {
+    match dtype {
+        crate::model_package::PreparedDType::F16 => Some(DType::F16),
+        crate::model_package::PreparedDType::BF16 => Some(DType::BF16),
+        crate::model_package::PreparedDType::F32 => Some(DType::F32),
+        _ => None,
+    }
+}
+
+fn build_prepared_embedding_source(
+    source: &PreparedTensorSource,
+    hidden_size: usize,
+    immutable_requested: bool,
+) -> Result<(EmbeddingSource, bool, Option<String>)> {
+    let eager = || prepared_embedding(source, hidden_size).map(EmbeddingSource::Materialized);
+    if !immutable_requested {
+        return Ok((eager()?, false, None));
+    }
+    if !source.device().is_hip() {
+        return Ok((eager()?, false, Some("backend-unsupported".to_string())));
+    }
+
+    let Some(handle) = source.get_immutable("weight")? else {
+        return Ok((
+            eager()?,
+            false,
+            Some("immutable-handle-unavailable".to_string()),
+        ));
+    };
+    let shape = handle.shape().to_vec();
+    if shape.len() != 2 || shape[1] != hidden_size {
+        return Ok((
+            eager()?,
+            false,
+            Some("immutable-embedding-shape-mismatch".to_string()),
+        ));
+    }
+    if !matches!(
+        handle.layout(),
+        crate::model_package::TensorLayout::StandardContiguous
+    ) {
+        return Ok((
+            eager()?,
+            false,
+            Some("immutable-embedding-layout-unsupported".to_string()),
+        ));
+    }
+    let Some(dtype) = prepared_dtype_to_candle(handle.dtype()) else {
+        return Ok((
+            eager()?,
+            false,
+            Some("immutable-embedding-dtype-unsupported".to_string()),
+        ));
+    };
+
+    Ok((
+        EmbeddingSource::Immutable(ImmutableEmbedding::new(
+            handle,
+            EmbeddingMeta {
+                vocab_size: shape[0],
+                hidden_size,
+                dtype,
+                device: source.device().clone(),
+            },
+        )),
+        true,
+        None,
+    ))
+}
+
+fn immutable_embedding_enabled() -> bool {
+    matches!(
+        std::env::var("DOTCACHE_QWEN35_IMMUTABLE_EMBED").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+fn deferred_linear_auto_enabled(cfg: &TextConfig) -> bool {
+    let total_mlp_weight_bytes = (cfg.num_hidden_layers as u128)
+        * 3
+        * (cfg.hidden_size as u128)
+        * (cfg.intermediate_size as u128)
+        * 2;
+    total_mlp_weight_bytes >= (1u128 << 30)
+}
+
+fn immutable_linear_enabled(cfg: &TextConfig) -> bool {
+    match std::env::var("DOTCACHE_QWEN35_IMMUTABLE_LINEAR") {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            "auto" => deferred_linear_auto_enabled(cfg),
+            _ => deferred_linear_auto_enabled(cfg),
+        },
+        Err(_) => deferred_linear_auto_enabled(cfg),
+    }
+}
+
+fn deferred_in_proj_qkv_enabled() -> bool {
+    matches!(
+        std::env::var("DOTCACHE_QWEN35_DEFERRED_IN_PROJ_QKV").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+#[derive(Debug, Clone)]
+struct EmbeddingMeta {
+    vocab_size: usize,
+    hidden_size: usize,
+    dtype: DType,
+    device: Device,
+}
+
+#[derive(Debug)]
+struct RegisteredHostWeight {
+    host_ptr: usize,
+    device_ptr: usize,
+}
+
+impl RegisteredHostWeight {
+    fn device_ptr(&self) -> *const std::ffi::c_void {
+        self.device_ptr as *const std::ffi::c_void
+    }
+}
+
+impl Drop for RegisteredHostWeight {
+    fn drop(&mut self) {
+        #[cfg(feature = "qwen35-minimal-hip")]
+        hip::unregister_host_mapping(self.host_ptr as *const std::ffi::c_void);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ImmutableEmbedding {
+    handle: ImmutableWeightHandle,
+    meta: EmbeddingMeta,
+    state: Arc<Mutex<ImmutableEmbeddingState>>,
+}
+
+#[derive(Debug)]
+enum ImmutableEmbeddingState {
+    Uninitialized,
+    Registered(RegisteredHostWeight),
+    Fallback(Embedding),
+}
+
+impl ImmutableEmbedding {
+    fn new(handle: ImmutableWeightHandle, meta: EmbeddingMeta) -> Self {
+        Self {
+            handle,
+            meta,
+            state: Arc::new(Mutex::new(ImmutableEmbeddingState::Uninitialized)),
+        }
+    }
+
+    fn current_mode(&self) -> &'static str {
+        let state = self.state.lock().expect("immutable embedding state poisoned");
+        match &*state {
+            ImmutableEmbeddingState::Uninitialized | ImmutableEmbeddingState::Registered(_) => {
+                "immutable"
+            }
+            ImmutableEmbeddingState::Fallback(_) => "fallback",
+        }
+    }
+
+    fn materialized_embedding(&self) -> Result<Embedding> {
+        Ok(Embedding::new(
+            self.handle
+                .materialize(&self.meta.device)
+                .map_err(|err| candle::Error::Msg(err.to_string()))?,
+            self.meta.hidden_size,
+        ))
+    }
+
+    fn ensure_fallback_embedding(&self) -> Result<Embedding> {
+        let mut state = self.state.lock().expect("immutable embedding state poisoned");
+        if let ImmutableEmbeddingState::Fallback(embedding) = &*state {
+            return Ok(embedding.clone());
+        }
+        let embedding = self.materialized_embedding()?;
+        *state = ImmutableEmbeddingState::Fallback(embedding.clone());
+        Ok(embedding)
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn registered_device_ptr(&self, device_ordinal: usize) -> Result<*const std::ffi::c_void> {
+        let mut state = self.state.lock().expect("immutable embedding state poisoned");
+        match &*state {
+            ImmutableEmbeddingState::Registered(weight) => return Ok(weight.device_ptr()),
+            ImmutableEmbeddingState::Fallback(_) => {
+                candle::bail!("immutable embedding already fell back to eager storage")
+            }
+            ImmutableEmbeddingState::Uninitialized => {}
+        }
+        let host_ptr = self.handle.bytes().as_ptr() as *const std::ffi::c_void;
+        let byte_len = self.handle.bytes().len();
+        let device_ptr = hip::register_host_mapping_for_device(device_ordinal, host_ptr, byte_len)?;
+        *state = ImmutableEmbeddingState::Registered(RegisteredHostWeight {
+            host_ptr: host_ptr as usize,
+            device_ptr: device_ptr as usize,
+        });
+        match &*state {
+            ImmutableEmbeddingState::Registered(weight) => Ok(weight.device_ptr()),
+            _ => unreachable!("registered immutable embedding state replaced unexpectedly"),
+        }
+    }
+
+    fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "qwen35-minimal-hip")]
+        if self.meta.device.is_hip() && input_ids.device().is_hip() {
+            match hip_immutable_embedding_lookup(self, input_ids) {
+                Ok(output) => return Ok(output),
+                Err(_) => {
+                    let fallback = self.ensure_fallback_embedding()?;
+                    return immutable_embedding_forward_fallback(&fallback, input_ids);
+                }
+            }
+        }
+        let fallback = self.ensure_fallback_embedding()?;
+        immutable_embedding_forward_fallback(&fallback, input_ids)
+    }
+}
+
+fn immutable_embedding_forward_fallback(
+    embedding: &Embedding,
+    input_ids: &Tensor,
+) -> Result<Tensor> {
+    if embedding.embeddings().device().is_hip() && input_ids.device().is_hip() {
+        return hip_embedding_lookup(embedding.embeddings(), input_ids);
+    }
+    embedding.forward(input_ids)
+}
+
+#[derive(Debug, Clone)]
+enum EmbeddingSource {
+    Materialized(Embedding),
+    Immutable(ImmutableEmbedding),
+}
+
+impl EmbeddingSource {
+    fn embeddings(&self) -> Option<&Tensor> {
+        match self {
+            Self::Materialized(embedding) => Some(embedding.embeddings()),
+            Self::Immutable(_) => None,
+        }
+    }
+
+    fn dtype(&self) -> DType {
+        match self {
+            Self::Materialized(embedding) => embedding.embeddings().dtype(),
+            Self::Immutable(embedding) => embedding.meta.dtype,
+        }
+    }
+
+    fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Materialized(embedding) => immutable_embedding_forward_fallback(embedding, input_ids),
+            Self::Immutable(embedding) => embedding.forward(input_ids),
+        }
+    }
+
+    fn runtime_mode(&self) -> &'static str {
+        match self {
+            Self::Materialized(_) => "eager",
+            Self::Immutable(embedding) => embedding.current_mode(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum OutputProjectionSource {
+    Materialized(Linear),
+    TiedImmutable(ImmutableEmbedding),
+}
+
+impl OutputProjectionSource {
+    fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Materialized(linear) => hidden_states.apply(linear),
+            Self::TiedImmutable(embedding) => immutable_output_projection(embedding, hidden_states),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DeferredLinear {
+    handle: ImmutableWeightHandle,
+    device: Device,
+    state: Arc<Mutex<Option<Linear>>>,
+}
+
+impl DeferredLinear {
+    fn new(handle: ImmutableWeightHandle, device: Device) -> Self {
+        Self {
+            handle,
+            device,
+            state: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn ensure_materialized(&self) -> Result<Linear> {
+        let mut state = self.state.lock().expect("deferred linear state poisoned");
+        if let Some(linear) = &*state {
+            return Ok(linear.clone());
+        }
+        let linear = Linear::new(
+            self.handle
+                .materialize(&self.device)
+                .map_err(|err| candle::Error::Msg(err.to_string()))?,
+            None,
+        );
+        *state = Some(linear.clone());
+        Ok(linear)
+    }
+
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        xs.apply(&self.ensure_materialized()?)
+    }
+}
+
+#[derive(Debug, Clone)]
+enum LinearSource {
+    Materialized(Linear),
+    Deferred(DeferredLinear),
+}
+
+impl LinearSource {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Materialized(linear) => xs.apply(linear),
+            Self::Deferred(linear) => linear.forward(xs),
+        }
+    }
+
+    fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred(_))
+    }
 }
 
 fn profile_sync_enabled(device: &Device) -> bool {
@@ -258,6 +620,15 @@ pub struct RuntimeProfile {
     pub mlp_millis: f64,
     pub linear_conv_millis: f64,
     pub linear_chunk_prepare_millis: f64,
+    pub linear_chunk_prepare_k_beta_millis: f64,
+    pub linear_chunk_prepare_g_millis: f64,
+    pub linear_chunk_prepare_cache_millis: f64,
+    pub linear_chunk_prepare_base_attn_millis: f64,
+    pub linear_chunk_prepare_base_attn_decay_mask_millis: f64,
+    pub linear_chunk_prepare_base_attn_key_t_millis: f64,
+    pub linear_chunk_prepare_base_attn_flatten_millis: f64,
+    pub linear_chunk_prepare_base_attn_matmul_millis: f64,
+    pub linear_chunk_prepare_base_attn_post_millis: f64,
     pub linear_chunk_solve_millis: f64,
     pub linear_chunk_scan_millis: f64,
     pub linear_chunk_index_millis: f64,
@@ -293,6 +664,20 @@ impl RuntimeProfile {
         self.mlp_millis += other.mlp_millis;
         self.linear_conv_millis += other.linear_conv_millis;
         self.linear_chunk_prepare_millis += other.linear_chunk_prepare_millis;
+        self.linear_chunk_prepare_k_beta_millis += other.linear_chunk_prepare_k_beta_millis;
+        self.linear_chunk_prepare_g_millis += other.linear_chunk_prepare_g_millis;
+        self.linear_chunk_prepare_cache_millis += other.linear_chunk_prepare_cache_millis;
+        self.linear_chunk_prepare_base_attn_millis += other.linear_chunk_prepare_base_attn_millis;
+        self.linear_chunk_prepare_base_attn_decay_mask_millis +=
+            other.linear_chunk_prepare_base_attn_decay_mask_millis;
+        self.linear_chunk_prepare_base_attn_key_t_millis +=
+            other.linear_chunk_prepare_base_attn_key_t_millis;
+        self.linear_chunk_prepare_base_attn_flatten_millis +=
+            other.linear_chunk_prepare_base_attn_flatten_millis;
+        self.linear_chunk_prepare_base_attn_matmul_millis +=
+            other.linear_chunk_prepare_base_attn_matmul_millis;
+        self.linear_chunk_prepare_base_attn_post_millis +=
+            other.linear_chunk_prepare_base_attn_post_millis;
         self.linear_chunk_solve_millis += other.linear_chunk_solve_millis;
         self.linear_chunk_scan_millis += other.linear_chunk_scan_millis;
         self.linear_chunk_index_millis += other.linear_chunk_index_millis;
@@ -332,6 +717,26 @@ impl RuntimeProfile {
             mlp_millis: self.mlp_millis * factor,
             linear_conv_millis: self.linear_conv_millis * factor,
             linear_chunk_prepare_millis: self.linear_chunk_prepare_millis * factor,
+            linear_chunk_prepare_k_beta_millis: self.linear_chunk_prepare_k_beta_millis * factor,
+            linear_chunk_prepare_g_millis: self.linear_chunk_prepare_g_millis * factor,
+            linear_chunk_prepare_cache_millis: self.linear_chunk_prepare_cache_millis * factor,
+            linear_chunk_prepare_base_attn_millis: self.linear_chunk_prepare_base_attn_millis
+                * factor,
+            linear_chunk_prepare_base_attn_decay_mask_millis: self
+                .linear_chunk_prepare_base_attn_decay_mask_millis
+                * factor,
+            linear_chunk_prepare_base_attn_key_t_millis: self
+                .linear_chunk_prepare_base_attn_key_t_millis
+                * factor,
+            linear_chunk_prepare_base_attn_flatten_millis: self
+                .linear_chunk_prepare_base_attn_flatten_millis
+                * factor,
+            linear_chunk_prepare_base_attn_matmul_millis: self
+                .linear_chunk_prepare_base_attn_matmul_millis
+                * factor,
+            linear_chunk_prepare_base_attn_post_millis: self
+                .linear_chunk_prepare_base_attn_post_millis
+                * factor,
             linear_chunk_solve_millis: self.linear_chunk_solve_millis * factor,
             linear_chunk_scan_millis: self.linear_chunk_scan_millis * factor,
             linear_chunk_index_millis: self.linear_chunk_index_millis * factor,
@@ -528,7 +933,7 @@ impl candle::CustomOp2 for HipRmsNorm {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
@@ -560,7 +965,11 @@ impl candle::CustomOp2 for HipRmsNorm {
 
         let device = xs.device().clone();
         let out_shape = xs_layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, xs.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(xs.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_rms_norm(
                 hip::dtype_code(xs.dtype())?,
@@ -571,13 +980,20 @@ impl candle::CustomOp2 for HipRmsNorm {
                 if self.add_unit_offset { 1 } else { 0 },
                 xs.raw_device_ptr_with_offset(xs_layout.start_offset())? as *const c_void,
                 weight.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(xs.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -615,7 +1031,7 @@ impl candle::CustomOp3 for HipRmsNormGated {
         weight: &candle::HipStorage,
         weight_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(hidden_layout.is_contiguous()
@@ -657,7 +1073,11 @@ impl candle::CustomOp3 for HipRmsNormGated {
 
         let device = hidden.device().clone();
         let out_shape = hidden_layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, hidden.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(hidden.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_rms_norm_gated(
                 hip::dtype_code(hidden.dtype())?,
@@ -668,13 +1088,20 @@ impl candle::CustomOp3 for HipRmsNormGated {
                 hidden.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
                 gate.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
                 weight.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(hidden.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -686,6 +1113,10 @@ fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -
     } else {
         weight.to_dtype(xs.dtype())?
     };
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_rms_norm_mapped_host_buffer(&xs, &weight, eps, add_unit_offset)? {
+        return Ok(output);
+    }
     let xs_dims = xs.dims();
     let n_cols = *xs_dims.last().ok_or_else(|| {
         candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into())
@@ -700,6 +1131,90 @@ fn hip_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -
             add_unit_offset,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_rms_norm_mapped_host_buffer(
+    xs: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !weight.device().same_device(xs.device()) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    if xs.dtype() != weight.dtype() {
+        return Ok(None);
+    }
+    let (xs_storage, xs_layout) = xs.storage_and_layout();
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let (Storage::Hip(xs_storage), Storage::Hip(weight_storage)) = (&*xs_storage, &*weight_storage) else {
+        return Ok(None);
+    };
+    if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let out_shape = xs_layout.shape().clone();
+    let n_cols = *out_shape
+        .dims()
+        .last()
+        .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm requires non-empty shape".into()))?;
+    let n_rows = out_shape.elem_count() / n_cols;
+    if weight_layout.shape().elem_count() != n_cols {
+        return Ok(None);
+    }
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(xs.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            if add_unit_offset { 1 } else { 0 },
+            xs_storage.raw_device_ptr_with_offset(xs_layout.start_offset())? as *const c_void,
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-rms-norm-mapped-host-buffer", status));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(xs.dtype().to_cpu_storage_owned(output)),
+        xs.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_rms_norm_mapped_host_buffer(
+    xs: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+    add_unit_offset: bool,
+) -> Result<Option<Tensor>> {
+    let _ = (xs, weight, eps, add_unit_offset);
+    Ok(None)
 }
 
 fn hip_rms_norm_gated(
@@ -721,6 +1236,15 @@ fn hip_rms_norm_gated(
     } else {
         weight.to_dtype(hidden_states.dtype())?
     };
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_rms_norm_gated_mapped_host_buffer(
+        &hidden_states,
+        &gate,
+        &weight,
+        eps,
+    )? {
+        return Ok(output);
+    }
     let hidden_dims = hidden_states.dims();
     let n_cols = *hidden_dims.last().ok_or_else(|| {
         candle::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into())
@@ -735,6 +1259,96 @@ fn hip_rms_norm_gated(
             eps: eps as f32,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_rms_norm_gated_mapped_host_buffer(
+    hidden: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match hidden.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(gate.device().same_device(hidden.device()) && weight.device().same_device(hidden.device())) {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(hidden.dtype()) else {
+        return Ok(None);
+    };
+    if hidden.dtype() != gate.dtype() || hidden.dtype() != weight.dtype() {
+        return Ok(None);
+    }
+    let (hidden_storage, hidden_layout) = hidden.storage_and_layout();
+    let (gate_storage, gate_layout) = gate.storage_and_layout();
+    let (weight_storage, weight_layout) = weight.storage_and_layout();
+    let (Storage::Hip(hidden_storage), Storage::Hip(gate_storage), Storage::Hip(weight_storage)) =
+        (&*hidden_storage, &*gate_storage, &*weight_storage)
+    else {
+        return Ok(None);
+    };
+    if !(hidden_layout.is_contiguous() && gate_layout.is_contiguous() && weight_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let out_shape = hidden_layout.shape().clone();
+    let n_cols = *out_shape
+        .dims()
+        .last()
+        .ok_or_else(|| candle::Error::Msg("dotcache-hip-rms-norm-gated requires non-empty shape".into()))?;
+    let n_rows = out_shape.elem_count() / n_cols;
+    if gate_layout.shape().elem_count() != out_shape.elem_count()
+        || weight_layout.shape().elem_count() != n_cols
+    {
+        return Ok(None);
+    }
+    let mut output =
+        vec![0u8; out_shape.elem_count().saturating_mul(hidden.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_rms_norm_gated(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            hidden_storage.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
+            gate_storage.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
+            weight_storage.raw_device_ptr_with_offset(weight_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-rms-norm-gated-mapped-host-buffer", status));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(hidden.dtype().to_cpu_storage_owned(output)),
+        hidden.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_rms_norm_gated_mapped_host_buffer(
+    hidden: &Tensor,
+    gate: &Tensor,
+    weight: &Tensor,
+    eps: f64,
+) -> Result<Option<Tensor>> {
+    let _ = (hidden, gate, weight, eps);
+    Ok(None)
 }
 
 impl Qwen35RmsNorm {
@@ -757,9 +1371,6 @@ impl Module for Qwen35RmsNorm {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         if xs.device().is_hip() && self.weight.device().is_hip() {
             return hip_rms_norm(xs, &self.weight, self.eps, true);
-        }
-        if xs.device().is_cuda() && self.weight.device().is_cuda() {
-            return cuda_rms_norm(xs, &self.weight, self.eps, true);
         }
         let xs_dtype = xs.dtype();
         let xs = xs.to_dtype(DType::F32)?;
@@ -798,12 +1409,6 @@ impl Qwen35RmsNormGated {
         {
             return hip_rms_norm_gated(hidden_states, gate, &self.weight, self.eps);
         }
-        if hidden_states.device().is_cuda()
-            && gate.device().is_cuda()
-            && self.weight.device().is_cuda()
-        {
-            return cuda_rms_norm_gated(hidden_states, gate, &self.weight, self.eps);
-        }
         let out_dtype = hidden_states.dtype();
         let hidden_states = hidden_states.to_dtype(DType::F32)?;
         let variance =
@@ -817,86 +1422,76 @@ impl Qwen35RmsNormGated {
 
 #[derive(Debug, Clone)]
 struct Mlp {
-    gate_proj: Option<Linear>,
-    up_proj: Option<Linear>,
-    gate_up_pack_proj: Option<Linear>,
-    down_proj: Linear,
+    gate_proj: LinearSource,
+    up_proj: LinearSource,
+    down_proj: LinearSource,
     act_fn: candle_nn::Activation,
 }
 
 impl Mlp {
     fn new(cfg: &TextConfig, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
-            gate_proj: Some(linear_no_bias(
+            gate_proj: LinearSource::Materialized(linear_no_bias(
                 cfg.hidden_size,
                 cfg.intermediate_size,
                 vb.pp("gate_proj"),
             )?),
-            up_proj: Some(linear_no_bias(
+            up_proj: LinearSource::Materialized(linear_no_bias(
                 cfg.hidden_size,
                 cfg.intermediate_size,
                 vb.pp("up_proj"),
             )?),
-            gate_up_pack_proj: None,
-            down_proj: linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?,
+            down_proj: LinearSource::Materialized(linear_no_bias(
+                cfg.intermediate_size,
+                cfg.hidden_size,
+                vb.pp("down_proj"),
+            )?),
             act_fn: cfg.hidden_act,
         })
     }
 
     fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
-        let gate_up_pack_proj = source
-            .contains_tensor("gate_up_pack.weight")
-            .then(|| prepared_linear_no_bias(&source.pp("gate_up_pack")))
-            .transpose()?;
+        let immutable_requested = immutable_linear_enabled(cfg);
         Ok(Self {
-            gate_proj: if gate_up_pack_proj.is_none() {
-                Some(prepared_linear_no_bias(&source.pp("gate_proj"))?)
-            } else {
-                None
-            },
-            up_proj: if gate_up_pack_proj.is_none() {
-                Some(prepared_linear_no_bias(&source.pp("up_proj"))?)
-            } else {
-                None
-            },
-            gate_up_pack_proj,
-            down_proj: prepared_linear_no_bias(&source.pp("down_proj"))?,
+            gate_proj: build_prepared_linear_source_no_bias(
+                &source.pp("gate_proj"),
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                immutable_requested,
+            )?,
+            up_proj: build_prepared_linear_source_no_bias(
+                &source.pp("up_proj"),
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                immutable_requested,
+            )?,
+            down_proj: build_prepared_linear_source_no_bias(
+                &source.pp("down_proj"),
+                cfg.intermediate_size,
+                cfg.hidden_size,
+                immutable_requested,
+            )?,
             act_fn: cfg.hidden_act,
         })
+    }
+
+    fn deferred_linear_count(&self) -> usize {
+        usize::from(self.gate_proj.is_deferred())
+            + usize::from(self.up_proj.is_deferred())
+            + usize::from(self.down_proj.is_deferred())
     }
 }
 
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let (gate, up) = if let Some(gate_up_pack_proj) = &self.gate_up_pack_proj {
-            let packed = fast_linear_decode(xs, gate_up_pack_proj)?;
-            let intermediate = self.down_proj.weight().dims2()?.1;
-            let gate = packed.narrow(D::Minus1, 0, intermediate)?;
-            let up = packed.narrow(D::Minus1, intermediate, intermediate)?;
-            (gate, up)
-        } else {
-            let gate = xs.apply(
-                self.gate_proj
-                    .as_ref()
-                    .expect("gate_proj missing without packed gate/up"),
-            )?;
-            let up = xs.apply(
-                self.up_proj
-                    .as_ref()
-                    .expect("up_proj missing without packed gate/up"),
-            )?;
-            (gate, up)
-        };
+        let gate = self.gate_proj.forward(xs)?;
+        let up = self.up_proj.forward(xs)?;
         let hidden = if xs.device().is_hip() && matches!(self.act_fn, candle_nn::Activation::Silu) {
             hip_swiglu_mul(&gate, &up)?
-        } else if xs.device().is_cuda() && matches!(self.act_fn, candle_nn::Activation::Silu) {
-            let gate = gate.contiguous()?;
-            let up = up.contiguous()?;
-            cuda_swiglu_mul(&gate, &up)?
         } else {
             (gate.apply(&self.act_fn)? * up)?
         };
-        fast_linear_decode(&hidden, &self.down_proj)
+        self.down_proj.forward(&hidden)
     }
 }
 
@@ -913,9 +1508,6 @@ fn repeat_heads(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
 fn l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     if xs.device().is_hip() {
         return hip_l2norm(xs, eps);
-    }
-    if xs.device().is_cuda() {
-        return cuda_l2norm(xs, eps);
     }
     let norm = xs.sqr()?.sum_keepdim(D::Minus1)?;
     xs.broadcast_div(&(norm + eps)?.sqrt()?)
@@ -947,7 +1539,7 @@ impl candle::CustomOp2 for HipSwigluMul {
         up: &candle::HipStorage,
         up_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
@@ -972,7 +1564,10 @@ impl candle::CustomOp2 for HipSwigluMul {
         let storage_dtype = gate.dtype();
         let elem_count = gate_layout.shape().elem_count();
         let out_shape = gate_layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_swiglu_mul(
                 hip::dtype_code(storage_dtype)?,
@@ -980,250 +1575,95 @@ impl candle::CustomOp2 for HipSwigluMul {
                 elem_count,
                 gate.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
                 up.raw_device_ptr_with_offset(up_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
 fn hip_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_swiglu_mul_mapped_host_buffer(gate, up)? {
+        return Ok(output);
+    }
     gate.apply_op2_no_bwd(up, &HipSwigluMul)
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CudaSwigluMul;
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_swiglu_mul_mapped_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
 
-impl candle::CustomOp2 for CudaSwigluMul {
-    fn name(&self) -> &'static str {
-        "cuda-swiglu-mul"
+    let gate = gate.contiguous()?;
+    let up = up.contiguous()?;
+    let ordinal = match gate.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !up.device().same_device(gate.device()) {
+        return Ok(None);
     }
-
-    fn cpu_fwd(
-        &self,
-        _gate: &candle::CpuStorage,
-        _gate_layout: &candle::Layout,
-        _up: &candle::CpuStorage,
-        _up_layout: &candle::Layout,
-    ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-swiglu-mul has no cpu implementation")
+    let Ok(dtype_code) = hip::dtype_code(gate.dtype()) else {
+        return Ok(None);
+    };
+    if gate.dtype() != up.dtype() {
+        return Ok(None);
     }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        gate: &candle::CudaStorage,
-        gate_layout: &candle::Layout,
-        up: &candle::CudaStorage,
-        up_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) {
-            candle::bail!("cuda-swiglu-mul requires contiguous inputs")
-        }
-        if gate_layout.shape() != up_layout.shape() {
-            candle::bail!(
-                "cuda-swiglu-mul shape mismatch gate={:?} up={:?}",
-                gate_layout.shape().dims(),
-                up_layout.shape().dims()
-            )
-        }
-        if gate.dtype() != up.dtype() {
-            candle::bail!(
-                "cuda-swiglu-mul requires matching dtypes, got gate={:?} up={:?}",
-                gate.dtype(),
-                up.dtype()
-            )
-        }
-
-        let device = gate.device().clone();
-        let out_shape = gate_layout.shape().clone();
-        let elem_count = out_shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let gate = gate.as_cuda_slice::<$ty>()?;
-                let gate = match gate_layout.contiguous_offsets() {
-                    Some((o1, o2)) => gate.slice(o1..o2),
-                    None => candle::bail!("cuda-swiglu-mul requires contiguous gate"),
-                };
-                let up = up.as_cuda_slice::<$ty>()?;
-                let up = match up_layout.contiguous_offsets() {
-                    Some((o1, o2)) => up.slice(o1..o2),
-                    None => candle::bail!("cuda-swiglu-mul requires contiguous up"),
-                };
-                let output = unsafe { device.alloc::<$ty>(elem_count) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(builder, elem_count);
-                builder.arg(&gate);
-                builder.arg(&up);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, out_shape.clone()))
-            }};
-        }
-
-        match gate.dtype() {
-            DType::F16 => launch!(half::f16, "swiglu_mul_f16"),
-            DType::F32 => launch!(f32, "swiglu_mul_f32"),
-            DType::BF16 => launch!(half::bf16, "swiglu_mul_bf16"),
-            other => candle::bail!("cuda-swiglu-mul unsupported dtype {other:?}"),
-        }
+    let (gate_storage, gate_layout) = gate.storage_and_layout();
+    let (up_storage, up_layout) = up.storage_and_layout();
+    let (Storage::Hip(gate_storage), Storage::Hip(up_storage)) = (&*gate_storage, &*up_storage) else {
+        return Ok(None);
+    };
+    if !(gate_layout.is_contiguous() && up_layout.is_contiguous()) || gate_layout.shape() != up_layout.shape() {
+        return Ok(None);
     }
+    let out_shape = gate_layout.shape().clone();
+    let elem_count = out_shape.elem_count();
+    let mut output = vec![0u8; elem_count.saturating_mul(gate.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_swiglu_mul(
+            dtype_code,
+            ordinal,
+            elem_count,
+            gate_storage.raw_device_ptr_with_offset(gate_layout.start_offset())? as *const c_void,
+            up_storage.raw_device_ptr_with_offset(up_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-swiglu-mul-mapped-host-buffer", status));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(gate.dtype().to_cpu_storage_owned(output)),
+        gate.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
 }
 
-fn cuda_swiglu_mul(gate: &Tensor, up: &Tensor) -> Result<Tensor> {
-    gate.apply_op2_no_bwd(up, &CudaSwigluMul)
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CudaLinearDecodeGemv {
-    rows: usize,
-    out_dim: usize,
-    in_dim: usize,
-}
-
-impl candle::CustomOp2 for CudaLinearDecodeGemv {
-    fn name(&self) -> &'static str {
-        "cuda-linear-decode-gemv"
-    }
-
-    fn cpu_fwd(
-        &self,
-        _xs: &candle::CpuStorage,
-        _xs_layout: &candle::Layout,
-        _weight: &candle::CpuStorage,
-        _weight_layout: &candle::Layout,
-    ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-linear-decode-gemv has no cpu implementation")
-    }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        xs: &candle::CudaStorage,
-        xs_layout: &candle::Layout,
-        weight: &candle::CudaStorage,
-        weight_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
-            candle::bail!("cuda-linear-decode-gemv requires contiguous inputs")
-        }
-        if xs.dtype() != weight.dtype() {
-            candle::bail!(
-                "cuda-linear-decode-gemv requires matching dtypes, got xs={:?} weight={:?}",
-                xs.dtype(),
-                weight.dtype()
-            )
-        }
-        let weight_dims = weight_layout.shape().dims();
-        if weight_dims != [self.out_dim, self.in_dim] {
-            candle::bail!(
-                "cuda-linear-decode-gemv expected weight shape [{}, {}], got {:?}",
-                self.out_dim,
-                self.in_dim,
-                weight_dims
-            )
-        }
-        if xs_layout.shape().elem_count() != self.rows * self.in_dim {
-            candle::bail!(
-                "cuda-linear-decode-gemv expected xs elem_count {}, got shape {:?}",
-                self.rows * self.in_dim,
-                xs_layout.shape().dims()
-            )
-        }
-
-        let device = xs.device().clone();
-        let mut out_dims = xs_layout.shape().dims().to_vec();
-        *out_dims
-            .last_mut()
-            .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-gemv requires rank >= 1".into()))? =
-            self.out_dim;
-        let out_shape = candle::Shape::from(out_dims);
-        let cfg = LaunchConfig {
-            grid_dim: (self.out_dim as u32, self.rows as u32, 1),
-            block_dim: (256, 1, 1),
-            shared_mem_bytes: 0,
-        };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let xs = xs.as_cuda_slice::<$ty>()?;
-                let xs = match xs_layout.contiguous_offsets() {
-                    Some((o1, o2)) => xs.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-gemv requires contiguous xs"),
-                };
-                let weight = weight.as_cuda_slice::<$ty>()?;
-                let weight = match weight_layout.contiguous_offsets() {
-                    Some((o1, o2)) => weight.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-gemv requires contiguous weight"),
-                };
-                let output = unsafe { device.alloc::<$ty>(self.rows * self.out_dim) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(builder, self.rows, self.out_dim, self.in_dim);
-                builder.arg(&xs);
-                builder.arg(&weight);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, out_shape.clone()))
-            }};
-        }
-
-        match xs.dtype() {
-            DType::F16 => launch!(half::f16, "linear_decode_gemv_f16"),
-            DType::F32 => launch!(f32, "linear_decode_gemv_f32"),
-            DType::BF16 => launch!(half::bf16, "linear_decode_gemv_bf16"),
-            other => candle::bail!("cuda-linear-decode-gemv unsupported dtype {other:?}"),
-        }
-    }
-}
-
-fn cuda_linear_no_bias_decode(xs: &Tensor, linear: &Linear) -> Result<Tensor> {
-    let xs = xs.contiguous()?;
-    let weight = linear.weight().contiguous()?;
-    let in_dim = *xs
-        .dims()
-        .last()
-        .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-gemv requires rank >= 1".into()))?;
-    let out_dim = weight.dim(0)?;
-    let rows = xs.elem_count() / in_dim;
-    xs.apply_op2_no_bwd(
-        &weight,
-        &CudaLinearDecodeGemv {
-            rows,
-            out_dim,
-            in_dim,
-        },
-    )
-}
-
-fn fast_linear_decode(xs: &Tensor, linear: &Linear) -> Result<Tensor> {
-    let use_cuda_fast = xs.device().is_cuda()
-        && linear.bias().is_none()
-        && xs.dims().len() >= 2
-        && xs.dims()[xs.dims().len() - 2] == 1;
-    if use_cuda_fast {
-        cuda_linear_no_bias_decode(xs, linear)
-    } else {
-        linear.forward(xs)
-    }
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_swiglu_mul_mapped_host_buffer(gate: &Tensor, up: &Tensor) -> Result<Option<Tensor>> {
+    let _ = (gate, up);
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1255,7 +1695,7 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
         indexes: &candle::HipStorage,
         indexes_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
@@ -1282,7 +1722,11 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
         let out_shape = candle::Shape::from(out_dims);
         let device = embeddings.device().clone();
         let token_count = indexes_layout.shape().elem_count();
-        let output = unsafe { device.alloc_uninit(&out_shape, embeddings.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(embeddings.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_embedding_lookup(
                 hip::dtype_code(embeddings.dtype())?,
@@ -1294,92 +1738,20 @@ impl candle::CustomOp2 for HipEmbeddingLookup {
                 embeddings.raw_device_ptr_with_offset(embeddings_layout.start_offset())?
                     as *const c_void,
                 indexes.raw_device_ptr_with_offset(indexes_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
-    }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        embeddings: &candle::CudaStorage,
-        embeddings_layout: &candle::Layout,
-        indexes: &candle::CudaStorage,
-        indexes_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(embeddings_layout.is_contiguous() && indexes_layout.is_contiguous()) {
-            candle::bail!("cuda-embedding-lookup requires contiguous inputs")
-        }
-        let dims = embeddings_layout.shape().dims();
-        if dims.len() != 2 {
-            candle::bail!(
-                "cuda-embedding-lookup expected [vocab, hidden] embeddings, got {:?}",
-                dims
-            )
-        }
-        if dims[0] != self.vocab_size || dims[1] != self.hidden_size {
-            candle::bail!(
-                "cuda-embedding-lookup embedding shape mismatch got {:?} expected [{}, {}]",
-                dims,
-                self.vocab_size,
-                self.hidden_size
-            )
-        }
-        if indexes.dtype() != DType::U32 {
-            candle::bail!(
-                "cuda-embedding-lookup currently requires U32 indexes, got {:?}",
-                indexes.dtype()
-            )
-        }
-
-        let mut out_dims = indexes_layout.shape().dims().to_vec();
-        out_dims.push(self.hidden_size);
-        let out_shape = candle::Shape::from(out_dims);
-        let device = embeddings.device().clone();
-        let token_count = indexes_layout.shape().elem_count();
-        let elem_count = out_shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(elem_count as u32);
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let embeddings = embeddings.as_cuda_slice::<$ty>()?;
-                let embeddings = match embeddings_layout.contiguous_offsets() {
-                    Some((o1, o2)) => embeddings.slice(o1..o2),
-                    None => candle::bail!("cuda-embedding-lookup requires contiguous embeddings"),
-                };
-                let indexes = indexes.as_cuda_slice::<u32>()?;
-                let indexes = match indexes_layout.contiguous_offsets() {
-                    Some((o1, o2)) => indexes.slice(o1..o2),
-                    None => candle::bail!("cuda-embedding-lookup requires contiguous indexes"),
-                };
-                let output = unsafe { device.alloc::<$ty>(elem_count) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(builder, token_count, self.vocab_size, self.hidden_size);
-                builder.arg(&embeddings);
-                builder.arg(&indexes);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, out_shape.clone()))
-            }};
-        }
-
-        match embeddings.dtype() {
-            DType::F16 => launch!(half::f16, "embedding_lookup_u32_f16"),
-            DType::F32 => launch!(f32, "embedding_lookup_u32_f32"),
-            DType::BF16 => launch!(half::bf16, "embedding_lookup_u32_bf16"),
-            other => candle::bail!("cuda-embedding-lookup unsupported dtype {other:?}"),
-        }
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(embeddings.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -1396,298 +1768,171 @@ fn hip_embedding_lookup(embeddings: &Tensor, indexes: &Tensor) -> Result<Tensor>
     )
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CudaRmsNorm {
-    n_rows: usize,
-    n_cols: usize,
-    eps: f32,
-    add_unit_offset: bool,
+#[derive(Debug, Clone)]
+struct HipImmutableEmbeddingLookup {
+    embedding: ImmutableEmbedding,
 }
 
-impl candle::CustomOp2 for CudaRmsNorm {
+impl candle::CustomOp1 for HipImmutableEmbeddingLookup {
     fn name(&self) -> &'static str {
-        "cuda-rms-norm"
+        "hip-immutable-embedding-lookup"
     }
 
     fn cpu_fwd(
         &self,
-        _xs: &candle::CpuStorage,
-        _xs_layout: &candle::Layout,
-        _weight: &candle::CpuStorage,
-        _weight_layout: &candle::Layout,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
     ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-rms-norm has no cpu implementation")
+        candle::bail!("hip-immutable-embedding-lookup has no cpu implementation")
     }
 
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
         &self,
-        xs: &candle::CudaStorage,
-        xs_layout: &candle::Layout,
-        weight: &candle::CudaStorage,
-        weight_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
+        indexes: &candle::HipStorage,
+        indexes_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::Storage;
+        use std::ffi::c_void;
 
-        if !(xs_layout.is_contiguous() && weight_layout.is_contiguous()) {
-            candle::bail!("cuda-rms-norm requires contiguous inputs")
+        if !indexes_layout.is_contiguous() {
+            candle::bail!("hip-immutable-embedding-lookup requires contiguous indexes")
         }
-        if xs.dtype() != weight.dtype() {
-            candle::bail!(
-                "cuda-rms-norm requires matching dtypes, got xs={:?} weight={:?}",
-                xs.dtype(),
-                weight.dtype()
+        let device = indexes.device().clone();
+        let device_ptr = self.embedding.registered_device_ptr(device.ordinal())?;
+        let token_count = indexes_layout.shape().elem_count();
+        let mut out_dims = indexes_layout.shape().dims().to_vec();
+        out_dims.push(self.embedding.meta.hidden_size);
+        let out_shape = candle::Shape::from(out_dims);
+        let elem_count = out_shape.elem_count();
+        let mut output =
+            vec![0u8; elem_count.saturating_mul(self.embedding.meta.dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_embedding_lookup(
+                hip::dtype_code(self.embedding.meta.dtype)?,
+                hip::index_dtype_code(indexes.dtype())?,
+                device.ordinal(),
+                token_count,
+                self.embedding.meta.vocab_size,
+                self.embedding.meta.hidden_size,
+                device_ptr as *const c_void,
+                indexes.raw_device_ptr_with_offset(indexes_layout.start_offset())? as *const c_void,
+                device_ptr as *mut c_void,
             )
-        }
-
-        let xs_dims = xs_layout.shape().dims();
-        let n_cols = *xs_dims
-            .last()
-            .ok_or_else(|| candle::Error::Msg("cuda-rms-norm requires non-empty shape".into()))?;
-        let n_rows = xs_layout.shape().elem_count() / n_cols;
-        if n_rows != self.n_rows
-            || n_cols != self.n_cols
-            || weight_layout.shape().elem_count() != self.n_cols
-        {
-            candle::bail!(
-                "cuda-rms-norm shape mismatch xs={:?} weight={:?} expected_rows={} expected_cols={}",
-                xs_dims,
-                weight_layout.shape().dims(),
-                self.n_rows,
-                self.n_cols
-            )
-        }
-
-        let device = xs.device().clone();
-        let out_shape = xs_layout.shape().clone();
-        let cfg = LaunchConfig {
-            grid_dim: (self.n_rows as u32, 1, 1),
-            block_dim: (256, 1, 1),
-            shared_mem_bytes: 0,
         };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let xs = xs.as_cuda_slice::<$ty>()?;
-                let xs = match xs_layout.contiguous_offsets() {
-                    Some((o1, o2)) => xs.slice(o1..o2),
-                    None => candle::bail!("cuda-rms-norm requires contiguous xs"),
-                };
-                let weight = weight.as_cuda_slice::<$ty>()?;
-                let weight = match weight_layout.contiguous_offsets() {
-                    Some((o1, o2)) => weight.slice(o1..o2),
-                    None => candle::bail!("cuda-rms-norm requires contiguous weight"),
-                };
-                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(
-                    builder,
-                    self.n_rows,
-                    self.n_cols,
-                    self.eps,
-                    if self.add_unit_offset { 1i32 } else { 0i32 }
-                );
-                builder.arg(&xs);
-                builder.arg(&weight);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, out_shape.clone()))
-            }};
+        hip::unregister_host_mapping(host_ptr);
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match xs.dtype() {
-            DType::F16 => launch!(half::f16, "rms_norm_f16"),
-            DType::F32 => launch!(f32, "rms_norm_f32"),
-            DType::BF16 => launch!(half::bf16, "rms_norm_bf16"),
-            other => candle::bail!("cuda-rms-norm unsupported dtype {other:?}"),
-        }
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(self.embedding.meta.dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CudaRmsNormGated {
-    n_rows: usize,
-    n_cols: usize,
-    eps: f32,
+fn hip_immutable_embedding_lookup(embedding: &ImmutableEmbedding, indexes: &Tensor) -> Result<Tensor> {
+    let indexes = indexes.contiguous()?;
+    indexes.apply_op1_no_bwd(&HipImmutableEmbeddingLookup {
+        embedding: embedding.clone(),
+    })
 }
 
-impl candle::CustomOp3 for CudaRmsNormGated {
+#[derive(Debug, Clone)]
+struct HipImmutableOutputProjection {
+    embedding: ImmutableEmbedding,
+}
+
+impl candle::CustomOp1 for HipImmutableOutputProjection {
     fn name(&self) -> &'static str {
-        "cuda-rms-norm-gated"
+        "hip-immutable-output-projection"
     }
 
     fn cpu_fwd(
         &self,
-        _hidden: &candle::CpuStorage,
-        _hidden_layout: &candle::Layout,
-        _gate: &candle::CpuStorage,
-        _gate_layout: &candle::Layout,
-        _weight: &candle::CpuStorage,
-        _weight_layout: &candle::Layout,
+        _storage: &candle::CpuStorage,
+        _layout: &candle::Layout,
     ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-rms-norm-gated has no cpu implementation")
+        candle::bail!("hip-immutable-output-projection has no cpu implementation")
     }
 
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
         &self,
-        hidden: &candle::CudaStorage,
+        hidden: &candle::HipStorage,
         hidden_layout: &candle::Layout,
-        gate: &candle::CudaStorage,
-        gate_layout: &candle::Layout,
-        weight: &candle::CudaStorage,
-        weight_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::Storage;
+        use std::ffi::c_void;
 
-        if !(hidden_layout.is_contiguous()
-            && gate_layout.is_contiguous()
-            && weight_layout.is_contiguous())
-        {
-            candle::bail!("cuda-rms-norm-gated requires contiguous inputs")
+        if !hidden_layout.is_contiguous() {
+            candle::bail!("hip-immutable-output-projection requires contiguous hidden states")
         }
-        if hidden.dtype() != gate.dtype() || hidden.dtype() != weight.dtype() {
+        let dims = hidden_layout.shape().dims();
+        let hidden_size = *dims.last().ok_or_else(|| candle::Error::Msg("hidden state rank must be >= 1".to_string()))?;
+        if hidden_size != self.embedding.meta.hidden_size {
             candle::bail!(
-                "cuda-rms-norm-gated requires matching dtypes, got hidden={:?} gate={:?} weight={:?}",
-                hidden.dtype(),
-                gate.dtype(),
-                weight.dtype()
+                "hip-immutable-output-projection hidden size mismatch got {} expected {}",
+                hidden_size,
+                self.embedding.meta.hidden_size
             )
         }
-
-        let hidden_dims = hidden_layout.shape().dims();
-        let n_cols = *hidden_dims.last().ok_or_else(|| {
-            candle::Error::Msg("cuda-rms-norm-gated requires non-empty shape".into())
-        })?;
-        let n_rows = hidden_layout.shape().elem_count() / n_cols;
-        if n_rows != self.n_rows
-            || n_cols != self.n_cols
-            || gate_layout.shape().elem_count() != hidden_layout.shape().elem_count()
-            || weight_layout.shape().elem_count() != self.n_cols
-        {
-            candle::bail!(
-                "cuda-rms-norm-gated shape mismatch hidden={:?} gate={:?} weight={:?} expected_rows={} expected_cols={}",
-                hidden_dims,
-                gate_layout.shape().dims(),
-                weight_layout.shape().dims(),
-                self.n_rows,
-                self.n_cols
-            )
-        }
-
+        let rows = hidden_layout.shape().elem_count() / hidden_size;
         let device = hidden.device().clone();
-        let out_shape = hidden_layout.shape().clone();
-        let cfg = LaunchConfig {
-            grid_dim: (self.n_rows as u32, 1, 1),
-            block_dim: (256, 1, 1),
-            shared_mem_bytes: 0,
+        let weight_ptr = self.embedding.registered_device_ptr(device.ordinal())?;
+        let mut out_dims = dims.to_vec();
+        *out_dims.last_mut().expect("validated non-empty dims") = self.embedding.meta.vocab_size;
+        let out_shape = candle::Shape::from(out_dims);
+        let elem_count = out_shape.elem_count();
+        let mut output =
+            vec![0u8; elem_count.saturating_mul(self.embedding.meta.dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_output_projection_lookup(
+                hip::dtype_code(self.embedding.meta.dtype)?,
+                device.ordinal(),
+                rows,
+                self.embedding.meta.hidden_size,
+                self.embedding.meta.vocab_size,
+                hidden.raw_device_ptr_with_offset(hidden_layout.start_offset())? as *const c_void,
+                weight_ptr,
+                device_ptr as *mut c_void,
+            )
         };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let hidden = hidden.as_cuda_slice::<$ty>()?;
-                let hidden = match hidden_layout.contiguous_offsets() {
-                    Some((o1, o2)) => hidden.slice(o1..o2),
-                    None => candle::bail!("cuda-rms-norm-gated requires contiguous hidden"),
-                };
-                let gate = gate.as_cuda_slice::<$ty>()?;
-                let gate = match gate_layout.contiguous_offsets() {
-                    Some((o1, o2)) => gate.slice(o1..o2),
-                    None => candle::bail!("cuda-rms-norm-gated requires contiguous gate"),
-                };
-                let weight = weight.as_cuda_slice::<$ty>()?;
-                let weight = match weight_layout.contiguous_offsets() {
-                    Some((o1, o2)) => weight.slice(o1..o2),
-                    None => candle::bail!("cuda-rms-norm-gated requires contiguous weight"),
-                };
-                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(builder, self.n_rows, self.n_cols, self.eps);
-                builder.arg(&hidden);
-                builder.arg(&gate);
-                builder.arg(&weight);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, out_shape.clone()))
-            }};
+        hip::unregister_host_mapping(host_ptr);
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
         }
-
-        match hidden.dtype() {
-            DType::F16 => launch!(half::f16, "rms_norm_gated_f16"),
-            DType::F32 => launch!(f32, "rms_norm_gated_f32"),
-            DType::BF16 => launch!(half::bf16, "rms_norm_gated_bf16"),
-            other => candle::bail!("cuda-rms-norm-gated unsupported dtype {other:?}"),
-        }
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(self.embedding.meta.dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
-fn cuda_rms_norm(xs: &Tensor, weight: &Tensor, eps: f64, add_unit_offset: bool) -> Result<Tensor> {
-    let xs = xs.contiguous()?;
-    let weight = weight.contiguous()?;
-    let weight = if weight.dtype() == xs.dtype() {
-        weight
-    } else {
-        weight.to_dtype(xs.dtype())?
-    };
-    let xs_dims = xs.dims();
-    let n_cols = *xs_dims
-        .last()
-        .ok_or_else(|| candle::Error::Msg("cuda-rms-norm requires non-empty shape".into()))?;
-    let n_rows = xs.elem_count() / n_cols;
-    xs.apply_op2_no_bwd(
-        &weight,
-        &CudaRmsNorm {
-            n_rows,
-            n_cols,
-            eps: eps as f32,
-            add_unit_offset,
-        },
-    )
-}
+fn immutable_output_projection(embedding: &ImmutableEmbedding, hidden_states: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if embedding.meta.device.is_hip() && hidden_states.device().is_hip() {
+        let hidden_states = hidden_states.contiguous()?;
+        return hidden_states.apply_op1_no_bwd(&HipImmutableOutputProjection {
+            embedding: embedding.clone(),
+        });
+    }
 
-fn cuda_rms_norm_gated(
-    hidden_states: &Tensor,
-    gate: &Tensor,
-    weight: &Tensor,
-    eps: f64,
-) -> Result<Tensor> {
-    let hidden_states = hidden_states.contiguous()?;
-    let gate = gate.contiguous()?;
-    let gate = if gate.dtype() == hidden_states.dtype() {
-        gate
-    } else {
-        gate.to_dtype(hidden_states.dtype())?
-    };
-    let weight = weight.contiguous()?;
-    let weight = if weight.dtype() == hidden_states.dtype() {
-        weight
-    } else {
-        weight.to_dtype(hidden_states.dtype())?
-    };
-    let hidden_dims = hidden_states.dims();
-    let n_cols = *hidden_dims.last().ok_or_else(|| {
-        candle::Error::Msg("cuda-rms-norm-gated requires non-empty shape".into())
-    })?;
-    let n_rows = hidden_states.elem_count() / n_cols;
-    hidden_states.apply_op3_no_bwd(
-        &gate,
-        &weight,
-        &CudaRmsNormGated {
-            n_rows,
-            n_cols,
-            eps: eps as f32,
-        },
-    )
+    let fallback = embedding.ensure_fallback_embedding()?;
+    let weight = fallback.embeddings().t()?;
+    hidden_states.matmul(&weight)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1716,13 +1961,17 @@ impl candle::CustomOp1 for HipCausalMask {
         storage: &candle::HipStorage,
         _layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         let device = storage.device().clone();
         let kv_len = self.tgt_len + self.seqlen_offset;
         let out_shape = candle::Shape::from((self.batch_size, 1usize, self.tgt_len, kv_len));
-        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_causal_mask(
                 hip::dtype_code(storage.dtype())?,
@@ -1730,23 +1979,97 @@ impl candle::CustomOp1 for HipCausalMask {
                 self.batch_size,
                 self.tgt_len,
                 self.seqlen_offset,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
 fn hip_causal_mask(device: &Device, dtype: DType, batch_size: usize, tgt_len: usize, seqlen_offset: usize) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) =
+        hip_causal_mask_mapped_host_buffer(device, dtype, batch_size, tgt_len, seqlen_offset)?
+    {
+        return Ok(output);
+    }
     let seed = Tensor::zeros(1usize, dtype, device)?;
     seed.apply_op1_no_bwd(&HipCausalMask {
         batch_size,
         tgt_len,
         seqlen_offset,
     })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_causal_mask_mapped_host_buffer(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<Tensor>> {
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match device.location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let Ok(dtype_code) = hip::dtype_code(dtype) else {
+        return Ok(None);
+    };
+    let kv_len = tgt_len + seqlen_offset;
+    let out_shape = candle::Shape::from((batch_size, 1usize, tgt_len, kv_len));
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(dtype.size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_causal_mask(
+            dtype_code,
+            ordinal,
+            batch_size,
+            tgt_len,
+            seqlen_offset,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-causal-mask-mapped-host-buffer", status));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(dtype.to_cpu_storage_owned(output)),
+        device.clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_causal_mask_mapped_host_buffer(
+    device: &Device,
+    dtype: DType,
+    batch_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+) -> Result<Option<Tensor>> {
+    let _ = (device, dtype, batch_size, tgt_len, seqlen_offset);
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1774,7 +2097,7 @@ impl candle::CustomOp1 for HipCumsumLastDim {
         storage: &candle::HipStorage,
         layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !layout.is_contiguous() {
@@ -1796,7 +2119,11 @@ impl candle::CustomOp1 for HipCumsumLastDim {
 
         let device = storage.device().clone();
         let out_shape = layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_cumsum_last_dim(
                 hip::dtype_code(storage.dtype())?,
@@ -1804,24 +2131,96 @@ impl candle::CustomOp1 for HipCumsumLastDim {
                 self.rows,
                 self.cols,
                 storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
 fn hip_cumsum_last_dim(xs: &Tensor) -> Result<Tensor> {
     let xs = xs.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_cumsum_last_dim_mapped_host_buffer(&xs)? {
+        return Ok(output);
+    }
     let dims = xs.dims();
     let cols = *dims.last().ok_or_else(|| {
         candle::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
     })?;
     let rows = xs.elem_count() / cols;
     xs.apply_op1_no_bwd(&HipCumsumLastDim { rows, cols })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_cumsum_last_dim_mapped_host_buffer(xs: &Tensor) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    let dims = layout.shape().dims();
+    let cols = *dims.last().ok_or_else(|| {
+        candle::Error::Msg("hip-cumsum-last-dim requires non-empty shape".into())
+    })?;
+    let rows = layout.shape().elem_count() / cols;
+    let Ok(dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    let out_shape = layout.shape().clone();
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(xs.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_cumsum_last_dim(
+            dtype_code,
+            ordinal,
+            rows,
+            cols,
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-cumsum-last-dim-mapped-host-buffer", status));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(xs.dtype().to_cpu_storage_owned(output)),
+        xs.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_cumsum_last_dim_mapped_host_buffer(xs: &Tensor) -> Result<Option<Tensor>> {
+    let _ = xs;
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1850,7 +2249,7 @@ impl candle::CustomOp1 for HipL2Norm {
         storage: &candle::HipStorage,
         layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !layout.is_contiguous() {
@@ -1872,7 +2271,11 @@ impl candle::CustomOp1 for HipL2Norm {
 
         let device = storage.device().clone();
         let out_shape = layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, storage.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_l2norm(
                 hip::dtype_code(storage.dtype())?,
@@ -1881,18 +2284,29 @@ impl candle::CustomOp1 for HipL2Norm {
                 self.n_cols,
                 self.eps,
                 storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
 fn hip_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     let xs = xs.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_l2norm_mapped_host_buffer(&xs, eps)? {
+        return Ok(output);
+    }
     let dims = xs.dims();
     let n_cols = *dims
         .last()
@@ -1905,102 +2319,66 @@ fn hip_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     })
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CudaL2Norm {
-    n_rows: usize,
-    n_cols: usize,
-    eps: f32,
-}
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_l2norm_mapped_host_buffer(xs: &Tensor, eps: f64) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
 
-impl candle::CustomOp1 for CudaL2Norm {
-    fn name(&self) -> &'static str {
-        "cuda-l2norm"
+    let ordinal = match xs.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = xs.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
     }
-
-    fn cpu_fwd(
-        &self,
-        _storage: &candle::CpuStorage,
-        _layout: &candle::Layout,
-    ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-l2norm has no cpu implementation")
-    }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        storage: &candle::CudaStorage,
-        layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !layout.is_contiguous() {
-            candle::bail!("cuda-l2norm requires contiguous input")
-        }
-        let dims = layout.shape().dims();
-        let n_cols = *dims.last().ok_or_else(|| {
-            candle::Error::Msg("cuda-l2norm requires non-empty shape".into())
-        })?;
-        let n_rows = layout.shape().elem_count() / n_cols;
-        if n_rows != self.n_rows || n_cols != self.n_cols {
-            candle::bail!(
-                "cuda-l2norm shape mismatch input={:?} expected_rows={} expected_cols={}",
-                dims,
-                self.n_rows,
-                self.n_cols
-            )
-        }
-
-        let device = storage.device().clone();
-        let out_shape = layout.shape().clone();
-        let cfg = LaunchConfig {
-            grid_dim: (self.n_rows as u32, 1, 1),
-            block_dim: (256, 1, 1),
-            shared_mem_bytes: 0,
-        };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let xs = storage.as_cuda_slice::<$ty>()?;
-                let xs = match layout.contiguous_offsets() {
-                    Some((o1, o2)) => xs.slice(o1..o2),
-                    None => candle::bail!("cuda-l2norm requires contiguous input"),
-                };
-                let output = unsafe { device.alloc::<$ty>(out_shape.elem_count()) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(builder, self.n_rows, self.n_cols, self.eps);
-                builder.arg(&xs);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, out_shape.clone()))
-            }};
-        }
-
-        match storage.dtype() {
-            DType::F16 => launch!(half::f16, "l2norm_f16"),
-            DType::F32 => launch!(f32, "l2norm_f32"),
-            DType::BF16 => launch!(half::bf16, "l2norm_bf16"),
-            other => candle::bail!("cuda-l2norm unsupported dtype {other:?}"),
-        }
-    }
-}
-
-fn cuda_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
-    let xs = xs.contiguous()?;
-    let dims = xs.dims();
-    let n_cols = *dims
+    let out_shape = layout.shape().clone();
+    let n_cols = *out_shape
+        .dims()
         .last()
-        .ok_or_else(|| candle::Error::Msg("cuda-l2norm requires non-empty shape".into()))?;
-    let n_rows = xs.elem_count() / n_cols;
-    xs.apply_op1_no_bwd(&CudaL2Norm {
-        n_rows,
-        n_cols,
-        eps: eps as f32,
-    })
+        .ok_or_else(|| candle::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
+    let n_rows = out_shape.elem_count() / n_cols;
+    let Ok(dtype_code) = hip::dtype_code(xs.dtype()) else {
+        return Ok(None);
+    };
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(xs.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_l2norm(
+            dtype_code,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-l2norm-mapped-host-buffer", status));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(xs.dtype().to_cpu_storage_owned(output)),
+        xs.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_l2norm_mapped_host_buffer(xs: &Tensor, eps: f64) -> Result<Option<Tensor>> {
+    let _ = (xs, eps);
+    Ok(None)
 }
 
 fn softplus(xs: &Tensor) -> Result<Tensor> {
@@ -2040,7 +2418,7 @@ impl candle::CustomOp3 for HipValueDecay {
         a_log_exp: &candle::HipStorage,
         a_log_exp_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(a_layout.is_contiguous()
@@ -2077,7 +2455,11 @@ impl candle::CustomOp3 for HipValueDecay {
 
         let device = a.device().clone();
         let out_shape = a_layout.shape().clone();
-        let output = unsafe { device.alloc_uninit(&out_shape, a.dtype())? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(a.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_value_decay(
                 hip::dtype_code(a.dtype())?,
@@ -2088,13 +2470,20 @@ impl candle::CustomOp3 for HipValueDecay {
                 dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
                 a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(a.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -2113,6 +2502,10 @@ fn hip_value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> Result<T
     } else {
         a_log_exp.to_dtype(target_dtype)?
     };
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = hip_value_decay_mapped_host_buffer(&a, &dt_bias, &a_log_exp)? {
+        return Ok(output);
+    }
     let total_elems = a.elem_count();
     let num_heads = dt_bias.elem_count();
     a.apply_op3_no_bwd(
@@ -2123,6 +2516,92 @@ fn hip_value_decay(a: &Tensor, dt_bias: &Tensor, a_log_exp: &Tensor) -> Result<T
             num_heads,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn hip_value_decay_mapped_host_buffer(
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match a.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(dt_bias.device().same_device(a.device()) && a_log_exp.device().same_device(a.device())) {
+        return Ok(None);
+    }
+    let (a_storage, a_layout) = a.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (
+        Storage::Hip(a_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+    ) = (&*a_storage, &*dt_bias_storage, &*a_log_exp_storage)
+    else {
+        return Ok(None);
+    };
+    if !(a_layout.is_contiguous() && dt_bias_layout.is_contiguous() && a_log_exp_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    if a.dtype() != dt_bias.dtype() || a.dtype() != a_log_exp.dtype() {
+        return Ok(None);
+    }
+    let total_elems = a_layout.shape().elem_count();
+    let num_heads = dt_bias_layout.shape().elem_count();
+    if a_log_exp_layout.shape().elem_count() != num_heads {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(a.dtype()) else {
+        return Ok(None);
+    };
+    let out_shape = a_layout.shape().clone();
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(a.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_value_decay(
+            dtype_code,
+            ordinal,
+            total_elems,
+            num_heads,
+            a_storage.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error("hip-value-decay-mapped-host-buffer", status));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(a.dtype().to_cpu_storage_owned(output)),
+        a.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn hip_value_decay_mapped_host_buffer(
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+) -> Result<Option<Tensor>> {
+    let _ = (a, dt_bias, a_log_exp);
+    Ok(None)
 }
 
 fn linear_attention_compute_dtype(device: &Device, input_dtype: DType) -> DType {
@@ -2466,22 +2945,17 @@ fn use_hip_combined_linear_prefill(device: &Device, sequence_length: usize) -> b
         )
 }
 
-fn use_combined_linear_decode(device: &Device, sequence_length: usize) -> bool {
+fn use_hip_combined_linear_decode(device: &Device, sequence_length: usize) -> bool {
     // Keep the combined decode path opt-in on this UMA ROCm host: it cuts transfer
     // traffic substantially, but the custom kernels are still slower than the split
     // path here. This remains worth testing on larger discrete ROCm systems where
     // transfer cost is materially higher.
-    match device.location() {
-        DeviceLocation::Hip { .. } => {
-            sequence_length == 1
-                && matches!(
-                    std::env::var("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_DECODE").as_deref(),
-                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-                )
-        }
-        DeviceLocation::Cuda { .. } => sequence_length == 1,
-        _ => false,
-    }
+    matches!(device.location(), DeviceLocation::Hip { .. })
+        && sequence_length == 1
+        && matches!(
+            std::env::var("DOTCACHE_QWEN35_HIP_COMBINED_LINEAR_DECODE").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
 }
 
 fn use_hip_chunk_single_prefill_kernel(
@@ -2581,7 +3055,13 @@ fn use_full_attention_decode_megakernel(
     }
 
     match device.location() {
-        DeviceLocation::Cuda { .. } => head_dim <= 256,
+        DeviceLocation::Cuda { .. } => {
+            head_dim <= 128
+                && matches!(
+                    std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL").as_deref(),
+                    Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+                )
+        }
         DeviceLocation::Hip { .. } => {
             match std::env::var("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL") {
                 Ok(value)
@@ -2827,7 +3307,7 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         weights: &candle::HipStorage,
         weights_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous() && weights_layout.is_contiguous()) {
@@ -2865,7 +3345,11 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         let storage_dtype = mixed_qkv.dtype();
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let output_shape = candle::Shape::from((self.batch_size, self.seq_len, self.conv_dim));
-        let output = unsafe { device.alloc_uninit(&output_shape, storage_dtype)? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_prefill_conv_pack(
                 dtype_code,
@@ -2878,13 +3362,20 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
                 mixed_qkv.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
                     as *const c_void,
                 weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            output_shape,
+        ))
     }
 }
 
@@ -2894,6 +3385,12 @@ fn linear_prefill_conv_pack(
     seq_len: usize,
     kernel_size: usize,
 ) -> Result<Tensor> {
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) =
+        linear_prefill_conv_pack_mapped_host_buffer(mixed_qkv, weights, seq_len, kernel_size)?
+    {
+        return Ok(output);
+    }
     let (batch_size, conv_dim, total_len) = mixed_qkv.dims3()?;
     mixed_qkv.apply_op2_no_bwd(
         weights,
@@ -2905,6 +3402,95 @@ fn linear_prefill_conv_pack(
             kernel_size,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn linear_prefill_conv_pack_mapped_host_buffer(
+    mixed_qkv: &Tensor,
+    weights: &Tensor,
+    seq_len: usize,
+    kernel_size: usize,
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let mixed_qkv = mixed_qkv.contiguous()?;
+    let weights = weights.contiguous()?;
+    let ordinal = match mixed_qkv.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !weights.device().same_device(mixed_qkv.device()) {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (Storage::Hip(mixed_qkv_storage), Storage::Hip(weights_storage)) =
+        (&*mixed_qkv_storage, &*weights_storage)
+    else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous() && weights_layout.is_contiguous()) {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, total_len) = mixed_qkv_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    if weights_conv_dim != conv_dim || weights_kernel_size != kernel_size {
+        return Ok(None);
+    }
+    if total_len < seq_len + kernel_size.saturating_sub(1) {
+        return Ok(None);
+    }
+    let dtype_code = candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?;
+    let out_shape = candle::Shape::from((batch_size, seq_len, conv_dim));
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(mixed_qkv.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_prefill_conv_pack(
+            dtype_code,
+            ordinal,
+            batch_size,
+            conv_dim,
+            total_len,
+            seq_len,
+            kernel_size,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "linear-prefill-conv-pack-mapped-host-buffer",
+            status,
+        ));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(mixed_qkv.dtype().to_cpu_storage_owned(output)),
+        mixed_qkv.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn linear_prefill_conv_pack_mapped_host_buffer(
+    mixed_qkv: &Tensor,
+    weights: &Tensor,
+    seq_len: usize,
+    kernel_size: usize,
+) -> Result<Option<Tensor>> {
+    let _ = (mixed_qkv, weights, seq_len, kernel_size);
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2943,7 +3529,7 @@ impl candle::CustomOp3 for LinearStatefulConv {
         weights: &candle::HipStorage,
         weights_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous()
@@ -2988,7 +3574,11 @@ impl candle::CustomOp3 for LinearStatefulConv {
 
         let device = mixed_qkv.device().clone();
         let output_shape = candle::Shape::from((self.batch_size, self.seq_len, self.conv_dim));
-        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(mixed_qkv.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_stateful_conv(
                 candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
@@ -3003,13 +3593,20 @@ impl candle::CustomOp3 for LinearStatefulConv {
                 prev_state.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
                     as *const c_void,
                 weights.raw_device_ptr_with_offset(weights_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(mixed_qkv.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            output_shape,
+        ))
     }
 }
 
@@ -3022,6 +3619,12 @@ fn linear_stateful_conv_hip(
     let mixed_qkv = mixed_qkv.contiguous()?;
     let prev_state = prev_state.contiguous()?;
     let weights = weights.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) =
+        linear_stateful_conv_mapped_host_buffer(&mixed_qkv, &prev_state, &weights, kernel_size)?
+    {
+        return Ok(output);
+    }
     let (batch_size, conv_dim, seq_len) = mixed_qkv.dims3()?;
     let (state_batch, state_conv_dim, state_len) = prev_state.dims3()?;
     if state_batch != batch_size || state_conv_dim != conv_dim {
@@ -3042,6 +3645,107 @@ fn linear_stateful_conv_hip(
             kernel_size,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn linear_stateful_conv_mapped_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match mixed_qkv.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(prev_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_state_storage, prev_state_layout) = prev_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_state_storage),
+        Storage::Hip(weights_storage),
+    ) = (&*mixed_qkv_storage, &*prev_state_storage, &*weights_storage)
+    else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_state_layout.is_contiguous()
+        && weights_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    if state_batch != batch_size
+        || state_conv_dim != conv_dim
+        || weights_conv_dim != conv_dim
+        || weights_kernel_size != kernel_size
+        || mixed_qkv.dtype() != prev_state.dtype()
+        || mixed_qkv.dtype() != weights.dtype()
+    {
+        return Ok(None);
+    }
+    let out_shape = candle::Shape::from((batch_size, seq_len, conv_dim));
+    let mut output = vec![0u8; out_shape.elem_count().saturating_mul(mixed_qkv.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_stateful_conv(
+            candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
+            ordinal,
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_state_storage.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "linear-stateful-conv-mapped-host-buffer",
+            status,
+        ));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(mixed_qkv.dtype().to_cpu_storage_owned(output)),
+        mixed_qkv.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn linear_stateful_conv_mapped_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<Tensor>> {
+    let _ = (mixed_qkv, prev_state, weights, kernel_size);
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3093,7 +3797,7 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecay {
         a_log_exp: &candle::HipStorage,
         a_log_exp_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous()
@@ -3165,7 +3869,11 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecay {
             self.seq_len,
             self.conv_dim + self.num_heads,
         ));
-        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(mixed_qkv.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay(
                 candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
@@ -3185,13 +3893,20 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecay {
                 dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
                 a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(mixed_qkv.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            output_shape,
+        ))
     }
 }
 
@@ -3244,7 +3959,7 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecayWithState {
         a_log_exp: &candle::HipStorage,
         a_log_exp_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous()
@@ -3314,7 +4029,11 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecayWithState {
         let flat_width =
             self.seq_len * (self.conv_dim + self.num_heads) + self.conv_dim * self.state_len;
         let output_shape = candle::Shape::from((self.batch_size, flat_width));
-        let output = unsafe { device.alloc_uninit(&output_shape, mixed_qkv.dtype())? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(mixed_qkv.dtype().size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
                 candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
@@ -3334,13 +4053,20 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecayWithState {
                 dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
                 a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(mixed_qkv.dtype().to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            output_shape,
+        ))
     }
 }
 
@@ -3359,6 +4085,18 @@ fn linear_stateful_conv_value_decay_hip(
     let a = a.contiguous()?;
     let dt_bias = dt_bias.contiguous()?;
     let a_log_exp = a_log_exp.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = linear_stateful_conv_value_decay_mapped_host_buffer(
+        &mixed_qkv,
+        &prev_state,
+        &weights,
+        &a,
+        &dt_bias,
+        &a_log_exp,
+        kernel_size,
+    )? {
+        return Ok(output);
+    }
     let (batch_size, conv_dim, seq_len) = mixed_qkv.dims3()?;
     let (state_batch, state_conv_dim, state_len) = prev_state.dims3()?;
     let (a_batch, a_seq_len, num_heads) = a.dims3()?;
@@ -3393,6 +4131,152 @@ fn linear_stateful_conv_value_decay_hip(
     )
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn linear_stateful_conv_value_decay_mapped_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match mixed_qkv.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(prev_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device())
+        && a.device().same_device(mixed_qkv.device())
+        && dt_bias.device().same_device(mixed_qkv.device())
+        && a_log_exp.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_state_storage, prev_state_layout) = prev_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (a_storage, a_layout) = a.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_state_storage),
+        Storage::Hip(weights_storage),
+        Storage::Hip(a_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+    ) = (
+        &*mixed_qkv_storage,
+        &*prev_state_storage,
+        &*weights_storage,
+        &*a_storage,
+        &*dt_bias_storage,
+        &*a_log_exp_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_state_layout.is_contiguous()
+        && weights_layout.is_contiguous()
+        && a_layout.is_contiguous()
+        && dt_bias_layout.is_contiguous()
+        && a_log_exp_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    let (a_batch, a_seq_len, num_heads) = a_layout.shape().dims3()?;
+    if state_batch != batch_size
+        || state_conv_dim != conv_dim
+        || weights_conv_dim != conv_dim
+        || weights_kernel_size != kernel_size
+        || a_batch != batch_size
+        || a_seq_len != seq_len
+        || dt_bias_layout.shape().elem_count() != num_heads
+        || a_log_exp_layout.shape().elem_count() != num_heads
+    {
+        return Ok(None);
+    }
+    if mixed_qkv.dtype() != prev_state.dtype()
+        || mixed_qkv.dtype() != weights.dtype()
+        || mixed_qkv.dtype() != a.dtype()
+        || mixed_qkv.dtype() != dt_bias.dtype()
+        || mixed_qkv.dtype() != a_log_exp.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle::hip::qwen35_dtype_code(mixed_qkv.dtype()) else {
+        return Ok(None);
+    };
+    let out_shape = candle::Shape::from((batch_size, seq_len, conv_dim + num_heads));
+    let mut output =
+        vec![0u8; out_shape.elem_count().saturating_mul(mixed_qkv.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay(
+            dtype_code,
+            ordinal,
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            num_heads,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_state_storage.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            a_storage.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "linear-stateful-conv-value-decay-mapped-host-buffer",
+            status,
+        ));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(mixed_qkv.dtype().to_cpu_storage_owned(output)),
+        mixed_qkv.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn linear_stateful_conv_value_decay_mapped_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<Tensor>> {
+    let _ = (mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, kernel_size);
+    Ok(None)
+}
+
 fn linear_stateful_conv_value_decay_with_state_hip(
     mixed_qkv: &Tensor,
     prev_state: &Tensor,
@@ -3408,6 +4292,18 @@ fn linear_stateful_conv_value_decay_with_state_hip(
     let a = a.contiguous()?;
     let dt_bias = dt_bias.contiguous()?;
     let a_log_exp = a_log_exp.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = linear_stateful_conv_value_decay_with_state_mapped_host_buffer(
+        &mixed_qkv,
+        &prev_state,
+        &weights,
+        &a,
+        &dt_bias,
+        &a_log_exp,
+        kernel_size,
+    )? {
+        return Ok(output);
+    }
     let (batch_size, conv_dim, seq_len) = mixed_qkv.dims3()?;
     let (state_batch, state_conv_dim, state_len) = prev_state.dims3()?;
     let (a_batch, a_seq_len, num_heads) = a.dims3()?;
@@ -3442,6 +4338,153 @@ fn linear_stateful_conv_value_decay_with_state_hip(
     )
 }
 
+#[cfg(feature = "qwen35-minimal-hip")]
+fn linear_stateful_conv_value_decay_with_state_mapped_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match mixed_qkv.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(prev_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device())
+        && a.device().same_device(mixed_qkv.device())
+        && dt_bias.device().same_device(mixed_qkv.device())
+        && a_log_exp.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
+    }
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_state_storage, prev_state_layout) = prev_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (a_storage, a_layout) = a.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_state_storage),
+        Storage::Hip(weights_storage),
+        Storage::Hip(a_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+    ) = (
+        &*mixed_qkv_storage,
+        &*prev_state_storage,
+        &*weights_storage,
+        &*a_storage,
+        &*dt_bias_storage,
+        &*a_log_exp_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_state_layout.is_contiguous()
+        && weights_layout.is_contiguous()
+        && a_layout.is_contiguous()
+        && dt_bias_layout.is_contiguous()
+        && a_log_exp_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_size, conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (state_batch, state_conv_dim, state_len) = prev_state_layout.shape().dims3()?;
+    let (weights_conv_dim, weights_kernel_size) = weights_layout.shape().dims2()?;
+    let (a_batch, a_seq_len, num_heads) = a_layout.shape().dims3()?;
+    if state_batch != batch_size
+        || state_conv_dim != conv_dim
+        || weights_conv_dim != conv_dim
+        || weights_kernel_size != kernel_size
+        || a_batch != batch_size
+        || a_seq_len != seq_len
+        || dt_bias_layout.shape().elem_count() != num_heads
+        || a_log_exp_layout.shape().elem_count() != num_heads
+    {
+        return Ok(None);
+    }
+    if mixed_qkv.dtype() != prev_state.dtype()
+        || mixed_qkv.dtype() != weights.dtype()
+        || mixed_qkv.dtype() != a.dtype()
+        || mixed_qkv.dtype() != dt_bias.dtype()
+        || mixed_qkv.dtype() != a_log_exp.dtype()
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle::hip::qwen35_dtype_code(mixed_qkv.dtype()) else {
+        return Ok(None);
+    };
+    let flat_width = seq_len * (conv_dim + num_heads) + conv_dim * state_len;
+    let out_shape = candle::Shape::from((batch_size, flat_width));
+    let mut output =
+        vec![0u8; out_shape.elem_count().saturating_mul(mixed_qkv.dtype().size_in_bytes())];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(ordinal, host_ptr, output.len())?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
+            dtype_code,
+            ordinal,
+            batch_size,
+            conv_dim,
+            seq_len,
+            state_len,
+            kernel_size,
+            num_heads,
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_state_storage.raw_device_ptr_with_offset(prev_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            a_storage.raw_device_ptr_with_offset(a_layout.start_offset())? as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "linear-stateful-conv-value-decay-with-state-mapped-host-buffer",
+            status,
+        ));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(mixed_qkv.dtype().to_cpu_storage_owned(output)),
+        mixed_qkv.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn linear_stateful_conv_value_decay_with_state_mapped_host_buffer(
+    mixed_qkv: &Tensor,
+    prev_state: &Tensor,
+    weights: &Tensor,
+    a: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
+    kernel_size: usize,
+) -> Result<Option<Tensor>> {
+    let _ = (mixed_qkv, prev_state, weights, a, dt_bias, a_log_exp, kernel_size);
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LinearDecodePrepare {
     batch_size: usize,
@@ -3451,372 +4494,6 @@ struct LinearDecodePrepare {
     state_len: usize,
     kernel_size: usize,
     head_repeat: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CudaLinearDecodePreparePackedCache {
-    batch_size: usize,
-    num_v_heads: usize,
-    head_k_dim: usize,
-    head_v_dim: usize,
-    state_len: usize,
-    kernel_size: usize,
-    head_repeat: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CudaLinearDecodeFromProjectedGated {
-    batch_size: usize,
-    num_v_heads: usize,
-    head_k_dim: usize,
-    head_v_dim: usize,
-    state_len: usize,
-    kernel_size: usize,
-    head_repeat: usize,
-    eps: f32,
-}
-
-impl candle::CustomOp6 for CudaLinearDecodeFromProjectedGated {
-    fn name(&self) -> &'static str {
-        "cuda-linear-decode-from-projected-gated"
-    }
-
-    fn cpu_fwd(
-        &self,
-        _s1: &candle::CpuStorage,
-        _l1: &candle::Layout,
-        _s2: &candle::CpuStorage,
-        _l2: &candle::Layout,
-        _s3: &candle::CpuStorage,
-        _l3: &candle::Layout,
-        _s4: &candle::CpuStorage,
-        _l4: &candle::Layout,
-        _s5: &candle::CpuStorage,
-        _l5: &candle::Layout,
-        _s6: &candle::CpuStorage,
-        _l6: &candle::Layout,
-    ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-linear-decode-from-projected-gated has no cpu implementation")
-    }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        projected: &candle::CudaStorage,
-        projected_layout: &candle::Layout,
-        prev_conv_state: &candle::CudaStorage,
-        prev_conv_state_layout: &candle::Layout,
-        weights: &candle::CudaStorage,
-        weights_layout: &candle::Layout,
-        value_cache_pack: &candle::CudaStorage,
-        value_cache_pack_layout: &candle::Layout,
-        initial_state: &candle::CudaStorage,
-        initial_state_layout: &candle::Layout,
-        norm_weight: &candle::CudaStorage,
-        norm_weight_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(projected_layout.is_contiguous()
-            && prev_conv_state_layout.is_contiguous()
-            && weights_layout.is_contiguous()
-            && value_cache_pack_layout.is_contiguous()
-            && initial_state_layout.is_contiguous()
-            && norm_weight_layout.is_contiguous())
-        {
-            candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous inputs")
-        }
-        if projected.dtype() != prev_conv_state.dtype()
-            || projected.dtype() != weights.dtype()
-            || projected.dtype() != value_cache_pack.dtype()
-            || projected.dtype() != norm_weight.dtype()
-        {
-            candle::bail!(
-                "cuda-linear-decode-from-projected-gated requires matching projected/state weight/value-cache/norm dtypes, got projected={:?} prev_state={:?} weights={:?} value_cache={:?} norm_weight={:?}",
-                projected.dtype(),
-                prev_conv_state.dtype(),
-                weights.dtype(),
-                value_cache_pack.dtype(),
-                norm_weight.dtype()
-            )
-        }
-        if initial_state.dtype() != DType::F32 {
-            candle::bail!("cuda-linear-decode-from-projected-gated requires F32 initial_state")
-        }
-
-        let device = projected.device().clone();
-        let value_dim = self.num_v_heads * self.head_v_dim;
-        let output_shape = candle::Shape::from((self.batch_size, value_dim));
-        let elem_count = output_shape.elem_count();
-
-        let mut block = 64u32;
-        let target = self.head_v_dim.max(self.head_k_dim) as u32;
-        while block < target && block < 256 {
-            block <<= 1;
-        }
-        let cfg = LaunchConfig {
-            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
-            block_dim: (block, 1, 1),
-            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
-        };
-
-        let state = initial_state.as_cuda_slice::<f32>()?;
-        let state = match initial_state_layout.contiguous_offsets() {
-            Some((o1, o2)) => state.slice(o1..o2),
-            None => candle::bail!(
-                "cuda-linear-decode-from-projected-gated requires contiguous initial_state"
-            ),
-        };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let projected = projected.as_cuda_slice::<$ty>()?;
-                let projected = match projected_layout.contiguous_offsets() {
-                    Some((o1, o2)) => projected.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous projected"),
-                };
-                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
-                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
-                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous prev_conv_state"),
-                };
-                let weights = weights.as_cuda_slice::<$ty>()?;
-                let weights = match weights_layout.contiguous_offsets() {
-                    Some((o1, o2)) => weights.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous weights"),
-                };
-                let value_cache_pack = value_cache_pack.as_cuda_slice::<$ty>()?;
-                let value_cache_pack = match value_cache_pack_layout.contiguous_offsets() {
-                    Some((o1, o2)) => value_cache_pack.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous value_cache_pack"),
-                };
-                let norm_weight = norm_weight.as_cuda_slice::<$ty>()?;
-                let norm_weight = match norm_weight_layout.contiguous_offsets() {
-                    Some((o1, o2)) => norm_weight.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-projected-gated requires contiguous norm_weight"),
-                };
-                let output = unsafe { device.alloc::<f32>(elem_count) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(
-                    builder,
-                    self.batch_size as i32,
-                    self.num_v_heads as i32,
-                    self.head_k_dim as i32,
-                    self.head_v_dim as i32,
-                    self.state_len as i32,
-                    self.kernel_size as i32,
-                    self.head_repeat as i32,
-                    self.eps
-                );
-                builder.arg(&projected);
-                builder.arg(&prev_conv_state);
-                builder.arg(&weights);
-                builder.arg(&value_cache_pack);
-                builder.arg(&state);
-                builder.arg(&norm_weight);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, output_shape.clone()))
-            }};
-        }
-
-        match projected.dtype() {
-            DType::F16 => launch!(half::f16, "linear_decode_from_projected_gated_f16"),
-            DType::F32 => launch!(f32, "linear_decode_from_projected_gated_f32"),
-            DType::BF16 => launch!(half::bf16, "linear_decode_from_projected_gated_bf16"),
-            other => candle::bail!("cuda-linear-decode-from-projected-gated unsupported dtype {other:?}"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CudaLinearDecodeFromHiddenGated {
-    batch_size: usize,
-    hidden_size: usize,
-    num_v_heads: usize,
-    head_k_dim: usize,
-    head_v_dim: usize,
-    state_len: usize,
-    kernel_size: usize,
-    head_repeat: usize,
-    eps: f32,
-}
-
-impl candle::CustomOp7 for CudaLinearDecodeFromHiddenGated {
-    fn name(&self) -> &'static str {
-        "cuda-linear-decode-from-hidden-gated"
-    }
-
-    fn cpu_fwd(
-        &self,
-        _s1: &candle::CpuStorage,
-        _l1: &candle::Layout,
-        _s2: &candle::CpuStorage,
-        _l2: &candle::Layout,
-        _s3: &candle::CpuStorage,
-        _l3: &candle::Layout,
-        _s4: &candle::CpuStorage,
-        _l4: &candle::Layout,
-        _s5: &candle::CpuStorage,
-        _l5: &candle::Layout,
-        _s6: &candle::CpuStorage,
-        _l6: &candle::Layout,
-        _s7: &candle::CpuStorage,
-        _l7: &candle::Layout,
-    ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-linear-decode-from-hidden-gated has no cpu implementation")
-    }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        hidden: &candle::CudaStorage,
-        hidden_layout: &candle::Layout,
-        qkv_zba_weight: &candle::CudaStorage,
-        qkv_zba_weight_layout: &candle::Layout,
-        prev_conv_state: &candle::CudaStorage,
-        prev_conv_state_layout: &candle::Layout,
-        weights: &candle::CudaStorage,
-        weights_layout: &candle::Layout,
-        value_cache_pack: &candle::CudaStorage,
-        value_cache_pack_layout: &candle::Layout,
-        initial_state: &candle::CudaStorage,
-        initial_state_layout: &candle::Layout,
-        norm_weight: &candle::CudaStorage,
-        norm_weight_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(hidden_layout.is_contiguous()
-            && qkv_zba_weight_layout.is_contiguous()
-            && prev_conv_state_layout.is_contiguous()
-            && weights_layout.is_contiguous()
-            && value_cache_pack_layout.is_contiguous()
-            && initial_state_layout.is_contiguous()
-            && norm_weight_layout.is_contiguous())
-        {
-            candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous inputs")
-        }
-        if hidden.dtype() != qkv_zba_weight.dtype()
-            || hidden.dtype() != prev_conv_state.dtype()
-            || hidden.dtype() != weights.dtype()
-            || hidden.dtype() != value_cache_pack.dtype()
-            || hidden.dtype() != norm_weight.dtype()
-        {
-            candle::bail!(
-                "cuda-linear-decode-from-hidden-gated requires matching hidden/weight/state/cache/norm dtypes, got hidden={:?} qkv_zba_weight={:?} prev_state={:?} weights={:?} value_cache={:?} norm_weight={:?}",
-                hidden.dtype(),
-                qkv_zba_weight.dtype(),
-                prev_conv_state.dtype(),
-                weights.dtype(),
-                value_cache_pack.dtype(),
-                norm_weight.dtype()
-            )
-        }
-        if initial_state.dtype() != DType::F32 {
-            candle::bail!("cuda-linear-decode-from-hidden-gated requires F32 initial_state")
-        }
-
-        let device = hidden.device().clone();
-        let value_dim = self.num_v_heads * self.head_v_dim;
-        let output_shape = candle::Shape::from((self.batch_size, value_dim));
-        let elem_count = output_shape.elem_count();
-
-        let mut block = 64u32;
-        let target = self.head_v_dim.max(self.head_k_dim) as u32;
-        while block < target && block < 256 {
-            block <<= 1;
-        }
-        let cfg = LaunchConfig {
-            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
-            block_dim: (block, 1, 1),
-            shared_mem_bytes: ((4 * 256 + self.hidden_size) * std::mem::size_of::<f32>()) as u32,
-        };
-
-        let state = initial_state.as_cuda_slice::<f32>()?;
-        let state = match initial_state_layout.contiguous_offsets() {
-            Some((o1, o2)) => state.slice(o1..o2),
-            None => {
-                candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous initial_state")
-            }
-        };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let hidden = hidden.as_cuda_slice::<$ty>()?;
-                let hidden = match hidden_layout.contiguous_offsets() {
-                    Some((o1, o2)) => hidden.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous hidden"),
-                };
-                let qkv_zba_weight = qkv_zba_weight.as_cuda_slice::<$ty>()?;
-                let qkv_zba_weight = match qkv_zba_weight_layout.contiguous_offsets() {
-                    Some((o1, o2)) => qkv_zba_weight.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous qkv_zba_weight"),
-                };
-                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
-                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
-                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous prev_conv_state"),
-                };
-                let weights = weights.as_cuda_slice::<$ty>()?;
-                let weights = match weights_layout.contiguous_offsets() {
-                    Some((o1, o2)) => weights.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous weights"),
-                };
-                let value_cache_pack = value_cache_pack.as_cuda_slice::<$ty>()?;
-                let value_cache_pack = match value_cache_pack_layout.contiguous_offsets() {
-                    Some((o1, o2)) => value_cache_pack.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous value_cache_pack"),
-                };
-                let norm_weight = norm_weight.as_cuda_slice::<$ty>()?;
-                let norm_weight = match norm_weight_layout.contiguous_offsets() {
-                    Some((o1, o2)) => norm_weight.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-from-hidden-gated requires contiguous norm_weight"),
-                };
-                let output = unsafe { device.alloc::<f32>(elem_count) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(
-                    builder,
-                    self.batch_size as i32,
-                    self.hidden_size as i32,
-                    self.num_v_heads as i32,
-                    self.head_k_dim as i32,
-                    self.head_v_dim as i32,
-                    self.state_len as i32,
-                    self.kernel_size as i32,
-                    self.head_repeat as i32,
-                    self.eps
-                );
-                builder.arg(&hidden);
-                builder.arg(&qkv_zba_weight);
-                builder.arg(&prev_conv_state);
-                builder.arg(&weights);
-                builder.arg(&value_cache_pack);
-                builder.arg(&state);
-                builder.arg(&norm_weight);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, output_shape.clone()))
-            }};
-        }
-
-        match hidden.dtype() {
-            DType::F16 => launch!(half::f16, "linear_decode_from_hidden_gated_f16"),
-            DType::F32 => launch!(f32, "linear_decode_from_hidden_gated_f32"),
-            DType::BF16 => launch!(half::bf16, "linear_decode_from_hidden_gated_bf16"),
-            other => candle::bail!("cuda-linear-decode-from-hidden-gated unsupported dtype {other:?}"),
-        }
-    }
 }
 
 impl candle::CustomOp6 for LinearDecodePrepare {
@@ -3840,119 +4517,6 @@ impl candle::CustomOp6 for LinearDecodePrepare {
         _l6: &candle::Layout,
     ) -> Result<(candle::CpuStorage, candle::Shape)> {
         candle::bail!("linear-decode-prepare has no cpu implementation")
-    }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        mixed_qkv: &candle::CudaStorage,
-        mixed_qkv_layout: &candle::Layout,
-        prev_conv_state: &candle::CudaStorage,
-        prev_conv_state_layout: &candle::Layout,
-        weights: &candle::CudaStorage,
-        weights_layout: &candle::Layout,
-        a_beta_raw: &candle::CudaStorage,
-        a_beta_raw_layout: &candle::Layout,
-        dt_bias: &candle::CudaStorage,
-        dt_bias_layout: &candle::Layout,
-        a_log_exp: &candle::CudaStorage,
-        a_log_exp_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(mixed_qkv_layout.is_contiguous()
-            && prev_conv_state_layout.is_contiguous()
-            && weights_layout.is_contiguous()
-            && a_beta_raw_layout.is_contiguous()
-            && dt_bias_layout.is_contiguous()
-            && a_log_exp_layout.is_contiguous())
-        {
-            candle::bail!("linear-decode-prepare requires contiguous inputs")
-        }
-
-        let device = mixed_qkv.device().clone();
-        let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
-        let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
-        let elem_count = output_shape.elem_count();
-
-        let mut block = 64u32;
-        let target = self.head_k_dim.max(self.head_v_dim) as u32;
-        while block < target && block < 256 {
-            block <<= 1;
-        }
-        let cfg = LaunchConfig {
-            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
-            block_dim: (block, 1, 1),
-            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
-        };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let mixed_qkv = mixed_qkv.as_cuda_slice::<$ty>()?;
-                let mixed_qkv = match mixed_qkv_layout.contiguous_offsets() {
-                    Some((o1, o2)) => mixed_qkv.slice(o1..o2),
-                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
-                };
-                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
-                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
-                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
-                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
-                };
-                let weights = weights.as_cuda_slice::<$ty>()?;
-                let weights = match weights_layout.contiguous_offsets() {
-                    Some((o1, o2)) => weights.slice(o1..o2),
-                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
-                };
-                let a_beta_raw = a_beta_raw.as_cuda_slice::<$ty>()?;
-                let a_beta_raw = match a_beta_raw_layout.contiguous_offsets() {
-                    Some((o1, o2)) => a_beta_raw.slice(o1..o2),
-                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
-                };
-                let dt_bias = dt_bias.as_cuda_slice::<$ty>()?;
-                let dt_bias = match dt_bias_layout.contiguous_offsets() {
-                    Some((o1, o2)) => dt_bias.slice(o1..o2),
-                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
-                };
-                let a_log_exp = a_log_exp.as_cuda_slice::<$ty>()?;
-                let a_log_exp = match a_log_exp_layout.contiguous_offsets() {
-                    Some((o1, o2)) => a_log_exp.slice(o1..o2),
-                    None => candle::bail!("linear-decode-prepare requires contiguous inputs"),
-                };
-                let output = unsafe { device.alloc::<f32>(elem_count) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(
-                    builder,
-                    self.batch_size as i32,
-                    self.num_v_heads as i32,
-                    self.head_k_dim as i32,
-                    self.head_v_dim as i32,
-                    self.state_len as i32,
-                    self.kernel_size as i32,
-                    self.head_repeat as i32
-                );
-                builder.arg(&mixed_qkv);
-                builder.arg(&prev_conv_state);
-                builder.arg(&weights);
-                builder.arg(&a_beta_raw);
-                builder.arg(&dt_bias);
-                builder.arg(&a_log_exp);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, output_shape.clone()))
-            }};
-        }
-
-        match mixed_qkv.dtype() {
-            DType::F16 => launch!(half::f16, "linear_decode_prepare_f16"),
-            DType::F32 => launch!(f32, "linear_decode_prepare_f32"),
-            DType::BF16 => launch!(half::bf16, "linear_decode_prepare_bf16"),
-            other => candle::bail!("linear-decode-prepare unsupported dtype {other:?}"),
-        }
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -3986,7 +4550,14 @@ impl candle::CustomOp6 for LinearDecodePrepare {
         let device = mixed_qkv.device().clone();
         let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
         let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
-        let output = unsafe { device.alloc_uninit(&output_shape, DType::F32)? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0.0f32; elem_count];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr = hip::register_host_mapping_for_device(
+            device.ordinal(),
+            host_ptr,
+            output.len() * std::mem::size_of::<f32>(),
+        )?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_decode_prepare(
                 candle::hip::qwen35_dtype_code(mixed_qkv.dtype())?,
@@ -4008,154 +4579,18 @@ impl candle::CustomOp6 for LinearDecodePrepare {
                 dt_bias.raw_device_ptr_with_offset(dt_bias_layout.start_offset())? as *const c_void,
                 a_log_exp.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
-    }
-}
-
-impl candle::CustomOp6 for CudaLinearDecodePreparePackedCache {
-    fn name(&self) -> &'static str {
-        "cuda-linear-decode-prepare-packed-cache"
-    }
-
-    fn cpu_fwd(
-        &self,
-        _s1: &candle::CpuStorage,
-        _l1: &candle::Layout,
-        _s2: &candle::CpuStorage,
-        _l2: &candle::Layout,
-        _s3: &candle::CpuStorage,
-        _l3: &candle::Layout,
-        _s4: &candle::CpuStorage,
-        _l4: &candle::Layout,
-        _s5: &candle::CpuStorage,
-        _l5: &candle::Layout,
-        _s6: &candle::CpuStorage,
-        _l6: &candle::Layout,
-    ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-linear-decode-prepare-packed-cache has no cpu implementation")
-    }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        mixed_qkv: &candle::CudaStorage,
-        mixed_qkv_layout: &candle::Layout,
-        prev_conv_state: &candle::CudaStorage,
-        prev_conv_state_layout: &candle::Layout,
-        weights: &candle::CudaStorage,
-        weights_layout: &candle::Layout,
-        a_raw: &candle::CudaStorage,
-        a_raw_layout: &candle::Layout,
-        beta_raw: &candle::CudaStorage,
-        beta_raw_layout: &candle::Layout,
-        value_cache_pack: &candle::CudaStorage,
-        value_cache_pack_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(mixed_qkv_layout.is_contiguous()
-            && prev_conv_state_layout.is_contiguous()
-            && weights_layout.is_contiguous()
-            && a_raw_layout.is_contiguous()
-            && beta_raw_layout.is_contiguous()
-            && value_cache_pack_layout.is_contiguous())
-        {
-            candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs")
-        }
-
-        let device = mixed_qkv.device().clone();
-        let packed_width = 2 * self.head_k_dim + self.head_v_dim + 2;
-        let output_shape = candle::Shape::from((self.batch_size * self.num_v_heads, packed_width));
-        let elem_count = output_shape.elem_count();
-
-        let mut block = 64u32;
-        let target = self.head_k_dim.max(self.head_v_dim) as u32;
-        while block < target && block < 256 {
-            block <<= 1;
-        }
-        let cfg = LaunchConfig {
-            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
-            block_dim: (block, 1, 1),
-            shared_mem_bytes: (2 * 256 * std::mem::size_of::<f32>()) as u32,
-        };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let mixed_qkv = mixed_qkv.as_cuda_slice::<$ty>()?;
-                let mixed_qkv = match mixed_qkv_layout.contiguous_offsets() {
-                    Some((o1, o2)) => mixed_qkv.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
-                };
-                let prev_conv_state = prev_conv_state.as_cuda_slice::<$ty>()?;
-                let prev_conv_state = match prev_conv_state_layout.contiguous_offsets() {
-                    Some((o1, o2)) => prev_conv_state.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
-                };
-                let weights = weights.as_cuda_slice::<$ty>()?;
-                let weights = match weights_layout.contiguous_offsets() {
-                    Some((o1, o2)) => weights.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
-                };
-                let a_raw = a_raw.as_cuda_slice::<$ty>()?;
-                let a_raw = match a_raw_layout.contiguous_offsets() {
-                    Some((o1, o2)) => a_raw.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
-                };
-                let beta_raw = beta_raw.as_cuda_slice::<$ty>()?;
-                let beta_raw = match beta_raw_layout.contiguous_offsets() {
-                    Some((o1, o2)) => beta_raw.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
-                };
-                let value_cache_pack = value_cache_pack.as_cuda_slice::<$ty>()?;
-                let value_cache_pack = match value_cache_pack_layout.contiguous_offsets() {
-                    Some((o1, o2)) => value_cache_pack.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-prepare-packed-cache requires contiguous inputs"),
-                };
-                let output = unsafe { device.alloc::<f32>(elem_count) }?;
-                let func = device.get_or_load_func(
-                    $kernel,
-                    &candle::cuda_backend::kernels::QWEN35_DELTA,
-                )?;
-                let mut builder = func.builder();
-                candle::builder_arg!(
-                    builder,
-                    self.batch_size as i32,
-                    self.num_v_heads as i32,
-                    self.head_k_dim as i32,
-                    self.head_v_dim as i32,
-                    self.state_len as i32,
-                    self.kernel_size as i32,
-                    self.head_repeat as i32
-                );
-                builder.arg(&mixed_qkv);
-                builder.arg(&prev_conv_state);
-                builder.arg(&weights);
-                builder.arg(&a_raw);
-                builder.arg(&beta_raw);
-                builder.arg(&value_cache_pack);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, output_shape.clone()))
-            }};
-        }
-
-        match mixed_qkv.dtype() {
-            DType::F16 => launch!(half::f16, "linear_decode_prepare_packed_cache_f16"),
-            DType::F32 => launch!(f32, "linear_decode_prepare_packed_cache_f32"),
-            DType::BF16 => launch!(half::bf16, "linear_decode_prepare_packed_cache_bf16"),
-            other => candle::bail!(
-                "cuda-linear-decode-prepare-packed-cache unsupported dtype {other:?}"
-            ),
-        }
+        let storage = candle::HipStorage::wrap_cpu_storage(
+            f32::to_cpu_storage_owned(output),
+            device,
+        );
+        Ok((storage, output_shape))
     }
 }
 
@@ -4165,163 +4600,6 @@ struct LinearDecodeApply {
     num_v_heads: usize,
     head_k_dim: usize,
     head_v_dim: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CudaLinearDecodeApplyGated {
-    batch_size: usize,
-    num_v_heads: usize,
-    head_k_dim: usize,
-    head_v_dim: usize,
-    eps: f32,
-}
-
-impl candle::CustomOp4 for CudaLinearDecodeApplyGated {
-    fn name(&self) -> &'static str {
-        "cuda-linear-decode-apply-gated"
-    }
-
-    fn cpu_fwd(
-        &self,
-        _s1: &candle::CpuStorage,
-        _l1: &candle::Layout,
-        _s2: &candle::CpuStorage,
-        _l2: &candle::Layout,
-        _s3: &candle::CpuStorage,
-        _l3: &candle::Layout,
-        _s4: &candle::CpuStorage,
-        _l4: &candle::Layout,
-    ) -> Result<(candle::CpuStorage, candle::Shape)> {
-        candle::bail!("cuda-linear-decode-apply-gated has no cpu implementation")
-    }
-
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        packed: &candle::CudaStorage,
-        packed_layout: &candle::Layout,
-        initial_state: &candle::CudaStorage,
-        initial_state_layout: &candle::Layout,
-        gate: &candle::CudaStorage,
-        gate_layout: &candle::Layout,
-        weight: &candle::CudaStorage,
-        weight_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(packed_layout.is_contiguous()
-            && initial_state_layout.is_contiguous()
-            && gate_layout.is_contiguous()
-            && weight_layout.is_contiguous())
-        {
-            candle::bail!("cuda-linear-decode-apply-gated requires contiguous inputs")
-        }
-        if packed.dtype() != DType::F32 || initial_state.dtype() != DType::F32 {
-            candle::bail!("cuda-linear-decode-apply-gated requires F32 packed/state inputs")
-        }
-        if gate.dtype() != weight.dtype() {
-            candle::bail!(
-                "cuda-linear-decode-apply-gated requires matching gate/weight dtypes, got gate={:?} weight={:?}",
-                gate.dtype(),
-                weight.dtype()
-            )
-        }
-
-        let gate_dims = gate_layout.shape().dims();
-        let n_cols = *gate_dims
-            .last()
-            .ok_or_else(|| candle::Error::Msg("cuda-linear-decode-apply-gated requires non-empty gate shape".into()))?;
-        let n_rows = gate_layout.shape().elem_count() / n_cols;
-        if n_rows != self.batch_size * self.num_v_heads || n_cols != self.head_v_dim {
-            candle::bail!(
-                "cuda-linear-decode-apply-gated expected gate rows={} cols={}, got {:?}",
-                self.batch_size * self.num_v_heads,
-                self.head_v_dim,
-                gate_dims
-            )
-        }
-        if weight_layout.shape().elem_count() != self.head_v_dim {
-            candle::bail!(
-                "cuda-linear-decode-apply-gated expected weight len {}, got {:?}",
-                self.head_v_dim,
-                weight_layout.shape().dims()
-            )
-        }
-
-        let device = packed.device().clone();
-        let value_dim = self.num_v_heads * self.head_v_dim;
-        let output_shape = candle::Shape::from((
-            self.batch_size,
-            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
-        ));
-        let elem_count = output_shape.elem_count();
-
-        let mut block = 64u32;
-        let target = self.head_v_dim as u32;
-        while block < target && block < 256 {
-            block <<= 1;
-        }
-        let cfg = LaunchConfig {
-            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
-            block_dim: (block, 1, 1),
-            shared_mem_bytes: 0,
-        };
-
-        let packed = packed.as_cuda_slice::<f32>()?;
-        let packed = match packed_layout.contiguous_offsets() {
-            Some((o1, o2)) => packed.slice(o1..o2),
-            None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous packed"),
-        };
-        let initial_state = initial_state.as_cuda_slice::<f32>()?;
-        let initial_state = match initial_state_layout.contiguous_offsets() {
-            Some((o1, o2)) => initial_state.slice(o1..o2),
-            None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous state"),
-        };
-
-        macro_rules! launch {
-            ($ty:ty, $kernel:expr) => {{
-                let gate = gate.as_cuda_slice::<$ty>()?;
-                let gate = match gate_layout.contiguous_offsets() {
-                    Some((o1, o2)) => gate.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous gate"),
-                };
-                let weight = weight.as_cuda_slice::<$ty>()?;
-                let weight = match weight_layout.contiguous_offsets() {
-                    Some((o1, o2)) => weight.slice(o1..o2),
-                    None => candle::bail!("cuda-linear-decode-apply-gated requires contiguous weight"),
-                };
-                let output = unsafe { device.alloc::<f32>(elem_count) }?;
-                let func = device
-                    .get_or_load_func($kernel, &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-                let mut builder = func.builder();
-                candle::builder_arg!(
-                    builder,
-                    self.batch_size as i32,
-                    self.num_v_heads as i32,
-                    self.head_k_dim as i32,
-                    self.head_v_dim as i32,
-                    self.eps
-                );
-                builder.arg(&packed);
-                builder.arg(&initial_state);
-                builder.arg(&gate);
-                builder.arg(&weight);
-                builder.arg(&output);
-                unsafe { builder.launch(cfg) }.w()?;
-                let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-                Ok((storage, output_shape.clone()))
-            }};
-        }
-
-        match gate.dtype() {
-            DType::F16 => launch!(half::f16, "linear_decode_apply_gated_f16"),
-            DType::F32 => launch!(f32, "linear_decode_apply_gated_f32"),
-            DType::BF16 => launch!(half::bf16, "linear_decode_apply_gated_bf16"),
-            other => candle::bail!("cuda-linear-decode-apply-gated unsupported dtype {other:?}"),
-        }
-    }
 }
 
 impl candle::CustomOp2 for LinearDecodeApply {
@@ -4339,73 +4617,6 @@ impl candle::CustomOp2 for LinearDecodeApply {
         candle::bail!("linear-decode-apply has no cpu implementation")
     }
 
-    #[cfg(any(feature = "candle-cuda", feature = "qwen35-minimal-cuda"))]
-    fn cuda_fwd(
-        &self,
-        packed: &candle::CudaStorage,
-        packed_layout: &candle::Layout,
-        initial_state: &candle::CudaStorage,
-        initial_state_layout: &candle::Layout,
-    ) -> Result<(candle::CudaStorage, candle::Shape)> {
-        use candle::backend::BackendStorage;
-        use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-        use candle::cuda_backend::WrapErr;
-
-        if !(packed_layout.is_contiguous() && initial_state_layout.is_contiguous()) {
-            candle::bail!("linear-decode-apply requires contiguous inputs")
-        }
-        if packed.dtype() != DType::F32 || initial_state.dtype() != DType::F32 {
-            candle::bail!("linear-decode-apply requires F32 packed/state inputs")
-        }
-
-        let device = packed.device().clone();
-        let value_dim = self.num_v_heads * self.head_v_dim;
-        let output_shape = candle::Shape::from((
-            self.batch_size,
-            value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
-        ));
-        let elem_count = output_shape.elem_count();
-
-        let mut block = 64u32;
-        let target = self.head_v_dim as u32;
-        while block < target && block < 256 {
-            block <<= 1;
-        }
-        let cfg = LaunchConfig {
-            grid_dim: ((self.batch_size * self.num_v_heads) as u32, 1, 1),
-            block_dim: (block, 1, 1),
-            shared_mem_bytes: 0,
-        };
-
-        let packed = packed.as_cuda_slice::<f32>()?;
-        let packed = match packed_layout.contiguous_offsets() {
-            Some((o1, o2)) => packed.slice(o1..o2),
-            None => candle::bail!("linear-decode-apply requires contiguous inputs"),
-        };
-        let initial_state = initial_state.as_cuda_slice::<f32>()?;
-        let initial_state = match initial_state_layout.contiguous_offsets() {
-            Some((o1, o2)) => initial_state.slice(o1..o2),
-            None => candle::bail!("linear-decode-apply requires contiguous inputs"),
-        };
-        let output = unsafe { device.alloc::<f32>(elem_count) }?;
-        let func = device
-            .get_or_load_func("linear_decode_apply_f32", &candle::cuda_backend::kernels::QWEN35_DELTA)?;
-        let mut builder = func.builder();
-        candle::builder_arg!(
-            builder,
-            self.batch_size as i32,
-            self.num_v_heads as i32,
-            self.head_k_dim as i32,
-            self.head_v_dim as i32
-        );
-        builder.arg(&packed);
-        builder.arg(&initial_state);
-        builder.arg(&output);
-        unsafe { builder.launch(cfg) }.w()?;
-        let storage = candle::CudaStorage::wrap_cuda_slice(output, device.clone());
-        Ok((storage, output_shape))
-    }
-
     #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_fwd(
         &self,
@@ -4414,7 +4625,7 @@ impl candle::CustomOp2 for LinearDecodeApply {
         initial_state: &candle::HipStorage,
         initial_state_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(packed_layout.is_contiguous() && initial_state_layout.is_contiguous()) {
@@ -4429,7 +4640,14 @@ impl candle::CustomOp2 for LinearDecodeApply {
             self.batch_size,
             value_dim + self.num_v_heads * self.head_k_dim * self.head_v_dim,
         ));
-        let output = unsafe { device.alloc_uninit(&output_shape, DType::F32)? };
+        let elem_count = output_shape.elem_count();
+        let mut output = vec![0.0f32; elem_count];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr = hip::register_host_mapping_for_device(
+            device.ordinal(),
+            host_ptr,
+            output.len() * std::mem::size_of::<f32>(),
+        )?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_linear_decode_apply(
                 device.ordinal(),
@@ -4440,13 +4658,18 @@ impl candle::CustomOp2 for LinearDecodeApply {
                 packed.raw_device_ptr_with_offset(packed_layout.start_offset())? as *const c_void,
                 initial_state.raw_device_ptr_with_offset(initial_state_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, output_shape))
+        let storage = candle::HipStorage::wrap_cpu_storage(
+            f32::to_cpu_storage_owned(output),
+            device,
+        );
+        Ok((storage, output_shape))
     }
 }
 
@@ -4471,6 +4694,23 @@ fn linear_decode_step_hip(
     let dt_bias = dt_bias.contiguous()?;
     let a_log_exp = a_log_exp.contiguous()?;
     let initial_state = initial_state.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some(output) = linear_decode_step_mapped_host_buffer(
+        &mixed_qkv,
+        &prev_conv_state,
+        &weights,
+        &a_beta_raw,
+        &dt_bias,
+        &a_log_exp,
+        &initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    )? {
+        return Ok(output);
+    }
     let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
     let (_, _, state_len) = prev_conv_state.dims3()?;
     if seq_len != 1 {
@@ -4503,39 +4743,95 @@ fn linear_decode_step_hip(
     )
 }
 
-fn linear_decode_step_cuda(
+#[cfg(feature = "qwen35-minimal-hip")]
+fn linear_decode_step_mapped_host_buffer(
     mixed_qkv: &Tensor,
     prev_conv_state: &Tensor,
     weights: &Tensor,
-    a_raw: &Tensor,
-    beta_raw: &Tensor,
-    value_cache_pack: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
     initial_state: &Tensor,
     num_v_heads: usize,
     head_k_dim: usize,
     head_v_dim: usize,
     kernel_size: usize,
     head_repeat: usize,
-) -> Result<Tensor> {
-    let mixed_qkv = mixed_qkv.contiguous()?;
-    let prev_conv_state = prev_conv_state.contiguous()?;
-    let weights = weights.contiguous()?;
-    let a_raw = a_raw.contiguous()?;
-    let beta_raw = beta_raw.contiguous()?;
-    let value_cache_pack = value_cache_pack.contiguous()?;
-    let initial_state = initial_state.contiguous()?;
-    let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
-    let (_, _, state_len) = prev_conv_state.dims3()?;
-    if seq_len != 1 {
-        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let ordinal = match mixed_qkv.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(prev_conv_state.device().same_device(mixed_qkv.device())
+        && weights.device().same_device(mixed_qkv.device())
+        && a_beta_raw.device().same_device(mixed_qkv.device())
+        && dt_bias.device().same_device(mixed_qkv.device())
+        && a_log_exp.device().same_device(mixed_qkv.device())
+        && initial_state.device().same_device(mixed_qkv.device()))
+    {
+        return Ok(None);
     }
-    let packed = mixed_qkv.apply_op6_no_bwd(
-        &prev_conv_state,
-        &weights,
-        &a_raw,
-        &beta_raw,
-        &value_cache_pack,
-        &CudaLinearDecodePreparePackedCache {
+    let (mixed_qkv_storage, mixed_qkv_layout) = mixed_qkv.storage_and_layout();
+    let (prev_conv_state_storage, prev_conv_state_layout) = prev_conv_state.storage_and_layout();
+    let (weights_storage, weights_layout) = weights.storage_and_layout();
+    let (a_beta_raw_storage, a_beta_raw_layout) = a_beta_raw.storage_and_layout();
+    let (dt_bias_storage, dt_bias_layout) = dt_bias.storage_and_layout();
+    let (a_log_exp_storage, a_log_exp_layout) = a_log_exp.storage_and_layout();
+    let (initial_state_storage, initial_state_layout) = initial_state.storage_and_layout();
+    let (
+        Storage::Hip(mixed_qkv_storage),
+        Storage::Hip(prev_conv_state_storage),
+        Storage::Hip(weights_storage),
+        Storage::Hip(a_beta_raw_storage),
+        Storage::Hip(dt_bias_storage),
+        Storage::Hip(a_log_exp_storage),
+        Storage::Hip(initial_state_storage),
+    ) = (
+        &*mixed_qkv_storage,
+        &*prev_conv_state_storage,
+        &*weights_storage,
+        &*a_beta_raw_storage,
+        &*dt_bias_storage,
+        &*a_log_exp_storage,
+        &*initial_state_storage,
+    ) else {
+        return Ok(None);
+    };
+    if !(mixed_qkv_layout.is_contiguous()
+        && prev_conv_state_layout.is_contiguous()
+        && weights_layout.is_contiguous()
+        && a_beta_raw_layout.is_contiguous()
+        && dt_bias_layout.is_contiguous()
+        && a_log_exp_layout.is_contiguous()
+        && initial_state_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    if initial_state.dtype() != DType::F32 {
+        return Ok(None);
+    }
+    let (batch_size, _conv_dim, seq_len) = mixed_qkv_layout.shape().dims3()?;
+    let (_, _, state_len) = prev_conv_state_layout.shape().dims3()?;
+    if seq_len != 1 {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = candle::hip::qwen35_dtype_code(mixed_qkv.dtype()) else {
+        return Ok(None);
+    };
+    let packed_width = 2 * head_k_dim + head_v_dim + 2;
+    let packed_shape = candle::Shape::from((batch_size * num_v_heads, packed_width));
+    let mut packed = vec![0u8; packed_shape.elem_count().saturating_mul(DType::F32.size_in_bytes())];
+    let packed_host_ptr = packed.as_mut_ptr() as *const c_void;
+    let packed_device_ptr =
+        hip::register_host_mapping_for_device(ordinal, packed_host_ptr, packed.len())?;
+    let prepare_status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_decode_prepare(
+            dtype_code,
+            ordinal,
             batch_size,
             num_v_heads,
             head_k_dim,
@@ -4543,185 +4839,99 @@ fn linear_decode_step_cuda(
             state_len,
             kernel_size,
             head_repeat,
-        },
-    )?;
-    packed.apply_op2_no_bwd(
-        &initial_state,
-        &LinearDecodeApply {
+            mixed_qkv_storage.raw_device_ptr_with_offset(mixed_qkv_layout.start_offset())?
+                as *const c_void,
+            prev_conv_state_storage
+                .raw_device_ptr_with_offset(prev_conv_state_layout.start_offset())?
+                as *const c_void,
+            weights_storage.raw_device_ptr_with_offset(weights_layout.start_offset())?
+                as *const c_void,
+            a_beta_raw_storage.raw_device_ptr_with_offset(a_beta_raw_layout.start_offset())?
+                as *const c_void,
+            dt_bias_storage.raw_device_ptr_with_offset(dt_bias_layout.start_offset())?
+                as *const c_void,
+            a_log_exp_storage.raw_device_ptr_with_offset(a_log_exp_layout.start_offset())?
+                as *const c_void,
+            packed_device_ptr as *mut c_void,
+        )
+    };
+    if prepare_status != 0 {
+        hip::unregister_host_mapping(packed_host_ptr);
+        return Err(hip::hip_error(
+            "linear-decode-prepare-mapped-host-buffer",
+            prepare_status,
+        ));
+    }
+    let output_shape = candle::Shape::from((
+        batch_size,
+        num_v_heads * head_v_dim + num_v_heads * head_k_dim * head_v_dim,
+    ));
+    let mut output =
+        vec![0u8; output_shape.elem_count().saturating_mul(DType::F32.size_in_bytes())];
+    let output_host_ptr = output.as_mut_ptr() as *const c_void;
+    let output_device_ptr =
+        hip::register_host_mapping_for_device(ordinal, output_host_ptr, output.len())?;
+    let apply_status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_linear_decode_apply(
+            ordinal,
             batch_size,
             num_v_heads,
             head_k_dim,
             head_v_dim,
-        },
-    )
+            packed_device_ptr as *const c_void,
+            initial_state_storage.raw_device_ptr_with_offset(initial_state_layout.start_offset())?
+                as *const c_void,
+            output_device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(output_host_ptr);
+    hip::unregister_host_mapping(packed_host_ptr);
+    if apply_status != 0 {
+        return Err(hip::hip_error(
+            "linear-decode-apply-mapped-host-buffer",
+            apply_status,
+        ));
+    }
+    let storage =
+        candle::HipStorage::wrap_cpu_storage(f32::to_cpu_storage_owned(output), mixed_qkv.device().clone());
+    Ok(Some(Tensor::from_storage(
+        storage,
+        output_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
 }
 
-fn linear_decode_step_cuda_gated(
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn linear_decode_step_mapped_host_buffer(
     mixed_qkv: &Tensor,
     prev_conv_state: &Tensor,
     weights: &Tensor,
-    a_raw: &Tensor,
-    beta_raw: &Tensor,
-    value_cache_pack: &Tensor,
+    a_beta_raw: &Tensor,
+    dt_bias: &Tensor,
+    a_log_exp: &Tensor,
     initial_state: &Tensor,
-    gate: &Tensor,
-    norm_weight: &Tensor,
-    eps: f64,
     num_v_heads: usize,
     head_k_dim: usize,
     head_v_dim: usize,
     kernel_size: usize,
     head_repeat: usize,
-) -> Result<Tensor> {
-    let mixed_qkv = mixed_qkv.contiguous()?;
-    let prev_conv_state = prev_conv_state.contiguous()?;
-    let weights = weights.contiguous()?;
-    let a_raw = a_raw.contiguous()?;
-    let beta_raw = beta_raw.contiguous()?;
-    let value_cache_pack = value_cache_pack.contiguous()?;
-    let initial_state = initial_state.contiguous()?;
-    let gate = gate.contiguous()?;
-    let norm_weight = norm_weight.contiguous()?;
-    let norm_weight = if norm_weight.dtype() == gate.dtype() {
-        norm_weight
-    } else {
-        norm_weight.to_dtype(gate.dtype())?
-    };
-    let (batch_size, _conv_dim, seq_len) = mixed_qkv.dims3()?;
-    let (_, _, state_len) = prev_conv_state.dims3()?;
-    if seq_len != 1 {
-        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
-    }
-    let packed = mixed_qkv.apply_op6_no_bwd(
-        &prev_conv_state,
-        &weights,
-        &a_raw,
-        &beta_raw,
-        &value_cache_pack,
-        &CudaLinearDecodePreparePackedCache {
-            batch_size,
-            num_v_heads,
-            head_k_dim,
-            head_v_dim,
-            state_len,
-            kernel_size,
-            head_repeat,
-        },
-    )?;
-    packed.apply_op4_no_bwd(
-        &initial_state,
-        &gate,
-        &norm_weight,
-        &CudaLinearDecodeApplyGated {
-            batch_size,
-            num_v_heads,
-            head_k_dim,
-            head_v_dim,
-            eps: eps as f32,
-        },
-    )
-}
-
-fn linear_decode_step_cuda_from_projected_gated(
-    projected: &Tensor,
-    prev_conv_state: &Tensor,
-    weights: &Tensor,
-    value_cache_pack: &Tensor,
-    initial_state: &Tensor,
-    norm_weight: &Tensor,
-    eps: f64,
-    num_v_heads: usize,
-    head_k_dim: usize,
-    head_v_dim: usize,
-    kernel_size: usize,
-    head_repeat: usize,
-) -> Result<Tensor> {
-    let projected = projected.contiguous()?;
-    let prev_conv_state = prev_conv_state.contiguous()?;
-    let weights = weights.contiguous()?;
-    let value_cache_pack = value_cache_pack.contiguous()?;
-    let initial_state = initial_state.contiguous()?;
-    let norm_weight = norm_weight.contiguous()?;
-    let norm_weight = if norm_weight.dtype() == projected.dtype() {
-        norm_weight
-    } else {
-        norm_weight.to_dtype(projected.dtype())?
-    };
-    let (batch_size, seq_len, _out_dim) = projected.dims3()?;
-    let (_, _, state_len) = prev_conv_state.dims3()?;
-    if seq_len != 1 {
-        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
-    }
-    projected.apply_op6_no_bwd(
-        &prev_conv_state,
-        &weights,
-        &value_cache_pack,
-        &initial_state,
-        &norm_weight,
-        &CudaLinearDecodeFromProjectedGated {
-            batch_size,
-            num_v_heads,
-            head_k_dim,
-            head_v_dim,
-            state_len,
-            kernel_size,
-            head_repeat,
-            eps: eps as f32,
-        },
-    )
-}
-
-fn linear_decode_step_cuda_from_hidden_gated(
-    hidden: &Tensor,
-    qkv_zba_weight: &Tensor,
-    prev_conv_state: &Tensor,
-    weights: &Tensor,
-    value_cache_pack: &Tensor,
-    initial_state: &Tensor,
-    norm_weight: &Tensor,
-    eps: f64,
-    num_v_heads: usize,
-    head_k_dim: usize,
-    head_v_dim: usize,
-    kernel_size: usize,
-    head_repeat: usize,
-) -> Result<Tensor> {
-    let hidden = hidden.contiguous()?;
-    let qkv_zba_weight = qkv_zba_weight.contiguous()?;
-    let prev_conv_state = prev_conv_state.contiguous()?;
-    let weights = weights.contiguous()?;
-    let value_cache_pack = value_cache_pack.contiguous()?;
-    let initial_state = initial_state.contiguous()?;
-    let norm_weight = norm_weight.contiguous()?;
-    let norm_weight = if norm_weight.dtype() == hidden.dtype() {
-        norm_weight
-    } else {
-        norm_weight.to_dtype(hidden.dtype())?
-    };
-    let (batch_size, seq_len, hidden_size) = hidden.dims3()?;
-    let (_, _, state_len) = prev_conv_state.dims3()?;
-    if seq_len != 1 {
-        candle::bail!("linear-decode-step expects seq_len=1, got {seq_len}")
-    }
-    hidden.apply_op7_no_bwd(
-        &qkv_zba_weight,
-        &prev_conv_state,
-        &weights,
-        &value_cache_pack,
-        &initial_state,
-        &norm_weight,
-        &CudaLinearDecodeFromHiddenGated {
-            batch_size,
-            hidden_size,
-            num_v_heads,
-            head_k_dim,
-            head_v_dim,
-            state_len,
-            kernel_size,
-            head_repeat,
-            eps: eps as f32,
-        },
-    )
+) -> Result<Option<Tensor>> {
+    let _ = (
+        mixed_qkv,
+        prev_conv_state,
+        weights,
+        a_beta_raw,
+        dt_bias,
+        a_log_exp,
+        initial_state,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        kernel_size,
+        head_repeat,
+    );
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4805,15 +5015,7 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
             candle::Shape::from((self.batch_size, self.q_heads, self.q_len, self.head_dim));
         let elem_count = out_shape.elem_count();
         let total_rows = self.batch_size * self.q_heads * self.q_len;
-        let cfg = if self.q_len == 1 {
-            LaunchConfig {
-                grid_dim: (total_rows as u32, 1, 1),
-                block_dim: (256, 1, 1),
-                shared_mem_bytes: 0,
-            }
-        } else {
-            LaunchConfig::for_num_elems(total_rows as u32)
-        };
+        let cfg = LaunchConfig::for_num_elems(total_rows as u32);
 
         macro_rules! launch {
             ($ty:ty, $kernel:expr) => {{
@@ -4870,34 +5072,10 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
             }};
         }
 
-        let kernel = if self.q_len == 1 {
-            match query.dtype() {
-                DType::F16 => "full_attention_decode_f16",
-                DType::F32 => "full_attention_decode_f32",
-                DType::BF16 => "full_attention_decode_bf16",
-                other => {
-                    candle::bail!(
-                        "full-attention-prefill-megakernel unsupported dtype {other:?}"
-                    )
-                }
-            }
-        } else {
-            match query.dtype() {
-                DType::F16 => "full_attention_prefill_f16",
-                DType::F32 => "full_attention_prefill_f32",
-                DType::BF16 => "full_attention_prefill_bf16",
-                other => {
-                    candle::bail!(
-                        "full-attention-prefill-megakernel unsupported dtype {other:?}"
-                    )
-                }
-            }
-        };
-
         match query.dtype() {
-            DType::F16 => launch!(half::f16, kernel),
-            DType::F32 => launch!(f32, kernel),
-            DType::BF16 => launch!(half::bf16, kernel),
+            DType::F16 => launch!(half::f16, "full_attention_prefill_f16"),
+            DType::F32 => launch!(f32, "full_attention_prefill_f32"),
+            DType::BF16 => launch!(half::bf16, "full_attention_prefill_bf16"),
             other => candle::bail!("full-attention-prefill-megakernel unsupported dtype {other:?}"),
         }
     }
@@ -5009,7 +5187,7 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -5048,10 +5226,17 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         let storage_dtype = query.dtype();
         let out_shape =
             candle::Shape::from((self.batch_size, self.q_heads, self.q_len, self.head_dim));
-        let output = unsafe { device.alloc_uninit(&out_shape, DType::F32)? };
+        let elem_count = out_shape.elem_count();
         let query_ptr = query.raw_device_ptr_with_offset(query_layout.start_offset())?;
         let key_ptr = key.raw_device_ptr_with_offset(key_layout.start_offset())?;
         let value_ptr = value.raw_device_ptr_with_offset(value_layout.start_offset())?;
+        let mut output = vec![0.0f32; elem_count];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr = hip::register_host_mapping_for_device(
+            device.ordinal(),
+            host_ptr,
+            output.len() * std::mem::size_of::<f32>(),
+        )?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_full_attention_prefill(
                 hip::dtype_code(storage_dtype)?,
@@ -5068,13 +5253,18 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
                 query_ptr as *const c_void,
                 key_ptr as *const c_void,
                 value_ptr as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        let storage = candle::HipStorage::wrap_cpu_storage(
+            f32::to_cpu_storage_owned(output),
+            device,
+        );
+        Ok((storage, out_shape))
     }
 }
 
@@ -5086,6 +5276,16 @@ fn full_attention_prefill_megakernel(
     scale: f32,
     seqlen_offset: usize,
 ) -> Result<Tensor> {
+    if let Some(output) = full_attention_prefill_mapped_host_buffer(
+        query,
+        key,
+        value,
+        num_kv_groups,
+        scale,
+        seqlen_offset,
+    )? {
+        return Ok(output);
+    }
     let (batch_size, q_heads, q_len, head_dim) = query.dims4()?;
     let (_, kv_heads, kv_len, value_head_dim) = value.dims4()?;
     if value_head_dim != head_dim {
@@ -5110,6 +5310,117 @@ fn full_attention_prefill_megakernel(
             seqlen_offset,
         },
     )
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn full_attention_prefill_mapped_host_buffer(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<Tensor>> {
+    use candle::backend::BackendStorage;
+    use candle::Storage;
+    use std::ffi::c_void;
+
+    let query = query.contiguous()?;
+    let key = key.contiguous()?;
+    let value = value.contiguous()?;
+    let ordinal = match query.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    if !(key.device().same_device(query.device()) && value.device().same_device(query.device())) {
+        return Ok(None);
+    }
+    let (query_storage, query_layout) = query.storage_and_layout();
+    let (key_storage, key_layout) = key.storage_and_layout();
+    let (value_storage, value_layout) = value.storage_and_layout();
+    let (Storage::Hip(query_storage), Storage::Hip(key_storage), Storage::Hip(value_storage)) =
+        (&*query_storage, &*key_storage, &*value_storage)
+    else {
+        return Ok(None);
+    };
+    if !(query_layout.is_contiguous() && key_layout.is_contiguous() && value_layout.is_contiguous())
+    {
+        return Ok(None);
+    }
+    let (batch_size, q_heads, q_len, head_dim) = query_layout.shape().dims4()?;
+    let (key_batch, kv_heads, kv_len, key_head_dim) = key_layout.shape().dims4()?;
+    let (value_batch, value_kv_heads, value_kv_len, value_head_dim) =
+        value_layout.shape().dims4()?;
+    if key_batch != batch_size
+        || value_batch != batch_size
+        || value_kv_heads != kv_heads
+        || value_kv_len != kv_len
+        || key_head_dim != head_dim
+        || value_head_dim != head_dim
+    {
+        return Ok(None);
+    }
+    let Ok(dtype_code) = hip::dtype_code(query.dtype()) else {
+        return Ok(None);
+    };
+    let out_shape = candle::Shape::from((batch_size, q_heads, q_len, head_dim));
+    let elem_count = out_shape.elem_count();
+    let mut output = vec![0.0f32; elem_count];
+    let host_ptr = output.as_mut_ptr() as *const c_void;
+    let device_ptr = hip::register_host_mapping_for_device(
+        ordinal,
+        host_ptr,
+        output.len() * std::mem::size_of::<f32>(),
+    )?;
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_full_attention_prefill(
+            dtype_code,
+            ordinal,
+            batch_size,
+            q_heads,
+            kv_heads,
+            q_len,
+            kv_len,
+            head_dim,
+            num_kv_groups,
+            scale,
+            seqlen_offset,
+            query_storage.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
+            key_storage.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+            value_storage.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
+            device_ptr as *mut c_void,
+        )
+    };
+    hip::unregister_host_mapping(host_ptr);
+    if status != 0 {
+        return Err(hip::hip_error(
+            "full-attention-prefill-mapped-host-buffer",
+            status,
+        ));
+    }
+    let storage = candle::HipStorage::wrap_cpu_storage(
+        Storage::Cpu(DType::F32.to_cpu_storage_owned(output)),
+        query.device().clone(),
+    );
+    Ok(Some(Tensor::from_storage(
+        storage,
+        out_shape,
+        candle::op::BackpropOp::none(),
+        false,
+    )))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn full_attention_prefill_mapped_host_buffer(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_kv_groups: usize,
+    scale: f32,
+    seqlen_offset: usize,
+) -> Result<Option<Tensor>> {
+    let _ = (query, key, value, num_kv_groups, scale, seqlen_offset);
+    Ok(None)
 }
 
 fn full_attention_decode_megakernel(
@@ -5523,7 +5834,7 @@ impl candle::CustomOp3 for DeltaStateScan {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -5557,7 +5868,11 @@ impl candle::CustomOp3 for DeltaStateScan {
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, num_chunks + 1, k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_state_scan(
                 dtype_code,
@@ -5572,13 +5887,20 @@ impl candle::CustomOp3 for DeltaStateScan {
                 packed_scan.raw_device_ptr_with_offset(packed_layout.start_offset())?
                     as *const c_void,
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -5787,7 +6109,7 @@ impl candle::CustomOp3 for DeltaChunkFused {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(prev_layout.is_contiguous()
@@ -5819,7 +6141,11 @@ impl candle::CustomOp3 for DeltaChunkFused {
         let dtype_code = candle::hip::qwen35_dtype_code(storage_dtype)?;
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, 2 * chunk_size + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_chunk_fused(
                 dtype_code,
@@ -5832,13 +6158,20 @@ impl candle::CustomOp3 for DeltaChunkFused {
                 packed_chunk.raw_device_ptr_with_offset(packed_layout.start_offset())?
                     as *const c_void,
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -6131,7 +6464,7 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -6177,7 +6510,11 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
         let device = initial_state.device().clone();
         let storage_dtype = initial_state.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, seq_len + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_recurrent_prefill(
                 hip::dtype_code(storage_dtype)?,
@@ -6193,13 +6530,20 @@ impl candle::CustomOp6 for DeltaRecurrentPrefill {
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
                 beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
                 g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -6256,7 +6600,7 @@ impl candle::CustomOp6 for DeltaChunkSinglePrefill {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -6303,7 +6647,11 @@ impl candle::CustomOp6 for DeltaChunkSinglePrefill {
         let storage_dtype = initial_state.dtype();
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, chunk_size + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_chunk_single_prefill(
                 hip::dtype_code(storage_dtype)?,
@@ -6317,13 +6665,20 @@ impl candle::CustomOp6 for DeltaChunkSinglePrefill {
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
                 beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
                 g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -6708,7 +7063,7 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(prev_layout.is_contiguous()
@@ -6755,7 +7110,11 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
         let storage_dtype = prev_state.dtype();
         let out_shape =
             candle::Shape::from_dims(&[batch_heads, chunk_size + k_head_dim, v_head_dim]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_chunk_step(
                 hip::dtype_code(storage_dtype)?,
@@ -6771,13 +7130,20 @@ impl candle::CustomOp6 for DeltaChunkStepRaw {
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
                 beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
                 g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -7932,7 +8298,7 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -7986,7 +8352,11 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
             num_chunks * chunk_size + k_head_dim,
             v_head_dim,
         ]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_chunk_scan_raw(
                 hip::dtype_code(storage_dtype)?,
@@ -8003,13 +8373,20 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
                 beta.raw_device_ptr_with_offset(beta_layout.start_offset())? as *const c_void,
                 g.raw_device_ptr_with_offset(g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -8379,7 +8756,7 @@ impl candle::CustomOp7 for DeltaFullScan {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -8446,7 +8823,11 @@ impl candle::CustomOp7 for DeltaFullScan {
             num_chunks * chunk_size + k_head_dim,
             v_head_dim,
         ]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_full_scan(
                 dtype_code,
@@ -8469,13 +8850,20 @@ impl candle::CustomOp7 for DeltaFullScan {
                 state_decay_scan.raw_device_ptr_with_offset(state_decay_layout.start_offset())?
                     as *const c_void,
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -8529,7 +8917,7 @@ impl candle::CustomOp3 for DeltaLocalAttnScan {
         exp_g_scan: &candle::HipStorage,
         exp_g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -8569,7 +8957,11 @@ impl candle::CustomOp3 for DeltaLocalAttnScan {
         let device = query_scan.device().clone();
         let storage_dtype = query_scan.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_local_attn_scan(
                 hip::dtype_code(storage_dtype)?,
@@ -8581,13 +8973,20 @@ impl candle::CustomOp3 for DeltaLocalAttnScan {
                 query_scan.raw_device_ptr_with_offset(query_layout.start_offset())? as *const c_void,
                 key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
                 exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -8625,7 +9024,7 @@ impl candle::CustomOp3 for DeltaBaseAttnScan {
         exp_g_scan: &candle::HipStorage,
         exp_g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(k_beta_layout.is_contiguous()
@@ -8665,7 +9064,11 @@ impl candle::CustomOp3 for DeltaBaseAttnScan {
         let device = k_beta_scan.device().clone();
         let storage_dtype = k_beta_scan.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_base_attn_scan(
                 hip::dtype_code(storage_dtype)?,
@@ -8677,13 +9080,20 @@ impl candle::CustomOp3 for DeltaBaseAttnScan {
                 k_beta_scan.raw_device_ptr_with_offset(k_beta_layout.start_offset())? as *const c_void,
                 key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
                 exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -8713,7 +9123,7 @@ impl candle::CustomOp1 for DeltaAttnSolveScan {
         base_attn_scan: &candle::HipStorage,
         base_attn_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !base_attn_layout.is_contiguous() {
@@ -8731,7 +9141,11 @@ impl candle::CustomOp1 for DeltaAttnSolveScan {
         let device = base_attn_scan.device().clone();
         let storage_dtype = base_attn_scan.dtype();
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_attn_solve_scan(
                 hip::dtype_code(storage_dtype)?,
@@ -8741,18 +9155,133 @@ impl candle::CustomOp1 for DeltaAttnSolveScan {
                 chunk_size,
                 base_attn_scan.raw_device_ptr_with_offset(base_attn_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
 fn delta_attn_solve_scan(base_attn_scan: &Tensor) -> Result<Tensor> {
     base_attn_scan.apply_op1_no_bwd(&DeltaAttnSolveScan)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeltaAttnSolveFromInputs;
+
+impl candle::CustomOp3 for DeltaAttnSolveFromInputs {
+    fn name(&self) -> &'static str {
+        "delta-attn-solve-from-inputs"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _s1: &candle::CpuStorage,
+        _l1: &candle::Layout,
+        _s2: &candle::CpuStorage,
+        _l2: &candle::Layout,
+        _s3: &candle::CpuStorage,
+        _l3: &candle::Layout,
+    ) -> Result<(candle::CpuStorage, candle::Shape)> {
+        candle::bail!("delta-attn-solve-from-inputs has no cpu implementation")
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn hip_fwd(
+        &self,
+        k_beta_scan: &candle::HipStorage,
+        k_beta_layout: &candle::Layout,
+        key_scan: &candle::HipStorage,
+        key_layout: &candle::Layout,
+        exp_g_scan: &candle::HipStorage,
+        exp_g_layout: &candle::Layout,
+    ) -> Result<(candle::HipStorage, candle::Shape)> {
+        use candle::Storage;
+        use std::ffi::c_void;
+
+        if !k_beta_layout.is_contiguous() || !key_layout.is_contiguous() || !exp_g_layout.is_contiguous() {
+            candle::bail!("delta-attn-solve-from-inputs requires contiguous inputs")
+        }
+
+        let (batch_heads, num_chunks, chunk_size, k_head_dim) = k_beta_layout.shape().dims4()?;
+        let (key_batch_heads, key_chunks, key_chunk_size, key_k) = key_layout.shape().dims4()?;
+        let (exp_batch_heads, exp_chunks, exp_chunk_size) = exp_g_layout.shape().dims3()?;
+        if key_batch_heads != batch_heads
+            || exp_batch_heads != batch_heads
+            || key_chunks != num_chunks
+            || exp_chunks != num_chunks
+            || key_chunk_size != chunk_size
+            || exp_chunk_size != chunk_size
+            || key_k != k_head_dim
+        {
+            candle::bail!(
+                "delta-attn-solve-from-inputs shape mismatch: k_beta={:?} key={:?} exp_g={:?}",
+                k_beta_layout.shape().dims(),
+                key_layout.shape().dims(),
+                exp_g_layout.shape().dims()
+            )
+        }
+        if k_beta_scan.dtype() != key_scan.dtype() || k_beta_scan.dtype() != exp_g_scan.dtype() {
+            candle::bail!(
+                "delta-attn-solve-from-inputs requires matching dtypes, got k_beta={:?} key={:?} exp_g={:?}",
+                k_beta_scan.dtype(),
+                key_scan.dtype(),
+                exp_g_scan.dtype()
+            )
+        }
+
+        let device = k_beta_scan.device().clone();
+        let storage_dtype = k_beta_scan.dtype();
+        let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, chunk_size]);
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
+        let status = unsafe {
+            hip::ffi::dotcache_qwen35_hip_delta_attn_solve_from_inputs(
+                hip::dtype_code(storage_dtype)?,
+                device.ordinal(),
+                batch_heads,
+                num_chunks,
+                chunk_size,
+                k_head_dim,
+                k_beta_scan.raw_device_ptr_with_offset(k_beta_layout.start_offset())? as *const c_void,
+                key_scan.raw_device_ptr_with_offset(key_layout.start_offset())? as *const c_void,
+                exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
+                device_ptr as *mut c_void,
+            )
+        };
+        hip::unregister_host_mapping(host_ptr);
+        if status != 0 {
+            return Err(hip::hip_error(self.name(), status));
+        }
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
+    }
+}
+
+fn delta_attn_solve_from_inputs(
+    k_beta_scan: &Tensor,
+    key_scan: &Tensor,
+    exp_g_scan: &Tensor,
+) -> Result<Tensor> {
+    k_beta_scan.apply_op3_no_bwd(key_scan, exp_g_scan, &DeltaAttnSolveFromInputs)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -8789,7 +9318,7 @@ impl candle::CustomOp4 for DeltaFullScanPack {
         k_cumdecay_scan: &candle::HipStorage,
         k_cumdecay_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -8841,7 +9370,11 @@ impl candle::CustomOp4 for DeltaFullScanPack {
         let storage_dtype = query_scan.dtype();
         let packed_width = 3 * k_head_dim + 1;
         let out_shape = candle::Shape::from_dims(&[batch_heads, num_chunks, chunk_size, packed_width]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_full_scan_pack(
                 hip::dtype_code(storage_dtype)?,
@@ -8855,13 +9388,20 @@ impl candle::CustomOp4 for DeltaFullScanPack {
                 exp_g_scan.raw_device_ptr_with_offset(exp_g_layout.start_offset())? as *const c_void,
                 k_cumdecay_scan.raw_device_ptr_with_offset(k_cumdecay_layout.start_offset())?
                     as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -8908,7 +9448,7 @@ impl candle::CustomOp4 for DeltaFullScanPacked {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::Storage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -8963,7 +9503,11 @@ impl candle::CustomOp4 for DeltaFullScanPacked {
             num_chunks * chunk_size + k_head_dim,
             v_head_dim,
         ]);
-        let output = unsafe { device.alloc_uninit(&out_shape, storage_dtype)? };
+        let elem_count = out_shape.elem_count();
+        let mut output = vec![0u8; elem_count.saturating_mul(storage_dtype.size_in_bytes())];
+        let host_ptr = output.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            hip::register_host_mapping_for_device(device.ordinal(), host_ptr, output.len())?;
         let status = unsafe {
             hip::ffi::dotcache_qwen35_hip_delta_full_scan_packed(
                 hip::dtype_code(storage_dtype)?,
@@ -8980,13 +9524,20 @@ impl candle::CustomOp4 for DeltaFullScanPacked {
                 local_attn_scan.raw_device_ptr_with_offset(local_attn_layout.start_offset())?
                     as *const c_void,
                 value.raw_device_ptr_with_offset(value_layout.start_offset())? as *const c_void,
-                output.raw_device_ptr() as *mut c_void,
+                device_ptr as *mut c_void,
             )
         };
+        hip::unregister_host_mapping(host_ptr);
         if status != 0 {
             return Err(hip::hip_error(self.name(), status));
         }
-        Ok((output, out_shape))
+        Ok((
+            candle::HipStorage::wrap_cpu_storage(
+                Storage::Cpu(storage_dtype.to_cpu_storage_owned(output)),
+                &device,
+            )?,
+            out_shape,
+        ))
     }
 }
 
@@ -9129,10 +9680,9 @@ fn delta_net_compute_dtype(scan_mode: DeltaNetScanMode, initial_dtype: DType) ->
 
 #[derive(Debug, Clone)]
 struct FullAttention {
-    q_proj: Option<Linear>,
-    k_proj: Option<Linear>,
-    v_proj: Option<Linear>,
-    qkv_pack_proj: Option<Linear>,
+    q_proj: Linear,
+    k_proj: Linear,
+    v_proj: Linear,
     o_proj: Linear,
     q_norm: Qwen35RmsNorm,
     k_norm: Qwen35RmsNorm,
@@ -9143,17 +9693,9 @@ struct FullAttention {
     attention_size: usize,
     rotary_emb: Arc<RotaryEmbedding>,
     kv_cache: Option<(Tensor, Tensor)>,
-    kv_cache_store: Option<KvCache>,
 }
 
 impl FullAttention {
-    fn sequence_length(&self) -> usize {
-        self.kv_cache
-            .as_ref()
-            .and_then(|(key, _)| key.dims4().ok().map(|(_, _, seq_len, _)| seq_len))
-            .unwrap_or(0)
-    }
-
     fn cache_state(&self) -> FullAttentionCacheState {
         FullAttentionCacheState {
             kv_cache: self.kv_cache.clone(),
@@ -9162,7 +9704,6 @@ impl FullAttention {
 
     fn restore_cache_state(&mut self, state: &FullAttentionCacheState) {
         self.kv_cache = state.kv_cache.clone();
-        self.kv_cache_store = None;
     }
 
     fn causal_block_mask(
@@ -9428,10 +9969,9 @@ impl FullAttention {
             vb.pp("o_proj"),
         )?;
         Ok(Self {
-            q_proj: Some(q_proj),
-            k_proj: Some(k_proj),
-            v_proj: Some(v_proj),
-            qkv_pack_proj: None,
+            q_proj,
+            k_proj,
+            v_proj,
             o_proj,
             q_norm: Qwen35RmsNorm::new(cfg.head_dim, cfg.rms_norm_eps, vb.pp("q_norm"))?,
             k_norm: Qwen35RmsNorm::new(cfg.head_dim, cfg.rms_norm_eps, vb.pp("k_norm"))?,
@@ -9442,7 +9982,6 @@ impl FullAttention {
             attention_size: cfg.num_attention_heads * cfg.head_dim,
             rotary_emb,
             kv_cache: None,
-            kv_cache_store: None,
         })
     }
 
@@ -9451,27 +9990,10 @@ impl FullAttention {
         rotary_emb: Arc<RotaryEmbedding>,
         source: &PreparedTensorSource,
     ) -> Result<Self> {
-        let qkv_pack_proj = source
-            .contains_tensor("qkv_pack.weight")
-            .then(|| prepared_linear_no_bias(&source.pp("qkv_pack")))
-            .transpose()?;
         Ok(Self {
-            q_proj: if qkv_pack_proj.is_none() {
-                Some(prepared_linear_b(&source.pp("q_proj"), cfg.attention_bias)?)
-            } else {
-                None
-            },
-            k_proj: if qkv_pack_proj.is_none() {
-                Some(prepared_linear_b(&source.pp("k_proj"), cfg.attention_bias)?)
-            } else {
-                None
-            },
-            v_proj: if qkv_pack_proj.is_none() {
-                Some(prepared_linear_b(&source.pp("v_proj"), cfg.attention_bias)?)
-            } else {
-                None
-            },
-            qkv_pack_proj,
+            q_proj: prepared_linear_b(&source.pp("q_proj"), cfg.attention_bias)?,
+            k_proj: prepared_linear_b(&source.pp("k_proj"), cfg.attention_bias)?,
+            v_proj: prepared_linear_b(&source.pp("v_proj"), cfg.attention_bias)?,
             o_proj: prepared_linear_b(&source.pp("o_proj"), cfg.attention_bias)?,
             q_norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &source.pp("q_norm"))?,
             k_norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &source.pp("k_norm"))?,
@@ -9482,7 +10004,6 @@ impl FullAttention {
             attention_size: cfg.num_attention_heads * cfg.head_dim,
             rotary_emb,
             kv_cache: None,
-            kv_cache_store: None,
         })
     }
 
@@ -9499,41 +10020,10 @@ impl FullAttention {
         let mut profile = RuntimeProfile::default();
         let (b_sz, q_len, _) = xs.dims3()?;
         let qkv_start = profile_start(device)?;
-        let q_gate_out = self.num_heads * self.head_dim * 2;
-        let kv_out = self.num_kv_heads * self.head_dim;
-        let (q_and_gate, key_states, value_states) = if let Some(qkv_pack_proj) = &self.qkv_pack_proj {
-            let packed = fast_linear_decode(xs, qkv_pack_proj)?;
-            let q_and_gate = packed
-                .narrow(D::Minus1, 0, q_gate_out)?
-                .reshape((b_sz, q_len, self.num_heads, self.head_dim * 2))?;
-            let key_states = packed
-                .narrow(D::Minus1, q_gate_out, kv_out)?
-                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
-            let value_states = packed
-                .narrow(D::Minus1, q_gate_out + kv_out, kv_out)?
-                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
-            (q_and_gate, key_states, value_states)
-        } else {
-            let q_and_gate = self
-                .q_proj
-                .as_ref()
-                .expect("q_proj missing without packed qkv")
+        let q_and_gate =
+            self.q_proj
                 .forward(xs)?
                 .reshape((b_sz, q_len, self.num_heads, self.head_dim * 2))?;
-            let key_states = self
-                .k_proj
-                .as_ref()
-                .expect("k_proj missing without packed qkv")
-                .forward(xs)?
-                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
-            let value_states = self
-                .v_proj
-                .as_ref()
-                .expect("v_proj missing without packed qkv")
-                .forward(xs)?
-                .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?;
-            (q_and_gate, key_states, value_states)
-        };
         let query_states = q_and_gate
             .narrow(D::Minus1, 0, self.head_dim)?
             .apply(&self.q_norm)?
@@ -9542,10 +10032,16 @@ impl FullAttention {
             .narrow(D::Minus1, self.head_dim, self.head_dim)?
             .reshape((b_sz, q_len, self.num_heads * self.head_dim))?;
 
-        let key_states = key_states
+        let key_states = self
+            .k_proj
+            .forward(xs)?
+            .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?
             .apply(&self.k_norm)?
             .transpose(1, 2)?;
-        let value_states = value_states
+        let value_states = self
+            .v_proj
+            .forward(xs)?
+            .reshape((b_sz, q_len, self.num_kv_heads, self.head_dim))?
             .transpose(1, 2)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
@@ -9556,39 +10052,24 @@ impl FullAttention {
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
         let kv_append_start = profile_start(device)?;
-        let (key_states, value_states): (Tensor, Tensor) = if external_full_attention.is_none() {
-            let initial_seq_len = self
-                .kv_cache
-                .as_ref()
-                .and_then(|(prev_k, _)| prev_k.dim(2).ok())
-                .unwrap_or_else(|| key_states.dim(2).unwrap_or(1))
-                .max(1);
-            let store = self
-                .kv_cache_store
-                .get_or_insert_with(|| KvCache::new(2, initial_seq_len));
-            if store.current_seq_len() == 0 {
-                if let Some((prev_k, prev_v)) = &self.kv_cache {
-                    let prev_k = if prev_k.dtype() == key_states.dtype() {
-                        prev_k.clone()
-                    } else {
-                        prev_k.to_dtype(key_states.dtype())?
-                    }
-                    .contiguous()?;
-                    let prev_v = if prev_v.dtype() == value_states.dtype() {
-                        prev_v.clone()
-                    } else {
-                        prev_v.to_dtype(value_states.dtype())?
-                    }
-                    .contiguous()?;
-                    store.append(&prev_k, &prev_v)?;
-                }
+        let (key_states, value_states): (Tensor, Tensor) = match &self.kv_cache {
+            Some((prev_k, prev_v)) if external_full_attention.is_none() => {
+                let prev_k = if prev_k.dtype() == key_states.dtype() {
+                    prev_k.clone()
+                } else {
+                    prev_k.to_dtype(key_states.dtype())?
+                };
+                let prev_v = if prev_v.dtype() == value_states.dtype() {
+                    prev_v.clone()
+                } else {
+                    prev_v.to_dtype(value_states.dtype())?
+                };
+                (
+                    Tensor::cat(&[&prev_k, &key_states], 2)?,
+                    Tensor::cat(&[&prev_v, &value_states], 2)?,
+                )
             }
-            let key_states = key_states.contiguous()?;
-            let value_states = value_states.contiguous()?;
-            store.append(&key_states, &value_states)?
-        } else {
-            self.kv_cache_store = None;
-            (key_states, value_states)
+            _ => (key_states, value_states),
         };
         profile.kv_append_write_millis += profile_elapsed(kv_append_start, device)?;
 
@@ -9634,7 +10115,8 @@ impl FullAttention {
                 self.num_kv_groups,
                 scale as f32,
                 seqlen_offset,
-            )?;
+            )?
+            .to_dtype(DType::F32)?;
             profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
             output
         } else if use_full_attention_prefill_megakernel(
@@ -9773,7 +10255,7 @@ impl FullAttention {
         let gated = attn_output.broadcast_mul(&ops::sigmoid(&gate)?)?;
         profile.full_attention_gate_millis += profile_elapsed(gate_start, device)?;
         let output_start = profile_start(device)?;
-        let output = fast_linear_decode(&gated, &self.o_proj)?;
+        let output = gated.apply(&self.o_proj)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))
@@ -9808,22 +10290,19 @@ impl FullAttention {
 
     fn clear_kv_cache(&mut self) {
         self.kv_cache = None;
-        self.kv_cache_store = None;
     }
 }
 
 #[derive(Debug, Clone)]
 struct GatedDeltaNet {
-    in_proj_qkv: Linear,
-    in_proj_qkv_zba_pack: Option<Linear>,
-    in_proj_z: Option<Linear>,
-    in_proj_b: Option<Linear>,
-    in_proj_a: Option<Linear>,
-    in_proj_zba_pack: Option<Linear>,
-    conv1d: Conv1d,
+    in_proj_qkv: LinearSource,
+    in_proj_z: Linear,
+    in_proj_b: Linear,
+    in_proj_a: Linear,
+    conv1d_raw_weight: Option<Tensor>,
     conv1d_weight_squeezed: Option<Tensor>,
-    dt_bias: Tensor,
-    a_log: Tensor,
+    dt_bias_raw: Option<Tensor>,
+    a_log_raw: Option<Tensor>,
     dt_bias_prepared: Option<Tensor>,
     a_log_exp_prepared: Option<Tensor>,
     norm: Qwen35RmsNormGated,
@@ -9858,7 +10337,6 @@ struct LinearValueCache {
     device_location: DeviceLocation,
     dt_bias: Tensor,
     a_log_exp: Tensor,
-    packed: Tensor,
 }
 
 impl GatedDeltaNet {
@@ -9874,40 +10352,38 @@ impl GatedDeltaNet {
         self.recurrent_state = state.recurrent_state.clone();
     }
 
+    fn deferred_linear_count(&self) -> usize {
+        usize::from(self.in_proj_qkv.is_deferred())
+    }
+
     fn new(cfg: &TextConfig, vb: VarBuilder) -> Result<Self> {
         let key_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim;
         let value_dim = cfg.linear_num_value_heads * cfg.linear_value_head_dim;
         let conv_dim = key_dim * 2 + value_dim;
-        let conv1d = conv1d_no_bias(
-            conv_dim,
-            conv_dim,
-            cfg.linear_conv_kernel_dim,
-            Conv1dConfig {
-                padding: 0,
-                groups: conv_dim,
-                ..Default::default()
-            },
-            vb.pp("conv1d"),
-        )?;
+        let conv1d_raw_weight =
+            vb.pp("conv1d")
+                .get((conv_dim, 1, cfg.linear_conv_kernel_dim), "weight")?;
         Ok(Self {
-            in_proj_qkv: linear_no_bias(cfg.hidden_size, conv_dim, vb.pp("in_proj_qkv"))?,
-            in_proj_qkv_zba_pack: None,
-            in_proj_z: Some(linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?),
-            in_proj_b: Some(linear_no_bias(
+            in_proj_qkv: LinearSource::Materialized(linear_no_bias(
+                cfg.hidden_size,
+                conv_dim,
+                vb.pp("in_proj_qkv"),
+            )?),
+            in_proj_z: linear_no_bias(cfg.hidden_size, value_dim, vb.pp("in_proj_z"))?,
+            in_proj_b: linear_no_bias(
                 cfg.hidden_size,
                 cfg.linear_num_value_heads,
                 vb.pp("in_proj_b"),
-            )?),
-            in_proj_a: Some(linear_no_bias(
+            )?,
+            in_proj_a: linear_no_bias(
                 cfg.hidden_size,
                 cfg.linear_num_value_heads,
                 vb.pp("in_proj_a"),
-            )?),
-            in_proj_zba_pack: None,
-            conv1d,
+            )?,
+            conv1d_raw_weight: Some(conv1d_raw_weight),
             conv1d_weight_squeezed: None,
-            dt_bias: vb.get(cfg.linear_num_value_heads, "dt_bias")?,
-            a_log: vb.get(cfg.linear_num_value_heads, "A_log")?,
+            dt_bias_raw: Some(vb.get(cfg.linear_num_value_heads, "dt_bias")?),
+            a_log_raw: Some(vb.get(cfg.linear_num_value_heads, "A_log")?),
             dt_bias_prepared: None,
             a_log_exp_prepared: None,
             norm: Qwen35RmsNormGated::new(
@@ -9933,57 +10409,46 @@ impl GatedDeltaNet {
     fn from_prepared(cfg: &TextConfig, source: &PreparedTensorSource) -> Result<Self> {
         let key_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim;
         let value_dim = cfg.linear_num_value_heads * cfg.linear_value_head_dim;
-        let conv_dim = key_dim * 2 + value_dim;
-        let conv1d = prepared_conv1d_no_bias(
-            &source.pp("conv1d"),
-            Conv1dConfig {
-                padding: 0,
-                groups: conv_dim,
-                ..Default::default()
-            },
-        )?;
-        let in_proj_zba_pack = source
-            .contains_tensor("zba_pack.weight")
-            .then(|| prepared_linear_no_bias(&source.pp("zba_pack")))
+        let dt_bias_prepared = source
+            .contains_tensor("dt_bias.__dotcache_head_bias_reshaped")
+            .then(|| source.get("dt_bias.__dotcache_head_bias_reshaped"))
             .transpose()?;
-        let in_proj_qkv_zba_pack = source
-            .contains_tensor("qkv_zba_pack.weight")
-            .then(|| prepared_linear_no_bias(&source.pp("qkv_zba_pack")))
+        let a_log_exp_prepared = source
+            .contains_tensor("A_log.__dotcache_head_exp_reshaped")
+            .then(|| source.get("A_log.__dotcache_head_exp_reshaped"))
+            .transpose()?;
+        let conv1d_weight_squeezed = source
+            .contains_tensor("conv1d.weight.__dotcache_depthwise_squeezed")
+            .then(|| source.get("conv1d.weight.__dotcache_depthwise_squeezed"))
             .transpose()?;
         Ok(Self {
-            in_proj_qkv: prepared_linear_no_bias(&source.pp("in_proj_qkv"))?,
-            in_proj_qkv_zba_pack,
-            in_proj_z: if in_proj_zba_pack.is_none() {
-                Some(prepared_linear_no_bias(&source.pp("in_proj_z"))?)
-            } else {
+            in_proj_qkv: build_prepared_linear_source_no_bias(
+                &source.pp("in_proj_qkv"),
+                cfg.hidden_size,
+                key_dim * 2 + value_dim,
+                deferred_in_proj_qkv_enabled(),
+            )?,
+            in_proj_z: prepared_linear_no_bias(&source.pp("in_proj_z"))?,
+            in_proj_b: prepared_linear_no_bias(&source.pp("in_proj_b"))?,
+            in_proj_a: prepared_linear_no_bias(&source.pp("in_proj_a"))?,
+            conv1d_raw_weight: if conv1d_weight_squeezed.is_some() {
                 None
-            },
-            in_proj_b: if in_proj_zba_pack.is_none() {
-                Some(prepared_linear_no_bias(&source.pp("in_proj_b"))?)
             } else {
-                None
+                Some(source.get("conv1d.weight")?)
             },
-            in_proj_a: if in_proj_zba_pack.is_none() {
-                Some(prepared_linear_no_bias(&source.pp("in_proj_a"))?)
+            conv1d_weight_squeezed,
+            dt_bias_raw: if dt_bias_prepared.is_some() {
+                None
             } else {
-                None
+                Some(source.get("dt_bias")?)
             },
-            in_proj_zba_pack,
-            conv1d,
-            conv1d_weight_squeezed: source
-                .contains_tensor("conv1d.weight.__dotcache_depthwise_squeezed")
-                .then(|| source.get("conv1d.weight.__dotcache_depthwise_squeezed"))
-                .transpose()?,
-            dt_bias: source.get("dt_bias")?,
-            a_log: source.get("A_log")?,
-            dt_bias_prepared: source
-                .contains_tensor("dt_bias.__dotcache_head_bias_reshaped")
-                .then(|| source.get("dt_bias.__dotcache_head_bias_reshaped"))
-                .transpose()?,
-            a_log_exp_prepared: source
-                .contains_tensor("A_log.__dotcache_head_exp_reshaped")
-                .then(|| source.get("A_log.__dotcache_head_exp_reshaped"))
-                .transpose()?,
+            a_log_raw: if a_log_exp_prepared.is_some() {
+                None
+            } else {
+                Some(source.get("A_log")?)
+            },
+            dt_bias_prepared,
+            a_log_exp_prepared,
             norm: Qwen35RmsNormGated::from_prepared(cfg.rms_norm_eps, &source.pp("norm"))?,
             out_proj: prepared_linear_no_bias(&source.pp("out_proj"))?,
             num_v_heads: cfg.linear_num_value_heads,
@@ -10010,10 +10475,17 @@ impl GatedDeltaNet {
         if rebuild {
             let dt_bias_base = if let Some(dt_bias) = &self.dt_bias_prepared {
                 dt_bias.clone()
-            } else if self.dt_bias.dtype() == dtype {
-                self.dt_bias.clone()
             } else {
-                self.dt_bias.to_dtype(dtype)?
+                let dt_bias = self.dt_bias_raw.as_ref().ok_or_else(|| {
+                    candle::Error::Msg(
+                        "native qwen35 load missing both prepared and raw dt_bias tensor".into(),
+                    )
+                })?;
+                if dt_bias.dtype() == dtype {
+                    dt_bias.clone()
+                } else {
+                    dt_bias.to_dtype(dtype)?
+                }
             };
             let dt_bias = if dt_bias_base.rank() == 3 {
                 if dt_bias_base.dtype() == dtype {
@@ -10036,17 +10508,21 @@ impl GatedDeltaNet {
                     prepared.to_dtype(dtype)?
                 }
             } else {
-                let a_log = if self.a_log.dtype() == dtype {
-                    self.a_log.clone()
+                let a_log = self.a_log_raw.as_ref().ok_or_else(|| {
+                    candle::Error::Msg(
+                        "native qwen35 load missing both prepared and raw A_log tensor".into(),
+                    )
+                })?;
+                let a_log = if a_log.dtype() == dtype {
+                    a_log.clone()
                 } else {
-                    self.a_log.to_dtype(dtype)?
+                    a_log.to_dtype(dtype)?
                 };
                 a_log.exp()?.reshape((1, 1, self.num_v_heads))?
             };
             self.value_cache = Some(LinearValueCache {
                 dtype,
                 device_location,
-                packed: Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?.contiguous()?,
                 dt_bias,
                 a_log_exp,
             });
@@ -10062,7 +10538,14 @@ impl GatedDeltaNet {
         if let Some(weight) = &self.conv1d_weight_squeezed {
             Ok(weight.clone())
         } else {
-            self.conv1d.weight().squeeze(1)
+            self.conv1d_raw_weight
+                .as_ref()
+                .ok_or_else(|| {
+                    candle::Error::Msg(
+                        "native qwen35 load missing both squeezed and raw conv1d weight".into(),
+                    )
+                })?
+                .squeeze(1)
         }
     }
 
@@ -10173,12 +10656,15 @@ impl GatedDeltaNet {
 
         let prepare_start = profile_start(device)?;
         let batch_heads = batch_size * num_heads;
+        let k_beta_start = profile_start(device)?;
         let k_beta = key.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
         let v_beta = value.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
         let query = query.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
         let key = key.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
         let k_beta = k_beta.reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?;
         let v_beta = v_beta.reshape((batch_heads, num_chunks, chunk_size, v_head_dim))?;
+        profile.linear_chunk_prepare_k_beta_millis += profile_elapsed(k_beta_start, device)?;
+        let g_start = profile_start(device)?;
         let g = {
             let g = g.reshape((batch_heads, num_chunks, chunk_size))?;
             if g.device().is_hip() {
@@ -10187,17 +10673,22 @@ impl GatedDeltaNet {
                 g.cumsum(D::Minus1)?
             }
         };
+        profile.linear_chunk_prepare_g_millis += profile_elapsed(g_start, device)?;
+        let cache_start = profile_start(device)?;
         let cache = self.chunk_cache(query.device(), compute_dtype, chunk_size)?;
         let lower_2d = cache.lower_2d.reshape((1, chunk_size, chunk_size))?;
         let eye_2d = Tensor::eye(chunk_size, compute_dtype, query.device())?
             .reshape((1, chunk_size, chunk_size))?;
         let strict_lower_2d = lower_2d.broadcast_sub(&eye_2d)?;
+        profile.linear_chunk_prepare_cache_millis += profile_elapsed(cache_start, device)?;
+        let base_attn_start = profile_start(device)?;
         let decay_deltas = g
             .unsqueeze(3)?
             .broadcast_sub(&g.unsqueeze(2)?)?
             .broadcast_mul(&lower_2d)?;
         let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower_2d)?;
         let exp_g = g.exp()?;
+        profile.linear_chunk_prepare_base_attn_millis += profile_elapsed(base_attn_start, device)?;
         profile.linear_chunk_prepare_millis += profile_elapsed(prepare_start, device)?;
 
         let solve_start = profile_start(device)?;
@@ -10370,25 +10861,14 @@ impl GatedDeltaNet {
         } else {
             match &self.conv_state {
                 Some(prev_state) => {
-                    let state = if prev_state.dtype() == mixed_qkv.dtype() {
+                    let prev_state = if prev_state.dtype() == mixed_qkv.dtype() {
                         prev_state.clone()
                     } else {
                         prev_state.to_dtype(mixed_qkv.dtype())?
                     };
-                    let prev_state_len = state.dim(2)?;
-                    if prev_state_len == state_len {
-                        let keep = state_len - seq_len;
-                        let prev_tail = state
-                            .narrow(2, prev_state_len - keep, keep)?
-                            .contiguous()?;
-                        state.slice_set(&prev_tail, 2, 0)?;
-                        state.slice_set(mixed_qkv, 2, keep)?;
-                        state
-                    } else {
-                        let keep = state_len - seq_len;
-                        let prev_tail = state.narrow(2, prev_state_len - keep, keep)?;
-                        Tensor::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
-                    }
+                    let keep = state_len - seq_len;
+                    let prev_tail = prev_state.narrow(2, prev_state.dim(2)? - keep, keep)?;
+                    Tensor::cat(&[&prev_tail, mixed_qkv], 2)?.contiguous()?
                 }
                 None => {
                     let zeros = Tensor::zeros(
@@ -10434,7 +10914,7 @@ impl GatedDeltaNet {
     }
 
     fn run_depthwise_conv_update(&mut self, mixed_qkv: &Tensor) -> Result<Tensor> {
-        if mixed_qkv.device().is_hip() || mixed_qkv.device().is_cuda() {
+        if mixed_qkv.device().is_hip() {
             return self
                 .run_depthwise_conv_materialized_pack(mixed_qkv)?
                 .transpose(1, 2);
@@ -10526,7 +11006,7 @@ impl GatedDeltaNet {
             )?,
         };
 
-        if (device.is_hip() || (device.is_cuda() && seq_len == 1)) && k_head_dim <= 256 {
+        if device.is_hip() && k_head_dim <= 256 {
             let batch_heads = batch_size * num_heads;
             let pack_start = profile_start(device)?;
             let initial_state = recurrent_state
@@ -10980,7 +11460,10 @@ impl GatedDeltaNet {
         }
 
         let prepare_start = profile_start(device)?;
+        let k_beta_start = profile_start(device)?;
         let k_beta = key.broadcast_mul(&beta.unsqueeze(D::Minus1)?)?;
+        profile.linear_chunk_prepare_k_beta_millis += profile_elapsed(k_beta_start, device)?;
+        let g_start = profile_start(device)?;
         let g = if g_raw.device().is_hip() {
             hip_cumsum_last_dim(&g_raw)?
         } else {
@@ -10988,7 +11471,9 @@ impl GatedDeltaNet {
         };
         let exp_g = g.exp()?;
         let exp_g_scan = exp_g.reshape((batch_heads, num_chunks, chunk_size))?;
+        profile.linear_chunk_prepare_g_millis += profile_elapsed(g_start, device)?;
 
+        let cache_start = profile_start(device)?;
         let cache = self.chunk_cache(query.device(), compute_dtype, chunk_size)?;
         let lower = cache.lower;
         let eye = cache.eye;
@@ -11007,27 +11492,54 @@ impl GatedDeltaNet {
                 chunk_size,
             );
         let hip_full_scan_fast_path = query.device().is_hip() && use_full_scan_kernel;
+        let hip_base_attn_fast_path = query.device().is_hip() && !hip_full_scan_fast_path;
+        profile.linear_chunk_prepare_cache_millis += profile_elapsed(cache_start, device)?;
 
         let solve_batch = batch_size * num_heads * num_chunks;
+        let base_attn_start = profile_start(device)?;
         let (base_attn, decay_scan) = if hip_full_scan_fast_path {
-            (
-                delta_base_attn_scan(
-                    &k_beta
-                        .reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?
-                        .contiguous()?,
-                    &key_scan.contiguous()?,
-                    &exp_g_scan.contiguous()?,
-                )?
-                .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?,
-                None,
-            )
-        } else {
+            (None, None)
+        } else if hip_base_attn_fast_path {
+            let decay_mask_start = profile_start(device)?;
             let decay_deltas = g
                 .unsqueeze(4)?
                 .broadcast_sub(&g.unsqueeze(3)?)?
                 .broadcast_mul(&lower)?;
             let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower)?;
+            profile.linear_chunk_prepare_base_attn_decay_mask_millis +=
+                profile_elapsed(decay_mask_start, device)?;
+
+            let post_start = profile_start(device)?;
+            let base_attn = delta_base_attn_scan(
+                &k_beta
+                    .reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?
+                    .contiguous()?,
+                &key_scan.contiguous()?,
+                &exp_g_scan.contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?;
+            profile.linear_chunk_prepare_base_attn_post_millis +=
+                profile_elapsed(post_start, device)?;
+            (
+                Some(base_attn),
+                Some(decay_mask.reshape((batch_heads, num_chunks, chunk_size, chunk_size))?),
+            )
+        } else {
+            let decay_mask_start = profile_start(device)?;
+            let decay_deltas = g
+                .unsqueeze(4)?
+                .broadcast_sub(&g.unsqueeze(3)?)?
+                .broadcast_mul(&lower)?;
+            let decay_mask = decay_deltas.exp()?.broadcast_mul(&lower)?;
+            profile.linear_chunk_prepare_base_attn_decay_mask_millis +=
+                profile_elapsed(decay_mask_start, device)?;
+
+            let key_t_start = profile_start(device)?;
             let key_t = key.transpose(4, 3)?.contiguous()?;
+            profile.linear_chunk_prepare_base_attn_key_t_millis +=
+                profile_elapsed(key_t_start, device)?;
+
+            let flatten_start = profile_start(device)?;
             let k_beta_flat = k_beta
                 .reshape((solve_batch, chunk_size, k_head_dim))?
                 .contiguous()?;
@@ -11035,20 +11547,44 @@ impl GatedDeltaNet {
                 .reshape((solve_batch, k_head_dim, chunk_size))?
                 .contiguous()?;
             let decay_mask_flat = decay_mask.reshape((solve_batch, chunk_size, chunk_size))?;
+            profile.linear_chunk_prepare_base_attn_flatten_millis +=
+                profile_elapsed(flatten_start, device)?;
+
+            let matmul_start = profile_start(device)?;
             let raw_attn = k_beta_flat.matmul(&key_t_flat)?;
-            (
-                raw_attn
-                    .broadcast_mul(&decay_mask_flat)?
-                    .neg()?
-                    .broadcast_mul(&strict_lower.reshape((1, chunk_size, chunk_size))?)?
-                    .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?,
+            profile.linear_chunk_prepare_base_attn_matmul_millis +=
+                profile_elapsed(matmul_start, device)?;
+
+            let post_start = profile_start(device)?;
+            let result = (
+                Some(
+                    raw_attn
+                        .broadcast_mul(&decay_mask_flat)?
+                        .neg()?
+                        .broadcast_mul(&strict_lower.reshape((1, chunk_size, chunk_size))?)?
+                        .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?,
+                ),
                 Some(decay_mask.reshape((batch_heads, num_chunks, chunk_size, chunk_size))?),
-            )
+            );
+            profile.linear_chunk_prepare_base_attn_post_millis +=
+                profile_elapsed(post_start, device)?;
+            result
         };
+        profile.linear_chunk_prepare_base_attn_millis += profile_elapsed(base_attn_start, device)?;
         profile.linear_chunk_prepare_millis += profile_elapsed(prepare_start, device)?;
 
         let solve_start = profile_start(device)?;
         let attn = if hip_full_scan_fast_path {
+            delta_attn_solve_from_inputs(
+                &k_beta
+                    .reshape((batch_heads, num_chunks, chunk_size, k_head_dim))?
+                    .contiguous()?,
+                &key_scan.contiguous()?,
+                &exp_g_scan.contiguous()?,
+            )?
+            .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?
+        } else if hip_base_attn_fast_path {
+            let base_attn = base_attn.as_ref().expect("base_attn exists on HIP base-attn path");
             delta_attn_solve_scan(
                 &base_attn
                     .reshape((batch_heads, num_chunks, chunk_size, chunk_size))?
@@ -11057,6 +11593,7 @@ impl GatedDeltaNet {
             .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?
         } else if scan_policy.use_flattened_solve {
             let solve_batch = batch_size * num_heads * num_chunks;
+            let base_attn = base_attn.as_ref().expect("base_attn exists on non-HIP solve path");
             let base_attn_flat = base_attn.reshape((solve_batch, chunk_size, chunk_size))?;
             let mut rows = Vec::with_capacity(chunk_size);
             rows.push(Tensor::zeros(
@@ -11089,6 +11626,7 @@ impl GatedDeltaNet {
                 .reshape((batch_size, num_heads, num_chunks, chunk_size, chunk_size))?
                 .broadcast_add(&eye)?
         } else {
+            let base_attn = base_attn.as_ref().expect("base_attn exists on non-HIP solve path");
             let mut rows = Vec::with_capacity(chunk_size);
             rows.push(Tensor::zeros(
                 (batch_size, num_heads, num_chunks, 1, chunk_size),
@@ -11459,136 +11997,56 @@ impl GatedDeltaNet {
         let device = hidden_states.device();
         let total_start = profile_start(device)?;
         let mut profile = RuntimeProfile::default();
+        let compute_dtype =
+            linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype());
         let layout_start = profile_start(device)?;
         let hidden_states = self.apply_mask_to_padding_states(hidden_states, attention_mask)?;
         let (batch_size, seq_len, _) = hidden_states.dims3()?;
-        let compute_dtype = if hidden_states.device().is_cuda() && seq_len == 1 {
-            match hidden_states.dtype() {
-                DType::F16 | DType::BF16 => hidden_states.dtype(),
-                _ => linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype()),
-            }
-        } else {
-            linear_attention_compute_dtype(hidden_states.device(), hidden_states.dtype())
-        };
         profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
 
-        let direct_cuda_hidden_combined_decode = seq_len == 1
-            && device.is_cuda()
-            && use_combined_linear_decode(device, seq_len)
-            && self.in_proj_qkv_zba_pack.is_some();
         let qkv_start = profile_start(device)?;
-        let packed_qkv_zba = if direct_cuda_hidden_combined_decode {
-            None
-        } else if seq_len == 1
-            && hidden_states.device().is_cuda()
-            && self.in_proj_qkv_zba_pack.is_some()
-        {
-            Some(fast_linear_decode(
-                &hidden_states,
-                self.in_proj_qkv_zba_pack
-                    .as_ref()
-                    .expect("qkv_zba pack checked above"),
-            )?)
-        } else {
-            None
-        };
-        let packed_cuda_combined_decode =
-            (direct_cuda_hidden_combined_decode || packed_qkv_zba.is_some())
-                && use_combined_linear_decode(device, seq_len)
-                && device.is_cuda();
-        let (mixed_qkv, z, beta_raw, a) = if direct_cuda_hidden_combined_decode {
-            (None, None, None, None)
-        } else if let Some(packed) = &packed_qkv_zba {
-            if packed_cuda_combined_decode {
-                (None, None, None, None)
-            } else {
-                let mixed_qkv = packed.narrow(D::Minus1, 0, self.conv_dim())?.transpose(1, 2)?;
-                let z = packed
-                    .narrow(D::Minus1, self.conv_dim(), self.value_dim)?
-                    .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
-                let beta_raw = packed.narrow(
-                    D::Minus1,
-                    self.conv_dim() + self.value_dim,
-                    self.num_v_heads,
-                )?;
-                let a = packed.narrow(
-                    D::Minus1,
-                    self.conv_dim() + self.value_dim + self.num_v_heads,
-                    self.num_v_heads,
-                )?;
-                (Some(mixed_qkv), Some(z), Some(beta_raw), Some(a))
-            }
-        } else {
-            let mixed_qkv = fast_linear_decode(&hidden_states, &self.in_proj_qkv)?.transpose(1, 2)?;
-            let (z, beta_raw, a) = if let Some(in_proj_zba_pack) = &self.in_proj_zba_pack {
-            let packed = fast_linear_decode(&hidden_states, in_proj_zba_pack)?;
-            let z = packed.narrow(D::Minus1, 0, self.value_dim)?.reshape((
-                batch_size,
-                seq_len,
-                self.num_v_heads,
-                self.head_v_dim,
-            ))?;
-            let beta_raw = packed.narrow(D::Minus1, self.value_dim, self.num_v_heads)?;
-            let a = packed.narrow(D::Minus1, self.value_dim + self.num_v_heads, self.num_v_heads)?;
-            (z, beta_raw, a)
-        } else {
-            let z = self
-                .in_proj_z
-                .as_ref()
-                .expect("in_proj_z missing without packed zba")
-                .forward(&hidden_states)?
-                .reshape((batch_size, seq_len, self.num_v_heads, self.head_v_dim))?;
-            let beta_raw = self
-                .in_proj_b
-                .as_ref()
-                .expect("in_proj_b missing without packed zba")
-                .forward(&hidden_states)?;
-            let a = self
-                .in_proj_a
-                .as_ref()
-                .expect("in_proj_a missing without packed zba")
-                .forward(&hidden_states)?;
-            (z, beta_raw, a)
-            };
-            (Some(mixed_qkv), Some(z), Some(beta_raw), Some(a))
-        };
+        let mixed_qkv = self.in_proj_qkv.forward(&hidden_states)?.transpose(1, 2)?;
+        let z = self.in_proj_z.forward(&hidden_states)?.reshape((
+            batch_size,
+            seq_len,
+            self.num_v_heads,
+            self.head_v_dim,
+        ))?;
+        let beta_raw = self.in_proj_b.forward(&hidden_states)?;
+        let a = self.in_proj_a.forward(&hidden_states)?;
         profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
 
-        if use_combined_linear_decode(device, seq_len) {
+        if use_hip_combined_linear_decode(device, seq_len) {
             let kv_append_start = profile_start(device)?;
-            let target_dtype = if direct_cuda_hidden_combined_decode {
-                hidden_states.dtype()
-            } else if let Some(packed_qkv_zba) = &packed_qkv_zba {
-                packed_qkv_zba.dtype()
-            } else {
-                mixed_qkv
-                    .as_ref()
-                    .expect("mixed_qkv required without packed qkv_zba")
-                    .dtype()
-            };
+            let target_dtype = mixed_qkv.dtype();
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
             let state_len = self.conv_kernel_size.saturating_sub(1);
-                let prev_conv_state = match &self.conv_state {
-                    Some(prev_state) => {
-                        if prev_state.dtype() == target_dtype {
-                            prev_state.clone()
+            let prev_conv_state = match &self.conv_state {
+                Some(prev_state) => {
+                    if prev_state.dtype() == target_dtype {
+                        prev_state.clone()
                     } else {
                         prev_state.to_dtype(target_dtype)?
                     }
                 }
                 None => Tensor::zeros(
-                    (batch_size, self.conv_dim(), state_len),
+                    (mixed_qkv.dim(0)?, mixed_qkv.dim(1)?, state_len),
                     target_dtype,
-                    device,
+                    mixed_qkv.device(),
                 )?,
             };
+            let a = if a.dtype() == target_dtype {
+                a.clone()
+            } else {
+                a.to_dtype(target_dtype)?
+            };
+            let beta_raw = if beta_raw.dtype() == target_dtype {
+                beta_raw.clone()
+            } else {
+                beta_raw.to_dtype(target_dtype)?
+            };
+            let a_beta_raw = Tensor::cat(&[&a, &beta_raw], D::Minus1)?.contiguous()?;
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
-            let value_cache_pack = self
-                .value_cache
-                .as_ref()
-                .expect("linear value cache must be initialized")
-                .packed
-                .clone();
             let initial_state = match &self.recurrent_state {
                 Some(state) => {
                     let state = if state.rank() == 3 {
@@ -11614,158 +12072,48 @@ impl GatedDeltaNet {
                 )?,
             };
             let head_repeat = self.num_v_heads / self.num_k_heads;
-            let fused_state = initial_state.clone();
-            let fused = if device.is_hip() {
-                let a_beta_raw = Tensor::cat(
-                    &[
-                        a.as_ref()
-                            .expect("a required for hip linear decode"),
-                        beta_raw
-                            .as_ref()
-                            .expect("beta_raw required for hip linear decode"),
-                    ],
-                    D::Minus1,
-                )?
-                .contiguous()?;
-                linear_decode_step_hip(
-                    &mixed_qkv
-                        .as_ref()
-                        .expect("mixed_qkv required for hip linear decode")
-                        .contiguous()?,
-                    &prev_conv_state,
-                    &weights,
-                    &a_beta_raw,
-                    &dt_bias,
-                    &a_log_exp,
-                    &initial_state,
-                    self.num_v_heads,
-                    self.head_k_dim,
-                    self.head_v_dim,
-                    self.conv_kernel_size,
-                    head_repeat,
-                )?
-            } else if direct_cuda_hidden_combined_decode {
-                linear_decode_step_cuda_from_hidden_gated(
-                    &hidden_states,
-                    self.in_proj_qkv_zba_pack
-                        .as_ref()
-                        .expect("qkv_zba pack required for direct cuda hidden decode")
-                        .weight(),
-                    &prev_conv_state,
-                    &weights,
-                    &value_cache_pack,
-                    &fused_state,
-                    &self.norm.weight,
-                    self.norm.eps,
-                    self.num_v_heads,
-                    self.head_k_dim,
-                    self.head_v_dim,
-                    self.conv_kernel_size,
-                    head_repeat,
-                )?
-            } else if let Some(packed_qkv_zba) = &packed_qkv_zba {
-                linear_decode_step_cuda_from_projected_gated(
-                    packed_qkv_zba,
-                    &prev_conv_state,
-                    &weights,
-                    &value_cache_pack,
-                    &fused_state,
-                    &self.norm.weight,
-                    self.norm.eps,
-                    self.num_v_heads,
-                    self.head_k_dim,
-                    self.head_v_dim,
-                    self.conv_kernel_size,
-                    head_repeat,
-                )?
-            } else {
-                let a = if a
-                    .as_ref()
-                    .expect("a required without packed projected decode")
-                    .dtype()
-                    == target_dtype
-                {
-                    a.as_ref()
-                        .expect("a required without packed projected decode")
-                        .clone()
-                } else {
-                    a.as_ref()
-                        .expect("a required without packed projected decode")
-                        .to_dtype(target_dtype)?
-                };
-                let beta_raw = if beta_raw
-                    .as_ref()
-                    .expect("beta_raw required without packed projected decode")
-                    .dtype()
-                    == target_dtype
-                {
-                    beta_raw
-                        .as_ref()
-                        .expect("beta_raw required without packed projected decode")
-                        .clone()
-                } else {
-                    beta_raw
-                        .as_ref()
-                        .expect("beta_raw required without packed projected decode")
-                        .to_dtype(target_dtype)?
-                };
-                linear_decode_step_cuda_gated(
-                    &mixed_qkv
-                        .as_ref()
-                        .expect("mixed_qkv required without packed projected decode")
-                        .contiguous()?,
-                    &prev_conv_state,
-                    &weights,
-                    &a,
-                    &beta_raw,
-                    &value_cache_pack,
-                    &initial_state,
-                    &z.as_ref()
-                        .expect("z required without packed projected decode")
-                        .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
-                    &self.norm.weight,
-                    self.norm.eps,
-                    self.num_v_heads,
-                    self.head_k_dim,
-                    self.head_v_dim,
-                    self.conv_kernel_size,
-                    head_repeat,
-                )?
-            };
-            if direct_cuda_hidden_combined_decode {
-                self.conv_state = Some(prev_conv_state);
-            } else if let Some(_packed_qkv_zba) = &packed_qkv_zba {
-                self.conv_state = Some(prev_conv_state);
-            } else {
-                self.update_depthwise_conv_state_from_raw(
-                    mixed_qkv
-                        .as_ref()
-                        .expect("mixed_qkv required without packed qkv_zba"),
-                )?;
-            }
+            let fused = linear_decode_step_hip(
+                &mixed_qkv.contiguous()?,
+                &prev_conv_state,
+                &weights,
+                &a_beta_raw,
+                &dt_bias,
+                &a_log_exp,
+                &initial_state,
+                self.num_v_heads,
+                self.head_k_dim,
+                self.head_v_dim,
+                self.conv_kernel_size,
+                head_repeat,
+            )?;
+            self.update_depthwise_conv_state_from_raw(&mixed_qkv)?;
             let core_attn_out = fused
+                .narrow(1, 0, self.value_dim)?
                 .reshape((batch_size, seq_len, self.value_dim))?;
-            let recurrent_state = if device.is_cuda()
-                && (direct_cuda_hidden_combined_decode || packed_qkv_zba.is_some())
-            {
-                fused_state
-            } else {
-                fused.narrow(1, self.value_dim, self.num_v_heads * self.head_k_dim * self.head_v_dim)?
-                    .reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
-                    .contiguous()?
-            };
+            let recurrent_state = fused
+                .narrow(1, self.value_dim, self.num_v_heads * self.head_k_dim * self.head_v_dim)?
+                .reshape((batch_size, self.num_v_heads, self.head_k_dim, self.head_v_dim))?
+                .contiguous()?;
             let kv_append_elapsed = profile_elapsed(kv_append_start, device)?;
             profile.linear_conv_millis += kv_append_elapsed;
             profile.kv_append_write_millis += kv_append_elapsed;
             profile.linear_recurrent_loop_millis += kv_append_elapsed;
 
             let output_start = profile_start(device)?;
+            let core_attn_out = self
+                .norm
+                .forward(
+                    &core_attn_out
+                        .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                    &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                )?
+                .reshape((batch_size, seq_len, self.value_dim))?;
             let core_attn_out = if core_attn_out.dtype() == hidden_states.dtype() {
                 core_attn_out
             } else {
                 core_attn_out.to_dtype(hidden_states.dtype())?
             };
-            let output = fast_linear_decode(&core_attn_out, &self.out_proj)?;
+            let output = self.out_proj.forward(&core_attn_out)?;
             profile.output_projection_millis += profile_elapsed(output_start, device)?;
             profile.linear_attention_millis += profile_elapsed(total_start, device)?;
             return Ok((output, recurrent_state, profile));
@@ -11773,16 +12121,11 @@ impl GatedDeltaNet {
 
         let kv_append_start = profile_start(device)?;
         let (mixed_qkv, g) = if use_hip_combined_linear_prefill(device, seq_len) {
-            let mixed_qkv = mixed_qkv
-                .as_ref()
-                .expect("mixed_qkv required for linear prefill");
             let target_dtype = mixed_qkv.dtype();
-            let a = if a.as_ref().expect("a required for linear prefill").dtype() == target_dtype {
-                a.as_ref().expect("a required for linear prefill").clone()
+            let a = if a.dtype() == target_dtype {
+                a.clone()
             } else {
-                a.as_ref()
-                    .expect("a required for linear prefill")
-                    .to_dtype(target_dtype)?
+                a.to_dtype(target_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, target_dtype)?;
             let weights = self.conv1d_weight_squeezed()?.contiguous()?;
@@ -11829,23 +12172,18 @@ impl GatedDeltaNet {
             };
             (mixed_qkv, g)
         } else {
-            let mixed_qkv = mixed_qkv
-                .as_ref()
-                .expect("mixed_qkv required for linear conv path");
             let mixed_qkv = if seq_len == 1 {
-                self.run_depthwise_conv_update(mixed_qkv)?
+                self.run_depthwise_conv_update(&mixed_qkv)?
                     .transpose(1, 2)?
             } else if use_linear_prefill_packed_kernel(device, seq_len) {
-                self.run_depthwise_conv_packed_prefill(mixed_qkv)?
+                self.run_depthwise_conv_packed_prefill(&mixed_qkv)?
             } else {
-                self.run_depthwise_conv(mixed_qkv)?.transpose(1, 2)?
+                self.run_depthwise_conv(&mixed_qkv)?.transpose(1, 2)?
             };
-            let a = if a.as_ref().expect("a required for linear conv path").dtype() == compute_dtype {
-                a.as_ref().expect("a required for linear conv path").clone()
+            let a = if a.dtype() == compute_dtype {
+                a
             } else {
-                a.as_ref()
-                    .expect("a required for linear conv path")
-                    .to_dtype(compute_dtype)?
+                a.to_dtype(compute_dtype)?
             };
             let (dt_bias, a_log_exp) = self.value_cache(device, compute_dtype)?;
             let g = if device.is_hip() {
@@ -11902,11 +12240,7 @@ impl GatedDeltaNet {
         } else {
             value.to_dtype(compute_dtype)?
         };
-        let beta = ops::sigmoid(
-            beta_raw
-                .as_ref()
-                .expect("beta_raw required for linear attention"),
-        )?;
+        let beta = ops::sigmoid(&beta_raw)?;
         let beta = if beta.dtype() == compute_dtype {
             beta
         } else {
@@ -11944,9 +12278,7 @@ impl GatedDeltaNet {
             .forward(
                 &core_attn_out
                     .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
-                &z.as_ref()
-                    .expect("z required for linear attention")
-                    .reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
+                &z.reshape((batch_size * seq_len * self.num_v_heads, self.head_v_dim))?,
             )?
             .reshape((batch_size, seq_len, self.value_dim))?;
         let core_attn_out = if core_attn_out.dtype() == hidden_states.dtype() {
@@ -11954,7 +12286,7 @@ impl GatedDeltaNet {
         } else {
             core_attn_out.to_dtype(hidden_states.dtype())?
         };
-        let output = fast_linear_decode(&core_attn_out, &self.out_proj)?;
+        let output = self.out_proj.forward(&core_attn_out)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.linear_attention_millis +=
             profile_elapsed(total_start, device)? - linear_profile.linear_attention_millis;
@@ -12150,47 +12482,10 @@ impl DecoderLayer {
             .map(|(output, _)| output)
     }
 
-    fn decode_profiled(
-        &mut self,
-        xs: &Tensor,
-        seqlen_offset: usize,
-    ) -> Result<(Tensor, RuntimeProfile)> {
-        let device = xs.device();
-        let mut profile = RuntimeProfile::default();
-        let residual = xs;
-        let xs_norm = self.input_layernorm.forward(xs)?;
-        let xs = match &mut self.token_mixer {
-            LayerKind::Linear(linear_attn) => {
-                let (xs, layer_profile) = linear_attn.forward_profiled(&xs_norm, None)?;
-                profile.add_assign(&layer_profile);
-                xs
-            }
-            LayerKind::Full(self_attn) => {
-                let (xs, layer_profile) = self_attn.forward_profiled(&xs_norm, None, seqlen_offset)?;
-                profile.add_assign(&layer_profile);
-                xs
-            }
-        };
-        let xs = residual.broadcast_add(&xs)?;
-        let residual = &xs;
-        let xs = self.post_attention_layernorm.forward(&xs)?;
-        let mlp_start = profile_start(device)?;
-        let xs = self.mlp.forward(&xs)?;
-        profile.mlp_millis += profile_elapsed(mlp_start, device)?;
-        Ok((residual.broadcast_add(&xs)?, profile))
-    }
-
     fn clear_kv_cache(&mut self) {
         match &mut self.token_mixer {
             LayerKind::Linear(linear_attn) => linear_attn.clear_kv_cache(),
             LayerKind::Full(self_attn) => self_attn.clear_kv_cache(),
-        }
-    }
-
-    fn sequence_length(&self) -> usize {
-        match &self.token_mixer {
-            LayerKind::Linear(_) => 0,
-            LayerKind::Full(self_attn) => self_attn.sequence_length(),
         }
     }
 
@@ -12223,15 +12518,28 @@ impl DecoderLayer {
     pub fn layer_type(&self) -> &str {
         &self.layer_type
     }
+
+    fn deferred_linear_count(&self) -> usize {
+        self.mlp.deferred_linear_count()
+            + match &self.token_mixer {
+                LayerKind::Linear(linear_attn) => linear_attn.deferred_linear_count(),
+                LayerKind::Full(_) => 0,
+            }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TextModel {
-    embed_tokens: Embedding,
+    embed_tokens: EmbeddingSource,
     layers: Vec<DecoderLayer>,
     norm: Qwen35RmsNorm,
     device: Device,
     dtype: DType,
+    immutable_embedding_requested: bool,
+    immutable_embedding_active: bool,
+    immutable_embedding_fallback_reason: Option<String>,
+    immutable_linear_requested: bool,
+    deferred_linear_count: usize,
 }
 
 impl TextModel {
@@ -12251,30 +12559,47 @@ impl TextModel {
             )?);
         }
         Ok(Self {
-            embed_tokens,
+            embed_tokens: EmbeddingSource::Materialized(embed_tokens),
             layers,
             norm: Qwen35RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?,
             device: vb.device().clone(),
             dtype: vb.dtype(),
+            immutable_embedding_requested: false,
+            immutable_embedding_active: false,
+            immutable_embedding_fallback_reason: None,
+            immutable_linear_requested: false,
+            deferred_linear_count: 0,
         })
     }
 
-    pub(crate) fn from_prepared(cfg: &TextConfig, source: PreparedTensorSource) -> Result<Self> {
+    pub(crate) fn from_prepared(
+        cfg: &TextConfig,
+        source: PreparedTensorSource,
+    ) -> Result<Self> {
         let cfg = cfg.clone().normalized();
         let model_source = source.pp("model").pp("language_model");
-        let embed_tokens =
-            prepared_embedding(&model_source.pp("embed_tokens"), cfg.hidden_size)?;
-        let dtype = embed_tokens.embeddings().dtype();
+        let immutable_embedding_requested = immutable_embedding_enabled();
+        let (embed_tokens, immutable_embedding_active, immutable_embedding_fallback_reason) =
+            build_prepared_embedding_source(
+                &model_source.pp("embed_tokens"),
+                cfg.hidden_size,
+                immutable_embedding_requested,
+            )?;
+        let dtype = embed_tokens.dtype();
         let rotary_emb = Arc::new(RotaryEmbedding::new(&cfg, source.device(), dtype)?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let layers_source = model_source.pp("layers");
+        let immutable_linear_requested = immutable_linear_enabled(&cfg);
+        let mut deferred_linear_count = 0usize;
         for layer_idx in 0..cfg.num_hidden_layers {
-            layers.push(DecoderLayer::from_prepared(
+            let layer = DecoderLayer::from_prepared(
                 &cfg,
                 layer_idx,
                 rotary_emb.clone(),
                 &layers_source.pp(layer_idx),
-            )?);
+            )?;
+            deferred_linear_count += layer.deferred_linear_count();
+            layers.push(layer);
         }
         Ok(Self {
             embed_tokens,
@@ -12282,6 +12607,11 @@ impl TextModel {
             norm: Qwen35RmsNorm::from_prepared(cfg.rms_norm_eps, &model_source.pp("norm"))?,
             device: source.device().clone(),
             dtype,
+            immutable_embedding_requested,
+            immutable_embedding_active,
+            immutable_embedding_fallback_reason,
+            immutable_linear_requested,
+            deferred_linear_count,
         })
     }
 
@@ -12350,14 +12680,36 @@ impl TextModel {
         }
     }
 
+    pub fn immutable_linear_requested(&self) -> bool {
+        self.immutable_linear_requested
+    }
+
+    pub fn deferred_linear_count(&self) -> usize {
+        self.deferred_linear_count
+    }
+
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
-        if self.embed_tokens.embeddings().device().is_hip() && input_ids.device().is_hip() {
-            return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
-        }
-        if self.embed_tokens.embeddings().device().is_cuda() && input_ids.device().is_cuda() {
-            return hip_embedding_lookup(self.embed_tokens.embeddings(), input_ids);
-        }
         self.embed_tokens.forward(input_ids)
+    }
+
+    fn materialized_embeddings(&self) -> Option<&Tensor> {
+        self.embed_tokens.embeddings()
+    }
+
+    fn immutable_embedding_requested(&self) -> bool {
+        self.immutable_embedding_requested
+    }
+
+    fn immutable_embedding_active(&self) -> bool {
+        self.immutable_embedding_active
+    }
+
+    fn immutable_embedding_fallback_reason(&self) -> Option<&str> {
+        self.immutable_embedding_fallback_reason.as_deref()
+    }
+
+    fn immutable_embedding_runtime_mode(&self) -> &'static str {
+        self.embed_tokens.runtime_mode()
     }
 
     pub fn full_attention_layer_ids(&self) -> Vec<usize> {
@@ -12666,25 +13018,6 @@ impl TextModel {
         Ok((self.norm.forward(&xs)?, profile))
     }
 
-    pub fn decode_hidden_states_profiled(
-        &mut self,
-        hidden_states: &Tensor,
-        seqlen_offset: usize,
-    ) -> Result<(Tensor, RuntimeProfile)> {
-        let (_, seq_len, _) = hidden_states.dims3()?;
-        if seq_len != 1 {
-            candle::bail!("decode_hidden_states_profiled requires seq_len == 1, got {seq_len}")
-        }
-        let mut profile = RuntimeProfile::default();
-        let mut xs = hidden_states.clone();
-        for layer in self.layers.iter_mut() {
-            let (next_xs, layer_profile) = layer.decode_profiled(&xs, seqlen_offset)?;
-            profile.add_assign(&layer_profile);
-            xs = next_xs;
-        }
-        Ok((self.norm.forward(&xs)?, profile))
-    }
-
     pub fn forward(&mut self, input_ids: &Tensor, seqlen_offset: usize) -> Result<Tensor> {
         self.forward_profiled(input_ids, seqlen_offset)
             .map(|(output, _)| output)
@@ -12694,14 +13027,6 @@ impl TextModel {
         for layer in self.layers.iter_mut() {
             layer.clear_kv_cache();
         }
-    }
-
-    pub fn sequence_length(&self) -> usize {
-        self.layers
-            .iter()
-            .map(DecoderLayer::sequence_length)
-            .find(|&seq_len| seq_len != 0)
-            .unwrap_or(0)
     }
 
     pub fn cache_state(&self) -> CacheState {
@@ -12728,7 +13053,7 @@ impl TextModel {
 #[derive(Debug, Clone)]
 pub struct ModelForCausalLM {
     language_model: TextModel,
-    lm_head: Linear,
+    lm_head: OutputProjectionSource,
 }
 
 impl ModelForCausalLM {
@@ -12736,13 +13061,19 @@ impl ModelForCausalLM {
         let cfg = cfg.clone().normalized();
         let language_model = TextModel::new(&cfg.text_config, vb.clone())?;
         let lm_head = if vb.contains_tensor("lm_head.weight") {
-            linear_no_bias(
+            OutputProjectionSource::Materialized(linear_no_bias(
                 cfg.text_config.hidden_size,
                 cfg.text_config.vocab_size,
                 vb.pp("lm_head"),
-            )?
+            )?)
         } else {
-            Linear::new(language_model.embed_tokens.embeddings().clone(), None)
+            OutputProjectionSource::Materialized(Linear::new(
+                language_model
+                    .materialized_embeddings()
+                    .expect("direct loader uses eager embedding")
+                    .clone(),
+                None,
+            ))
         };
         Ok(Self {
             language_model,
@@ -12754,9 +13085,28 @@ impl ModelForCausalLM {
         let cfg = cfg.clone().normalized();
         let language_model = TextModel::from_prepared(&cfg.text_config, source.clone())?;
         let lm_head = if source.contains_tensor("lm_head.weight") {
-            prepared_linear_no_bias(&source.pp("lm_head"))?
+            OutputProjectionSource::Materialized(prepared_linear_no_bias(&source.pp("lm_head"))?)
+        } else if immutable_embedding_enabled() && language_model.immutable_embedding_active() {
+            match &language_model.embed_tokens {
+                EmbeddingSource::Immutable(embedding) => {
+                    OutputProjectionSource::TiedImmutable(embedding.clone())
+                }
+                EmbeddingSource::Materialized(_) => OutputProjectionSource::Materialized(Linear::new(
+                    language_model
+                        .materialized_embeddings()
+                        .expect("materialized embedding should be available")
+                        .clone(),
+                    None,
+                )),
+            }
         } else {
-            Linear::new(language_model.embed_tokens.embeddings().clone(), None)
+            OutputProjectionSource::Materialized(Linear::new(
+                language_model
+                    .materialized_embeddings()
+                    .expect("tied lm_head requires eager embedding")
+                    .clone(),
+                None,
+            ))
         };
         Ok(Self {
             language_model,
@@ -12781,29 +13131,8 @@ impl ModelForCausalLM {
             )?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
-        profile.output_projection_millis += profile_elapsed(output_start, device)?;
-        Ok((logits, profile))
-    }
-
-    pub fn decode_hidden_states_profiled(
-        &mut self,
-        hidden_states: &Tensor,
-        seqlen_offset: usize,
-    ) -> Result<(Tensor, RuntimeProfile)> {
-        let device = hidden_states.device();
-        let (_, seq_len, _) = hidden_states.dims3()?;
-        if seq_len != 1 {
-            candle::bail!("decode_hidden_states_profiled requires seq_len == 1, got {seq_len}")
-        }
-        let (hidden_states, mut profile) = self
-            .language_model
-            .decode_hidden_states_profiled(hidden_states, seqlen_offset)?;
-        let output_start = profile_start(device)?;
-        let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
+            .narrow(1, seq_len - 1, 1)?;
+        let logits = self.lm_head.forward(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, profile))
     }
@@ -12820,14 +13149,38 @@ impl ModelForCausalLM {
             .forward_profiled(input_ids, seqlen_offset)?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
+            .narrow(1, seq_len - 1, 1)?;
+        let logits = self.lm_head.forward(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, profile))
     }
 
     pub fn hidden_states_from_input_ids(&self, input_ids: &Tensor) -> Result<Tensor> {
         self.language_model.hidden_states_from_input_ids(input_ids)
+    }
+
+    pub fn immutable_embedding_requested(&self) -> bool {
+        self.language_model.immutable_embedding_requested()
+    }
+
+    pub fn immutable_embedding_active(&self) -> bool {
+        self.language_model.immutable_embedding_active()
+    }
+
+    pub fn immutable_embedding_fallback_reason(&self) -> Option<&str> {
+        self.language_model.immutable_embedding_fallback_reason()
+    }
+
+    pub fn immutable_embedding_runtime_mode(&self) -> &'static str {
+        self.language_model.immutable_embedding_runtime_mode()
+    }
+
+    pub fn immutable_linear_requested(&self) -> bool {
+        self.language_model.immutable_linear_requested()
+    }
+
+    pub fn deferred_linear_count(&self) -> usize {
+        self.language_model.deferred_linear_count()
     }
 
     pub fn forward_hidden_states_profiled(
@@ -12842,8 +13195,8 @@ impl ModelForCausalLM {
             .forward_hidden_states_profiled(hidden_states, seqlen_offset)?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
+            .narrow(1, seq_len - 1, 1)?;
+        let logits = self.lm_head.forward(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, profile))
     }
@@ -12861,8 +13214,8 @@ impl ModelForCausalLM {
             .forward_profiled_with_linear_traces(input_ids, seqlen_offset, target_layers)?;
         let output_start = profile_start(device)?;
         let logits = hidden_states
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?;
+            .narrow(1, seq_len - 1, 1)?;
+        let logits = self.lm_head.forward(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, traces, profile))
     }
@@ -12923,10 +13276,6 @@ impl ModelForCausalLM {
 
     pub fn clear_kv_cache(&mut self) {
         self.language_model.clear_kv_cache()
-    }
-
-    pub fn sequence_length(&self) -> usize {
-        self.language_model.sequence_length()
     }
 
     pub fn cache_state(&self) -> CacheState {
@@ -13664,100 +14013,7 @@ mod tests {
         ))
     }
 
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    fn cuda_full_attention_decode_sample_large(
-        device: &Device,
-    ) -> Result<(Tensor, Tensor, Tensor, usize, f32, usize, Vec<f32>)> {
-        let batch_size = 1usize;
-        let q_heads = 8usize;
-        let kv_heads = 2usize;
-        let q_len = 1usize;
-        let kv_len = 17usize;
-        let head_dim = 256usize;
-        let num_kv_groups = q_heads / kv_heads;
-        let scale = 1.0f32 / (head_dim as f32).sqrt();
-        let seqlen_offset = kv_len - 1;
-
-        let query_data = (0..batch_size * q_heads * q_len * head_dim)
-            .map(|idx| ((idx % 29) as f32 - 14.0) * 0.03125)
-            .collect::<Vec<_>>();
-        let key_data = (0..batch_size * kv_heads * kv_len * head_dim)
-            .map(|idx| ((idx % 31) as f32 - 15.0) * 0.0234375)
-            .collect::<Vec<_>>();
-        let value_data = (0..batch_size * kv_heads * kv_len * head_dim)
-            .map(|idx| ((idx % 37) as f32 - 18.0) * 0.046875)
-            .collect::<Vec<_>>();
-
-        let query = Tensor::from_vec(
-            query_data.clone(),
-            (batch_size, q_heads, q_len, head_dim),
-            device,
-        )?;
-        let key = Tensor::from_vec(
-            key_data.clone(),
-            (batch_size, kv_heads, kv_len, head_dim),
-            device,
-        )?;
-        let value = Tensor::from_vec(
-            value_data.clone(),
-            (batch_size, kv_heads, kv_len, head_dim),
-            device,
-        )?;
-
-        let mut expected = Vec::with_capacity(batch_size * q_heads * q_len * head_dim);
-        for b in 0..batch_size {
-            for q_head in 0..q_heads {
-                let kv_head = q_head / num_kv_groups;
-                let query_offset = ((b * q_heads + q_head) * q_len) * head_dim;
-                let q_row = &query_data[query_offset..query_offset + head_dim];
-                let key_head_offset = (b * kv_heads + kv_head) * kv_len * head_dim;
-                let value_head_offset = key_head_offset;
-                let mut max_score = f32::NEG_INFINITY;
-                let mut denom = 0.0f32;
-                let mut out_row = vec![0.0f32; head_dim];
-                for k_pos in 0..kv_len {
-                    let key_offset = key_head_offset + k_pos * head_dim;
-                    let value_offset = value_head_offset + k_pos * head_dim;
-                    let mut score = 0.0f32;
-                    for d in 0..head_dim {
-                        score += q_row[d] * key_data[key_offset + d];
-                    }
-                    score *= scale;
-                    if !max_score.is_finite() {
-                        max_score = score;
-                        denom = 1.0;
-                        out_row.copy_from_slice(&value_data[value_offset..value_offset + head_dim]);
-                        continue;
-                    }
-                    let new_max = max_score.max(score);
-                    let prev_scale = (max_score - new_max).exp();
-                    let curr_scale = (score - new_max).exp();
-                    denom = denom * prev_scale + curr_scale;
-                    for d in 0..head_dim {
-                        out_row[d] =
-                            out_row[d] * prev_scale + curr_scale * value_data[value_offset + d];
-                    }
-                    max_score = new_max;
-                }
-                let inv_denom = if denom > 0.0 { 1.0 / denom } else { 0.0 };
-                for value in out_row {
-                    expected.push(value * inv_denom);
-                }
-            }
-        }
-
-        Ok((
-            query,
-            key,
-            value,
-            num_kv_groups,
-            scale,
-            seqlen_offset,
-            expected,
-        ))
-    }
-
-    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
+    #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_rms_norm_sample(
         device: &Device,
     ) -> Result<(Tensor, Tensor, Tensor, Vec<f32>, Vec<f32>)> {
@@ -13794,7 +14050,7 @@ mod tests {
         Ok((xs, gate, weight, expected_norm, expected_gated))
     }
 
-    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
+    #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_l2norm_sample(device: &Device) -> Result<(Tensor, Vec<f32>)> {
         let xs_data = vec![
             0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
@@ -13814,7 +14070,7 @@ mod tests {
         Ok((xs, expected))
     }
 
-    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
+    #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_swiglu_mul_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
         let gate_data = vec![
             0.5f32, -1.0, 0.25, 1.5, -0.75, 0.2, 0.9, -0.4, 1.1, -0.6, 0.3, 0.8,
@@ -13832,40 +14088,6 @@ mod tests {
             expected.push(silu * *up_x);
         }
         Ok((gate, up, expected))
-    }
-
-    #[cfg(any(feature = "qwen35-minimal-hip", feature = "qwen35-minimal-cuda"))]
-    fn linear_decode_gemv_sample(device: &Device) -> Result<(Tensor, Tensor, Vec<f32>)> {
-        let xs_data = vec![
-            0.2f32, -0.3, 0.4, 0.1, -0.2, 0.5, 0.7, -0.6,
-            0.6, 0.2, -0.1, 0.3, 0.4, -0.5, 0.8, 0.9,
-        ];
-        let weight_data = vec![
-            0.1f32, 0.0, 0.2, -0.1, 0.3, -0.4, 0.5, -0.2,
-            -0.2, 0.5, 0.1, 0.0, -0.3, 0.4, 0.2, 0.6,
-            0.7, -0.1, 0.3, 0.4, 0.2, 0.1, -0.5, 0.2,
-            0.0, -0.6, 0.8, 0.5, -0.1, 0.7, 0.4, -0.3,
-            0.4, 0.2, -0.2, 0.6, 0.3, -0.5, 0.1, 0.0,
-        ];
-        let xs = Tensor::from_vec(xs_data.clone(), (2usize, 1usize, 8usize), device)?
-            .to_dtype(DType::F16)?;
-        let weight = Tensor::from_vec(weight_data.clone(), (5usize, 8usize), device)?
-            .to_dtype(DType::F16)?;
-        let mut expected = Vec::with_capacity(2 * 5);
-        for row in 0..2usize {
-            let row_slice = &xs_data[row * 8..(row + 1) * 8];
-            for out_idx in 0..5usize {
-                let w = &weight_data[out_idx * 8..(out_idx + 1) * 8];
-                expected.push(
-                    row_slice
-                        .iter()
-                        .zip(w.iter())
-                        .map(|(x, ww)| x * ww)
-                        .sum::<f32>(),
-                );
-            }
-        }
-        Ok((xs, weight, expected))
     }
 
     #[cfg(feature = "qwen35-minimal-hip")]
@@ -14048,6 +14270,7 @@ mod tests {
     }
 
 
+    #[cfg(feature = "qwen35-minimal-hip")]
     fn hip_linear_decode_step_sample(
         device: &Device,
     ) -> Result<(
@@ -14478,29 +14701,6 @@ mod tests {
 
     #[cfg(feature = "qwen35-minimal-cuda")]
     #[test]
-    fn cuda_full_attention_decode_matches_reference_large_head_dim() -> Result<()> {
-        let _guard = cuda_test_guard();
-        let device = Device::new_cuda(0)?;
-        let (query, key, value, num_kv_groups, scale, seqlen_offset, expected) =
-            cuda_full_attention_decode_sample_large(&device)?;
-        let output = full_attention_decode_megakernel(
-            &query,
-            &key,
-            &value,
-            num_kv_groups,
-            scale,
-            seqlen_offset,
-        )?;
-        let output = output
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        assert_close(&output, &expected, 2e-2);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
     fn cuda_paged_attention_decode_falls_back_for_large_head_dim() -> Result<()> {
         let _guard = cuda_test_guard();
         let _env_guard = CudaFullPrefillEnvGuard::set("1");
@@ -14526,78 +14726,6 @@ mod tests {
         let output = paged_attention_decode_megakernel(&queries, &key, &value)?
             .flatten_all()?
             .to_vec1::<f32>()?;
-        assert_close(&output, &expected, 1e-5);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_delta_recurrent_prefill_matches_reference() -> Result<()> {
-        let _guard = cuda_test_guard();
-        let device = Device::new_cuda(0)?;
-        let batch_heads = 1usize;
-        let seq_len = 1usize;
-        let k_head_dim = 2usize;
-        let v_head_dim = 2usize;
-
-        let initial_state_data = vec![0.1f32, -0.2, 0.05, 0.3];
-        let query_data = vec![0.2f32, -0.1];
-        let key_data = vec![0.1f32, 0.2];
-        let value_data = vec![0.3f32, -0.1];
-        let beta_data = vec![0.5f32];
-        let g_data = vec![0.0f32];
-
-        let initial_state = Tensor::from_vec(
-            initial_state_data.clone(),
-            (batch_heads, k_head_dim, v_head_dim),
-            &device,
-        )?;
-        let query = Tensor::from_vec(
-            query_data.clone(),
-            (batch_heads, seq_len, k_head_dim),
-            &device,
-        )?;
-        let key = Tensor::from_vec(
-            key_data.clone(),
-            (batch_heads, seq_len, k_head_dim),
-            &device,
-        )?;
-        let value = Tensor::from_vec(
-            value_data.clone(),
-            (batch_heads, seq_len, v_head_dim),
-            &device,
-        )?;
-        let beta = Tensor::from_vec(beta_data.clone(), (batch_heads, seq_len), &device)?;
-        let g = Tensor::from_vec(g_data.clone(), (batch_heads, seq_len), &device)?;
-
-        let output = delta_recurrent_prefill(&initial_state, &query, &key, &value, &beta, &g)?;
-        let output = output.flatten_all()?.to_vec1::<f32>()?;
-
-        let g_t = g_data[0].exp();
-        let mut state_col0 = initial_state_data[0] * g_t;
-        let mut state_col1 = initial_state_data[2] * g_t;
-        let kv_mem_0 = state_col0 * key_data[0] + state_col1 * key_data[1];
-        let delta_0 = (value_data[0] - kv_mem_0) * beta_data[0];
-        state_col0 += key_data[0] * delta_0;
-        state_col1 += key_data[1] * delta_0;
-        let out_0 = state_col0 * query_data[0] + state_col1 * query_data[1];
-
-        let mut state_col0_b = initial_state_data[1] * g_t;
-        let mut state_col1_b = initial_state_data[3] * g_t;
-        let kv_mem_1 = state_col0_b * key_data[0] + state_col1_b * key_data[1];
-        let delta_1 = (value_data[1] - kv_mem_1) * beta_data[0];
-        state_col0_b += key_data[0] * delta_1;
-        state_col1_b += key_data[1] * delta_1;
-        let out_1 = state_col0_b * query_data[0] + state_col1_b * query_data[1];
-
-        let expected = vec![
-            out_0,
-            out_1,
-            state_col0,
-            state_col0_b,
-            state_col1,
-            state_col1_b,
-        ];
         assert_close(&output, &expected, 1e-5);
         Ok(())
     }
@@ -14772,312 +14900,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_linear_decode_step_matches_reference() -> Result<()> {
-        let device = Device::new_cuda(0)?;
-        let (
-            mixed_qkv,
-            prev_conv_state,
-            weights,
-            a_beta_raw,
-            dt_bias,
-            a_log_exp,
-            initial_state,
-            expected,
-        ) = hip_linear_decode_step_sample(&device)?;
-        let output = linear_decode_step_cuda(
-            &mixed_qkv,
-            &prev_conv_state,
-            &weights,
-            &a_beta_raw,
-            &dt_bias,
-            &a_log_exp,
-            &initial_state,
-            2,
-            2,
-            2,
-            3,
-            2,
-        )?
-        .to_vec2::<f32>()?;
-        assert_close(&output[0], &expected, 5e-3);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_linear_decode_step_gated_matches_composed_reference() -> Result<()> {
-        let device = Device::new_cuda(0)?;
-        let (
-            mixed_qkv,
-            prev_conv_state,
-            weights,
-            a_beta_raw,
-            dt_bias,
-            a_log_exp,
-            initial_state,
-            _expected,
-        ) = hip_linear_decode_step_sample(&device)?;
-        let gate = Tensor::from_vec(vec![0.2f32, -0.4, 0.5, 0.1], (2usize, 2usize), &device)?
-            .to_dtype(DType::F16)?;
-        let norm_weight =
-            Tensor::from_vec(vec![0.3f32, -0.2], 2usize, &device)?.to_dtype(DType::F16)?;
-
-        let fused = linear_decode_step_cuda_gated(
-            &mixed_qkv,
-            &prev_conv_state,
-            &weights,
-            &a_beta_raw,
-            &dt_bias,
-            &a_log_exp,
-            &initial_state,
-            &gate,
-            &norm_weight,
-            1e-6,
-            2,
-            2,
-            2,
-            3,
-            2,
-        )?
-        .to_dtype(DType::F32)?
-        .to_vec2::<f32>()?;
-
-        let base = linear_decode_step_cuda(
-            &mixed_qkv,
-            &prev_conv_state,
-            &weights,
-            &a_beta_raw,
-            &dt_bias,
-            &a_log_exp,
-            &initial_state,
-            2,
-            2,
-            2,
-            3,
-            2,
-        )?;
-        let expected_value = cuda_rms_norm_gated(
-            &base.narrow(1, 0, 4)?.reshape((2usize, 2usize))?,
-            &gate,
-            &norm_weight,
-            1e-6,
-        )?
-        .to_dtype(DType::F32)?
-        .to_vec2::<f32>()?;
-        let expected_state = base
-            .narrow(1, 4, 8)?
-            .to_dtype(DType::F32)?
-            .to_vec2::<f32>()?;
-        let expected_value_flat: Vec<f32> = expected_value.into_iter().flatten().collect();
-        let expected_state_flat: Vec<f32> = expected_state.into_iter().flatten().collect();
-        let fused_flat: Vec<f32> = fused.into_iter().flatten().collect();
-
-        assert_close(&fused_flat[0..4], &expected_value_flat, 5e-3);
-        assert_close(&fused_flat[4..12], &expected_state_flat, 5e-3);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_linear_decode_from_projected_gated_matches_composed_reference() -> Result<()> {
-        let device = Device::new_cuda(0)?;
-        let (
-            mixed_qkv,
-            prev_conv_state,
-            weights,
-            a_beta_raw,
-            dt_bias,
-            a_log_exp,
-            initial_state,
-            _expected,
-        ) = hip_linear_decode_step_sample(&device)?;
-        let gate = Tensor::from_vec(vec![0.2f32, -0.4, 0.5, 0.1], (1usize, 1usize, 4usize), &device)?
-            .to_dtype(DType::F16)?;
-        let norm_weight =
-            Tensor::from_vec(vec![0.3f32, -0.2], 2usize, &device)?.to_dtype(DType::F16)?;
-        let beta_raw = a_beta_raw.narrow(D::Minus1, 0, 2)?;
-        let a_raw = a_beta_raw.narrow(D::Minus1, 2, 2)?;
-        let projected = Tensor::cat(&[&mixed_qkv.transpose(1, 2)?, &gate, &beta_raw, &a_raw], D::Minus1)?;
-        let value_cache_pack = Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?;
-
-        let initial_state_shape = initial_state.shape().clone();
-        let initial_state_values = initial_state.flatten_all()?.to_vec1::<f32>()?;
-        let fused_state = Tensor::from_slice(&initial_state_values, initial_state_shape.clone(), &device)?;
-        let expected_initial_state =
-            Tensor::from_slice(&initial_state_values, initial_state_shape, &device)?;
-        let prev_conv_shape = prev_conv_state.shape().clone();
-        let prev_conv_values = prev_conv_state
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        let fused_conv_state = Tensor::from_slice(&prev_conv_values, prev_conv_shape.clone(), &device)?
-            .to_dtype(DType::F16)?;
-        let expected_prev_conv_state =
-            Tensor::from_slice(&prev_conv_values, prev_conv_shape, &device)?.to_dtype(DType::F16)?;
-        let fused = linear_decode_step_cuda_from_projected_gated(
-            &projected,
-            &fused_conv_state,
-            &weights,
-            &value_cache_pack,
-            &fused_state,
-            &norm_weight,
-            1e-6,
-            2,
-            2,
-            2,
-            3,
-            2,
-        )?
-        .to_dtype(DType::F32)?
-        .to_vec2::<f32>()?;
-        let fused_state = fused_state.flatten_all()?.to_vec1::<f32>()?;
-
-        let expected = linear_decode_step_cuda_gated(
-            &mixed_qkv,
-            &prev_conv_state,
-            &weights,
-            &a_raw,
-            &beta_raw,
-            &value_cache_pack,
-            &expected_initial_state,
-            &gate.reshape((2usize, 2usize))?,
-            &norm_weight,
-            1e-6,
-            2,
-            2,
-            2,
-            3,
-            2,
-        )?
-        .to_dtype(DType::F32)?;
-        let expected_out = expected.narrow(1, 0, 4)?.to_vec2::<f32>()?;
-        let expected_state = expected
-            .narrow(1, 4, 8)?
-            .reshape((1usize, 2usize, 2usize, 2usize))?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        let expected_conv_state = {
-            let mixed_qkv = projected.narrow(D::Minus1, 0, 8)?.transpose(1, 2)?;
-            let state_len = expected_prev_conv_state.dim(2)?;
-            let state = expected_prev_conv_state.clone();
-            if state_len > 1 {
-                let tail = state.narrow(2, 1, state_len - 1)?.contiguous()?;
-                state.slice_set(&tail, 2, 0)?;
-            }
-            state.slice_set(&mixed_qkv.contiguous()?, 2, state_len - 1)?;
-            state.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?
-        };
-
-        let fused_flat: Vec<f32> = fused.into_iter().flatten().collect();
-        let expected_flat: Vec<f32> = expected_out.into_iter().flatten().collect();
-        let fused_conv_state = fused_conv_state
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        assert_close(&fused_flat, &expected_flat, 5e-3);
-        assert_close(&fused_state, &expected_state, 5e-3);
-        assert_close(&fused_conv_state, &expected_conv_state, 5e-3);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_linear_decode_from_hidden_gated_matches_projected_path() -> Result<()> {
-        let device = Device::new_cuda(0)?;
-        let (
-            mixed_qkv,
-            prev_conv_state,
-            weights,
-            a_beta_raw,
-            dt_bias,
-            a_log_exp,
-            initial_state,
-            _expected,
-        ) = hip_linear_decode_step_sample(&device)?;
-        let gate = Tensor::from_vec(vec![0.2f32, -0.4, 0.5, 0.1], (1usize, 1usize, 4usize), &device)?
-            .to_dtype(DType::F16)?;
-        let norm_weight =
-            Tensor::from_vec(vec![0.3f32, -0.2], 2usize, &device)?.to_dtype(DType::F16)?;
-        let beta_raw = a_beta_raw.narrow(D::Minus1, 0, 2)?;
-        let a_raw = a_beta_raw.narrow(D::Minus1, 2, 2)?;
-        let projected = Tensor::cat(&[&mixed_qkv.transpose(1, 2)?, &gate, &beta_raw, &a_raw], D::Minus1)?
-            .contiguous()?;
-        let projected_width = projected.dim(D::Minus1)?;
-        let hidden = projected.clone();
-        let qkv_zba_weight = Tensor::eye(projected_width, DType::F16, &device)?;
-        let value_cache_pack = Tensor::cat(&[&dt_bias, &a_log_exp], D::Minus1)?;
-
-        let initial_state_shape = initial_state.shape().clone();
-        let initial_state_values = initial_state.flatten_all()?.to_vec1::<f32>()?;
-        let direct_state =
-            Tensor::from_slice(&initial_state_values, initial_state_shape.clone(), &device)?;
-        let projected_state =
-            Tensor::from_slice(&initial_state_values, initial_state_shape, &device)?;
-        let prev_conv_shape = prev_conv_state.shape().clone();
-        let prev_conv_values = prev_conv_state
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        let direct_conv_state = Tensor::from_slice(&prev_conv_values, prev_conv_shape.clone(), &device)?
-            .to_dtype(DType::F16)?;
-        let projected_conv_state =
-            Tensor::from_slice(&prev_conv_values, prev_conv_shape, &device)?.to_dtype(DType::F16)?;
-
-        let direct = linear_decode_step_cuda_from_hidden_gated(
-            &hidden,
-            &qkv_zba_weight,
-            &direct_conv_state,
-            &weights,
-            &value_cache_pack,
-            &direct_state,
-            &norm_weight,
-            1e-6,
-            2,
-            2,
-            2,
-            3,
-            2,
-        )?
-        .to_dtype(DType::F32)?
-        .to_vec2::<f32>()?;
-        let direct_state = direct_state.flatten_all()?.to_vec1::<f32>()?;
-        let direct_conv_state = direct_conv_state
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-
-        let projected_out = linear_decode_step_cuda_from_projected_gated(
-            &projected,
-            &projected_conv_state,
-            &weights,
-            &value_cache_pack,
-            &projected_state,
-            &norm_weight,
-            1e-6,
-            2,
-            2,
-            2,
-            3,
-            2,
-        )?
-        .to_dtype(DType::F32)?
-        .to_vec2::<f32>()?;
-        let projected_state = projected_state.flatten_all()?.to_vec1::<f32>()?;
-        let projected_conv_state = projected_conv_state
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-
-        let direct_flat: Vec<f32> = direct.into_iter().flatten().collect();
-        let projected_flat: Vec<f32> = projected_out.into_iter().flatten().collect();
-        assert_close(&direct_flat, &projected_flat, 5e-3);
-        assert_close(&direct_state, &projected_state, 5e-3);
-        assert_close(&direct_conv_state, &projected_conv_state, 5e-3);
-        Ok(())
-    }
-
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_rms_norm_matches_reference() -> Result<()> {
@@ -15122,41 +14944,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_rms_norm_matches_reference() -> Result<()> {
-        let _guard = cuda_test_guard();
-        let device = Device::new_cuda(0)?;
-        let (xs, gate, weight, expected_norm, expected_gated) = hip_rms_norm_sample(&device)?;
-
-        let norm = cuda_rms_norm(&xs, &weight, 1e-6, true)?
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        assert_close(&norm, &expected_norm, 5e-3);
-
-        let gated = cuda_rms_norm_gated(&xs, &gate, &weight, 1e-6)?
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        assert_close(&gated, &expected_gated, 5e-3);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_l2norm_matches_reference() -> Result<()> {
-        let _guard = cuda_test_guard();
-        let device = Device::new_cuda(0)?;
-        let (xs, expected) = hip_l2norm_sample(&device)?;
-        let output = cuda_l2norm(&xs, 1e-6)?
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        assert_close(&output, &expected, 5e-3);
-        Ok(())
-    }
-
     #[cfg(feature = "qwen35-minimal-hip")]
     #[test]
     fn hip_l2norm_matches_reference() -> Result<()> {
@@ -15193,20 +14980,6 @@ mod tests {
         let device = Device::new_hip(0)?;
         let (gate, up, expected) = hip_swiglu_mul_sample(&device)?;
         let output = hip_swiglu_mul(&gate, &up)?
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        assert_close(&output, &expected, 5e-3);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_swiglu_mul_matches_reference() -> Result<()> {
-        let _guard = cuda_test_guard();
-        let device = Device::new_cuda(0)?;
-        let (gate, up, expected) = hip_swiglu_mul_sample(&device)?;
-        let output = cuda_swiglu_mul(&gate, &up)?
             .to_dtype(DType::F32)?
             .flatten_all()?
             .to_vec1::<f32>()?;
@@ -15255,47 +15028,6 @@ mod tests {
         assert_eq!(output.dtype(), embeddings.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_embedding_lookup_matches_reference() -> Result<()> {
-        let _guard = cuda_test_guard();
-        let device = Device::new_cuda(0)?;
-        let vocab_size = 5usize;
-        let hidden_size = 4usize;
-        let embeddings_data = vec![
-            0.0f32, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0, 13.0, 20.0, 21.0, 22.0, 23.0, 30.0, 31.0,
-            32.0, 33.0, 40.0, 41.0, 42.0, 43.0,
-        ];
-        let index_data = vec![3u32, 1, 4, 0];
-        let expected = vec![
-            30.0f32, 31.0, 32.0, 33.0, 10.0, 11.0, 12.0, 13.0, 40.0, 41.0, 42.0, 43.0, 0.0,
-            1.0, 2.0, 3.0,
-        ];
-        let embeddings = Tensor::from_vec(embeddings_data, (vocab_size, hidden_size), &device)?;
-        let indexes = Tensor::from_vec(index_data, (2, 2), &device)?;
-        let output = hip_embedding_lookup(&embeddings, &indexes)?
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        assert_close(&output, &expected, 1e-5);
-        Ok(())
-    }
-
-    #[cfg(feature = "qwen35-minimal-cuda")]
-    #[test]
-    fn cuda_linear_decode_gemv_matches_reference() -> Result<()> {
-        let _guard = cuda_test_guard();
-        let device = Device::new_cuda(0)?;
-        let (xs, weight, expected) = linear_decode_gemv_sample(&device)?;
-        let linear = Linear::new(weight, None);
-        let output = cuda_linear_no_bias_decode(&xs, &linear)?
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        assert_close(&output, &expected, 5e-4);
         Ok(())
     }
 
@@ -17052,6 +16784,48 @@ mod tests {
         assert_eq!(output.dtype(), base_attn_scan.dtype());
         assert_eq!(counters.host_to_device_bytes, 0);
         assert_eq!(counters.device_to_host_bytes, 0);
+        Ok(())
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    #[test]
+    fn hip_delta_attn_solve_from_inputs_matches_composed_reference() -> Result<()> {
+        let _guard = hip_test_guard();
+        let device = Device::new_hip(0)?;
+        let batch_heads = 1usize;
+        let num_chunks = 2usize;
+        let chunk_size = 4usize;
+        let k_head_dim = 3usize;
+
+        let k_beta_scan = Tensor::from_vec(
+            vec![
+                0.08f32, -0.12, 0.03, 0.05, 0.18, -0.04, -0.09, 0.14, 0.07, 0.11, -0.06, 0.02,
+                0.16, 0.11, -0.04, 0.22, 0.10, -0.07, -0.03, 0.09, 0.05, 0.18, -0.02, 0.04,
+            ],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let key_scan = Tensor::from_vec(
+            vec![
+                0.05f32, 0.20, -0.08, -0.10, 0.15, 0.04, 0.25, -0.05, 0.06, 0.30, 0.10, -0.02,
+                -0.20, 0.35, 0.12, 0.08, -0.12, 0.05, 0.14, 0.09, -0.03, -0.06, 0.17, 0.11,
+            ],
+            (batch_heads, num_chunks, chunk_size, k_head_dim),
+            &device,
+        )?;
+        let exp_g_scan = Tensor::from_vec(
+            vec![0.8f32, 1.0, 1.3, 1.6, 0.9, 1.1, 1.4, 1.7],
+            (batch_heads, num_chunks, chunk_size),
+            &device,
+        )?;
+
+        let base_attn = delta_base_attn_scan(&k_beta_scan, &key_scan, &exp_g_scan)?;
+        let expected = delta_attn_solve_scan(&base_attn)?;
+        let output = delta_attn_solve_from_inputs(&k_beta_scan, &key_scan, &exp_g_scan)?;
+
+        let expected = expected.flatten_all()?.to_vec1::<f32>()?;
+        let output = output.flatten_all()?.to_vec1::<f32>()?;
+        assert_close(&output, &expected, 1e-5);
         Ok(())
     }
 

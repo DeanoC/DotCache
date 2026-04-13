@@ -1,0 +1,10 @@
+[package]
+name = "dotcache-runtime-core"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal backend/device/runtime substrate types for DotCache"
+publish = false
+
+[dependencies]
+candle-core = { version = "0.10.2", path = "../../../candle/candle-core" }
+serde = { version = "1", features = ["derive"] }

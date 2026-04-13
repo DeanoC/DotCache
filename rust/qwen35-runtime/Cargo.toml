@@ -1,0 +1,27 @@
+[package]
+name = "dotcache-qwen35-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Explicit qwen3.5 runtime path for DotCache"
+publish = false
+build = "build.rs"
+
+[features]
+default = []
+hf = ["dep:hf-hub", "dep:candle-nn"]
+qwen35-minimal = ["dep:serde", "dep:serde_json"]
+qwen35-minimal-hip = ["qwen35-minimal", "candle-core/hip"]
+qwen35-minimal-cuda = ["qwen35-minimal", "candle-core/cuda"]
+
+[dependencies]
+candle-core = { version = "0.10.2", path = "../../../candle/candle-core" }
+candle-nn = { version = "0.10.2", path = "../../../candle/candle-nn", optional = true }
+dotcache-model-store = { path = "../model-store" }
+dotcache-runtime-core = { path = "../runtime-core" }
+half = "2.4"
+hf-hub = { version = "0.4", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+candle-nn = { version = "0.10.2", path = "../../../candle/candle-nn" }
