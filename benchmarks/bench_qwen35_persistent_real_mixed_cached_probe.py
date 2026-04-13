@@ -209,7 +209,9 @@ def _run_cached_repeat(
             dim=1,
         )
         cache_position = cache_position + 1
-    runtime_summary = adapter.per_layer_runtime_summary()
+    runtime_summary = {}
+    runtime_summary.update(adapter.per_layer_runtime_summary())
+    runtime_summary.update(runtime_state.summary())
     return {
         "generated_ids": generated_ids,
         "decode_ms_per_step": float(decode_ms_total / max(int(decode_steps), 1)),
