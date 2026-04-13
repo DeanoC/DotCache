@@ -2124,14 +2124,18 @@ impl GatedDeltaNet {
         let mixed_qkv = self
             .in_proj_qkv
             .forward_buffer(hidden_states)?;
-        let mixed_qkv = backend.tensor_to_buffer(mixed_qkv.tensor().transpose(1, 2)?)?;
-        let mixed_qkv = backend.copy_state_into_scratch(&mixed_qkv, mixed_qkv_scratch)?;
+        let mixed_qkv = backend.transpose_tensor_to_buffer_into_scratch(
+            mixed_qkv.tensor(),
+            1,
+            2,
+            mixed_qkv_scratch,
+        )?;
         let z = self.in_proj_z.forward_buffer(hidden_states)?;
-        let z = backend.reshape_tensor_to_buffer(
+        let z = backend.reshape_tensor_to_buffer_into_scratch(
             z.tensor(),
             &[batch_size, seq_len, self.num_v_heads, self.head_v_dim],
+            z_scratch,
         )?;
-        let z = backend.copy_state_into_scratch(&z, z_scratch)?;
         let beta_raw = self
             .in_proj_b
             .forward_buffer_into_scratch(hidden_states, beta_raw_scratch)?;

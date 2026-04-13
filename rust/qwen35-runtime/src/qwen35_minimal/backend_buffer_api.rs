@@ -34,6 +34,19 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
     ) -> Result<StateBuffer>;
     fn zeros_tensor(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor>;
     fn reshape_tensor_to_buffer(&self, xs: &Tensor, dims: &[usize]) -> Result<StateBuffer>;
+    fn reshape_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dims: &[usize],
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
+    fn transpose_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dim1: usize,
+        dim2: usize,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
     fn narrow_tensor_to_buffer(
         &self,
         xs: &Tensor,
@@ -538,6 +551,25 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         } else {
             backends::cpu::reshape_tensor_to_buffer(xs, dims)
         }
+    }
+    fn reshape_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dims: &[usize],
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.reshape_tensor_to_buffer(xs, dims)?;
+        self.copy_state_into_scratch(&output, scratch)
+    }
+    fn transpose_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dim1: usize,
+        dim2: usize,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.tensor_to_buffer(xs.transpose(dim1, dim2)?)?;
+        self.copy_state_into_scratch(&output, scratch)
     }
     fn narrow_tensor_to_buffer(
         &self,
@@ -1494,6 +1526,25 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
     }
     fn reshape_tensor_to_buffer(&self, xs: &Tensor, dims: &[usize]) -> Result<StateBuffer> {
         backends::hip::reshape_tensor_to_buffer(xs, dims)
+    }
+    fn reshape_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dims: &[usize],
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.reshape_tensor_to_buffer(xs, dims)?;
+        self.copy_state_into_scratch(&output, scratch)
+    }
+    fn transpose_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dim1: usize,
+        dim2: usize,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.tensor_to_buffer(xs.transpose(dim1, dim2)?)?;
+        self.copy_state_into_scratch(&output, scratch)
     }
     fn narrow_tensor_to_buffer(
         &self,
