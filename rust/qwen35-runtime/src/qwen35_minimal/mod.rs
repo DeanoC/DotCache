@@ -10,6 +10,7 @@ mod full_attention;
 pub(crate) mod hip;
 mod hip_wrappers;
 mod linear_attention;
+mod direct_decoder;
 pub(crate) mod model;
 mod ops;
 mod prepared;
