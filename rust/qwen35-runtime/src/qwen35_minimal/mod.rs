@@ -5,6 +5,7 @@ pub(crate) mod backend_ops;
 mod builder;
 mod direct_hip;
 mod frontend;
+mod full_attention;
 pub(crate) mod hip;
 mod hip_wrappers;
 mod linear_attention;
