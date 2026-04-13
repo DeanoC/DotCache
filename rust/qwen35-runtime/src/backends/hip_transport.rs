@@ -3229,6 +3229,46 @@ impl HipNativeBuffer {
         Ok(Some(bytes.into()))
     }
 
+    fn cpu_storage_to_bytes(storage: &candle_core::CpuStorage, dtype: DType) -> Option<Arc<[u8]>> {
+        let bytes = match (storage, dtype) {
+            (candle_core::CpuStorage::U8(values), DType::U8) => values.clone(),
+            (candle_core::CpuStorage::U32(values), DType::U32) => values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            (candle_core::CpuStorage::I16(values), DType::I16) => values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            (candle_core::CpuStorage::I32(values), DType::I32) => values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            (candle_core::CpuStorage::I64(values), DType::I64) => values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            (candle_core::CpuStorage::BF16(values), DType::BF16) => values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            (candle_core::CpuStorage::F16(values), DType::F16) => values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            (candle_core::CpuStorage::F32(values), DType::F32) => values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            (candle_core::CpuStorage::F64(values), DType::F64) => values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            _ => return None,
+        };
+        Some(bytes.into())
+    }
+
     pub(crate) fn imported_tensor(tensor: Tensor) -> Self {
         Self::device_buffer(HipDeviceBuffer::from_tensor(tensor))
     }
@@ -4309,13 +4349,17 @@ fn import_kernel_tensor_as_host_leaf(tensor: &Tensor) -> Result<Option<HipTensor
     if !tensor.device().is_hip() {
         return Ok(None);
     }
-    let (_storage, layout) = tensor.storage_and_layout();
+    let (storage, layout) = tensor.storage_and_layout();
     if !layout.is_contiguous() {
         return Ok(None);
     }
-    let Some(bytes) = HipNativeBuffer::tensor_to_host_float_bytes(tensor, tensor.dtype())? else {
-        return Ok(None);
+    let bytes = match &*storage {
+        candle_core::Storage::Hip(storage) => {
+            HipNativeBuffer::cpu_storage_to_bytes(storage.cpu_storage(), tensor.dtype())
+        }
+        _ => HipNativeBuffer::tensor_to_host_float_bytes(tensor, tensor.dtype())?,
     };
+    let Some(bytes) = bytes else { return Ok(None); };
     Ok(Some(HipTensor::from_device_buffer(
         HipDeviceBuffer::from_materialized_host_buffer(HipHostBuffer {
             bytes,
