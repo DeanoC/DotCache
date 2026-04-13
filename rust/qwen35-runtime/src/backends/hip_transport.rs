@@ -2793,6 +2793,11 @@ impl HipDeviceBuffer {
         if let Some(buffer) = self.try_host_buffer()? {
             return Ok(Self::from_host_computed_buffer_like(self, buffer.l2norm(eps)?));
         }
+        if let Some(out) = l2norm_hip_owned_device_buffer(self, eps)? {
+            return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
+                candle_core::Error::Msg("expected direct device buffer from l2norm owned device".into())
+            })?);
+        }
         let tensor = self.materialize_tensor()?;
         if let Some(out) = l2norm_hip_owned_device(&tensor, eps)? {
             return Ok(out.0 .0.direct_device_buffer().cloned().ok_or_else(|| {
@@ -7033,6 +7038,45 @@ fn l2norm_hip_host_buffer(xs: &Tensor, eps: f64) -> Result<Option<HipTensor>> {
             device: xs.device().clone(),
         }),
     )))
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+fn l2norm_hip_owned_device_buffer(xs: &HipDeviceBuffer, eps: f64) -> Result<Option<HipTensor>> {
+    let Some((ordinal, dtype, shape, _strides, ptr)) = xs.candle_view_launch_spec()? else {
+        return Ok(None);
+    };
+    let n_cols = *shape
+        .last()
+        .ok_or_else(|| candle_core::Error::Msg("dotcache-hip-l2norm requires non-empty shape".into()))?;
+    let n_rows = HipNativeBuffer::elem_count(&shape) / n_cols;
+    let out = HipDeviceBuffer::from_raw_hip_device_output(shape, dtype, xs.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let status = unsafe {
+        hip::ffi::dotcache_qwen35_hip_l2norm(
+            hip::dtype_code(dtype)?,
+            ordinal,
+            n_rows,
+            n_cols,
+            eps as f32,
+            ptr as *const c_void,
+            buffer.raw_device_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(hip::hip_error(
+            "dotcache-hip-l2norm-owned-device-buffer",
+            status,
+        ));
+    }
+    Ok(Some(HipTensor::from_device_buffer(out)))
+}
+
+#[cfg(not(feature = "qwen35-minimal-hip"))]
+fn l2norm_hip_owned_device_buffer(xs: &HipDeviceBuffer, eps: f64) -> Result<Option<HipTensor>> {
+    let _ = (xs, eps);
+    Ok(None)
 }
 
 fn l2norm_hip_owned_device(xs: &Tensor, eps: f64) -> Result<Option<HipTensor>> {
