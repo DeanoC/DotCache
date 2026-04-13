@@ -67,6 +67,8 @@ fn execute_full_decode_layer(
     xs: &StateBuffer,
     phase_context: &DirectDecodePhaseContext,
     seqlen_offset: usize,
+    full_attention_gate: &StateBuffer,
+    full_attention_qkv: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let device = xs.device();
     let mut profile = RuntimeProfile::default();
@@ -78,7 +80,12 @@ fn execute_full_decode_layer(
             candle::bail!("direct-hip-v1 full decode expected full-attention layer")
         }
     };
-    let context = self_attn.direct_decode_context(&xs_norm, seqlen_offset)?;
+    let context = self_attn.direct_decode_context(
+        &xs_norm,
+        seqlen_offset,
+        full_attention_gate,
+        full_attention_qkv,
+    )?;
     let (
         query_states,
         key_states,
@@ -145,6 +152,8 @@ fn execute_direct_decode_full_phase_unchecked(
     end_layer_idx: usize,
     xs: &StateBuffer,
     seqlen_offset: usize,
+    full_attention_gate: &StateBuffer,
+    full_attention_qkv: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     let mut profile = RuntimeProfile::default();
     let mut xs = xs.clone();
@@ -166,7 +175,14 @@ fn execute_direct_decode_full_phase_unchecked(
             );
         }
         let (next_xs, layer_profile) =
-            execute_full_decode_layer(layer, &xs, &phase_context, seqlen_offset)?;
+            execute_full_decode_layer(
+                layer,
+                &xs,
+                &phase_context,
+                seqlen_offset,
+                full_attention_gate,
+                full_attention_qkv,
+            )?;
         profile.add_assign(&layer_profile);
         xs = next_xs;
     }
@@ -255,6 +271,8 @@ pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
     end_layer_idx: usize,
     xs: &StateBuffer,
     seqlen_offset: usize,
+    full_attention_gate: &StateBuffer,
+    full_attention_qkv: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     execute_direct_decode_full_phase_unchecked(
         model,
@@ -262,6 +280,8 @@ pub(super) fn text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         end_layer_idx,
         xs,
         seqlen_offset,
+        full_attention_gate,
+        full_attention_qkv,
     )
 }
 
@@ -320,6 +340,8 @@ pub(super) fn model_direct_decode_full_phase_profiled_hip_v1_unchecked(
     end_layer_idx: usize,
     xs: &StateBuffer,
     seqlen_offset: usize,
+    full_attention_gate: &StateBuffer,
+    full_attention_qkv: &StateBuffer,
 ) -> Result<(StateBuffer, RuntimeProfile)> {
     text_model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         &mut model.language_model,
@@ -327,6 +349,8 @@ pub(super) fn model_direct_decode_full_phase_profiled_hip_v1_unchecked(
         end_layer_idx,
         xs,
         seqlen_offset,
+        full_attention_gate,
+        full_attention_qkv,
     )
 }
 

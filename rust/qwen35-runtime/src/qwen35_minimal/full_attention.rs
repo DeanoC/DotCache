@@ -50,6 +50,8 @@ pub(super) struct DirectFullAttentionDecodeContext<'a> {
     q_norm_eps: f64,
     k_norm_weight: &'a Tensor,
     k_norm_eps: f64,
+    gate_workspace: &'a StateBuffer,
+    qkv_workspace: &'a StateBuffer,
 }
 
 impl FullAttention {
@@ -1096,11 +1098,44 @@ impl FullAttention {
         &'a self,
         xs: &StateBuffer,
         seqlen_offset: usize,
+        gate_workspace: &'a StateBuffer,
+        qkv_workspace: &'a StateBuffer,
     ) -> Result<DirectFullAttentionDecodeContext<'a>> {
         let backend = backend_buffer_api::for_device(xs.device());
         let output_dtype = xs.dtype();
         let (b_sz, q_len, _) = xs.dims3()?;
         let prev_kv = self.kv_cache.as_ref();
+        let gate_dims = gate_workspace.tensor().dims();
+        let qkv_dims = qkv_workspace.tensor().dims();
+        let expected_gate_dims = vec![1, 1, self.num_heads, self.head_dim];
+        let expected_qkv_dims = vec![1, self.num_heads, 1, self.head_dim];
+        if gate_workspace.device().location() != xs.device().location()
+            || qkv_workspace.device().location() != xs.device().location()
+        {
+            candle::bail!("direct-hip-v1 full-attention scratch must live on the hidden-state device");
+        }
+        if gate_workspace.dtype() != output_dtype || qkv_workspace.dtype() != output_dtype {
+            candle::bail!(
+                "direct-hip-v1 full-attention scratch dtype mismatch: hidden={:?} gate={:?} qkv={:?}",
+                output_dtype,
+                gate_workspace.dtype(),
+                qkv_workspace.dtype(),
+            );
+        }
+        if gate_dims != expected_gate_dims {
+            candle::bail!(
+                "direct-hip-v1 full-attention gate scratch dims mismatch: got {:?} expected {:?}",
+                gate_dims,
+                expected_gate_dims,
+            );
+        }
+        if qkv_dims != expected_qkv_dims {
+            candle::bail!(
+                "direct-hip-v1 full-attention qkv scratch dims mismatch: got {:?} expected {:?}",
+                qkv_dims,
+                expected_qkv_dims,
+            );
+        }
         Ok(DirectFullAttentionDecodeContext {
             backend,
             output_dtype,
@@ -1113,6 +1148,8 @@ impl FullAttention {
             q_norm_eps: self.q_norm.eps(),
             k_norm_weight: self.k_norm.weight(),
             k_norm_eps: self.k_norm.eps(),
+            gate_workspace,
+            qkv_workspace,
         })
     }
 
@@ -1120,10 +1157,13 @@ impl FullAttention {
         &mut self,
         xs: &StateBuffer,
         seqlen_offset: usize,
+        gate_workspace: &StateBuffer,
+        qkv_workspace: &StateBuffer,
         _layer_id: usize,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
         let device = xs.device();
-        let context = self.direct_decode_context(xs, seqlen_offset)?;
+        let context =
+            self.direct_decode_context(xs, seqlen_offset, gate_workspace, qkv_workspace)?;
         if context.q_len != 1 {
             candle::bail!(
                 "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={}",
@@ -1166,6 +1206,8 @@ impl FullAttention {
         &self,
         xs: &StateBuffer,
         seqlen_offset: usize,
+        gate_workspace: &StateBuffer,
+        qkv_workspace: &StateBuffer,
     ) -> Result<(
         Tensor,
         Tensor,
@@ -1175,7 +1217,8 @@ impl FullAttention {
         StateBuffer,
         RuntimeProfile,
     )> {
-        let context = self.direct_decode_context(xs, seqlen_offset)?;
+        let context =
+            self.direct_decode_context(xs, seqlen_offset, gate_workspace, qkv_workspace)?;
         self.project_direct_decode_inputs_with_context(xs, &context)
     }
 
@@ -1196,6 +1239,8 @@ impl FullAttention {
         let mut profile = RuntimeProfile::default();
 
         let qkv_start = profile_start(device)?;
+        let _ = context.gate_workspace.tensor();
+        let _ = context.qkv_workspace.tensor();
         let q_and_gate = self.q_proj.forward_buffer(xs)?;
         let k_proj = self.k_proj.forward_buffer(xs)?;
         let v_proj = self.v_proj.forward_buffer(xs)?;
