@@ -9,22 +9,19 @@ from typing import Any
 _EXTENSION = None
 
 
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _native_enabled() -> bool:
-    return os.environ.get("DOTCACHE_ENABLE_NATIVE_DIRECT_M0", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return _env_flag("DOTCACHE_ENABLE_NATIVE_DIRECT_M0", default=False)
 
 
 def _native_final_mix_enabled() -> bool:
-    return os.environ.get("DOTCACHE_ENABLE_NATIVE_DIRECT_M0_FINAL_MIX", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return _env_flag("DOTCACHE_ENABLE_NATIVE_DIRECT_M0_FINAL_MIX", default=True)
 
 
 def native_direct_m0_available() -> bool:

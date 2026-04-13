@@ -4414,7 +4414,11 @@ def _decode_selected_blocks_direct_m0_torch(
                 _synchronize_torch_device(q_slice)
                 timing["direct_m0_score_ms"] += (time.perf_counter() - direct_m0_score_start) * 1000.0
             if use_cuda_fast_final_mix:
-                use_native_final_mix = native_direct_m0_final_mix_available() and attn_weights is None
+                use_native_final_mix = (
+                    native_direct_m0_final_mix_available()
+                    and attn_weights is None
+                    and score_dtype in {torch.float16, torch.float32}
+                )
                 if detailed_mixed_timing:
                     _synchronize_torch_device(q_slice)
                     final_mix_start = time.perf_counter()
