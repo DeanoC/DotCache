@@ -46,6 +46,7 @@ def main() -> None:
     first_layer_linear_b_output = None
     first_layer_linear_a_output = None
     first_layer_linear_post_conv_output = None
+    first_layer_linear_pre_norm_output = None
     first_layer_linear_norm_output = None
     first_layer_token_mixer_output = None
     first_layer_post_attention_layernorm_output = None
@@ -101,6 +102,11 @@ def main() -> None:
         tensor = capture_tensor(output)
         first_layer_linear_norm_output = tensor.reshape(input_ids.shape[0], input_ids.shape[1], -1)
 
+    def linear_norm_pre_hook(_module, inputs):
+        nonlocal first_layer_linear_pre_norm_output
+        tensor = capture_tensor(inputs[0])
+        first_layer_linear_pre_norm_output = tensor.reshape(input_ids.shape[0], input_ids.shape[1], -1)
+
     def post_attention_layernorm_hook(_module, _inputs, output):
         nonlocal first_layer_post_attention_layernorm_output
         first_layer_post_attention_layernorm_output = capture_tensor(output)
@@ -135,6 +141,9 @@ def main() -> None:
     linear_norm_handle = model.model.layers[0].linear_attn.norm.register_forward_hook(
         linear_norm_hook
     )
+    linear_norm_pre_handle = model.model.layers[0].linear_attn.norm.register_forward_pre_hook(
+        linear_norm_pre_hook
+    )
     post_attention_layernorm_handle = (
         model.model.layers[0]
         .post_attention_layernorm.register_forward_hook(post_attention_layernorm_hook)
@@ -153,6 +162,7 @@ def main() -> None:
         linear_b_handle.remove()
         linear_a_handle.remove()
         linear_conv_handle.remove()
+        linear_norm_pre_handle.remove()
         linear_norm_handle.remove()
         post_attention_layernorm_handle.remove()
         mlp_handle.remove()
@@ -166,6 +176,7 @@ def main() -> None:
         or first_layer_linear_b_output is None
         or first_layer_linear_a_output is None
         or first_layer_linear_post_conv_output is None
+        or first_layer_linear_pre_norm_output is None
         or first_layer_linear_norm_output is None
         or first_layer_token_mixer_output is None
         or first_layer_post_attention_layernorm_output is None
@@ -209,6 +220,7 @@ def main() -> None:
         "first_layer_linear_b_output": first_layer_linear_b_output.tolist(),
         "first_layer_linear_a_output": first_layer_linear_a_output.tolist(),
         "first_layer_linear_post_conv_output": first_layer_linear_post_conv_output.tolist(),
+        "first_layer_linear_pre_norm_output": first_layer_linear_pre_norm_output.tolist(),
         "first_layer_linear_norm_output": first_layer_linear_norm_output.tolist(),
         "first_layer_token_mixer_output": first_layer_token_mixer_output.tolist(),
         "first_layer_post_attention_layernorm_output": first_layer_post_attention_layernorm_output.tolist(),
