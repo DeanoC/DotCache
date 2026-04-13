@@ -182,6 +182,25 @@ pub fn copy_device_to_device(
 }
 
 #[cfg(feature = "qwen35-minimal-hip")]
+pub fn memset_device_bytes(
+    device_ordinal: usize,
+    dst: *mut c_void,
+    value: u8,
+    len_bytes: usize,
+) -> Result<()> {
+    if dst.is_null() || len_bytes == 0 {
+        return Err(Error::Hip("hipMemset requires a valid pointer and non-zero length".into()));
+    }
+    with_device(device_ordinal, || {
+        let status = unsafe { hipMemset(dst, value as c_int, len_bytes) };
+        if status != 0 {
+            return Err(hip_error("hipMemset", status));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
 const HIP_HOST_REGISTER_MAPPED: c_uint = 0x2;
 #[cfg(feature = "qwen35-minimal-hip")]
 const HIP_MEMCPY_HOST_TO_DEVICE: c_int = 1;
@@ -205,6 +224,7 @@ unsafe extern "C" {
     fn hipMalloc(ptr: *mut *mut c_void, size: usize) -> c_int;
     fn hipFree(ptr: *mut c_void) -> c_int;
     fn hipMemcpy(dst: *mut c_void, src: *const c_void, size: usize, kind: c_int) -> c_int;
+    fn hipMemset(dst: *mut c_void, value: c_int, size: usize) -> c_int;
 }
 
 pub mod ffi {

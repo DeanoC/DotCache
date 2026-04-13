@@ -2260,6 +2260,9 @@ impl HipDeviceBuffer {
                 buffer.pad_with_zeros(dim, left, right)?,
             ));
         }
+        if let Some(out) = pad_with_zeros_hip_owned_device(self, dim, left, right)? {
+            return Ok(out);
+        }
         Ok(Self::from_tensor(
             self.materialize_tensor()?.pad_with_zeros(dim, left, right)?,
         ))
@@ -2284,6 +2287,9 @@ impl HipDeviceBuffer {
             } else {
                 Self::from_materialized_host_buffer(HipHostBuffer::cat(refs.as_slice(), dim)?)
             });
+        }
+        if let Some(out) = cat_hip_owned_device(buffers, dim)? {
+            return Ok(out);
         }
         let tensors = buffers
             .iter()
@@ -5916,6 +5922,143 @@ fn cumsum_last_dim_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
             device: xs.device().clone(),
         }),
     )))
+}
+
+fn contiguous_hip_tensor_spec(
+    tensor: &Tensor,
+) -> Result<Option<(usize, DType, Vec<usize>, *const c_void)>> {
+    use candle_core::Storage;
+
+    let tensor = tensor.contiguous()?;
+    let ordinal = match tensor.device().location() {
+        DeviceLocation::Hip { gpu_id } => gpu_id,
+        _ => return Ok(None),
+    };
+    let (storage, layout) = tensor.storage_and_layout();
+    let Storage::Hip(storage) = &*storage else {
+        return Ok(None);
+    };
+    if !layout.is_contiguous() {
+        return Ok(None);
+    }
+    Ok(Some((
+        ordinal,
+        tensor.dtype(),
+        layout.shape().dims().to_vec(),
+        storage.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void,
+    )))
+}
+
+fn pad_with_zeros_hip_owned_device(
+    xs: &HipDeviceBuffer,
+    dim: usize,
+    left: usize,
+    right: usize,
+) -> Result<Option<HipDeviceBuffer>> {
+    let tensor = xs.materialize_tensor()?;
+    let Some((ordinal, dtype, src_shape, src_ptr)) = contiguous_hip_tensor_spec(&tensor)? else {
+        return Ok(None);
+    };
+    if dim >= src_shape.len() {
+        candle_core::bail!("invalid pad dim {} for shape {:?}", dim, src_shape);
+    }
+    let mut out_shape = src_shape.clone();
+    out_shape[dim] = out_shape[dim].saturating_add(left).saturating_add(right);
+    let out = HipDeviceBuffer::from_raw_hip_device_output(out_shape.clone(), dtype, tensor.device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    hip::memset_device_bytes(
+        ordinal,
+        buffer.raw_device_ptr() as *mut c_void,
+        0,
+        buffer.len_bytes,
+    )?;
+    let elem_bytes = dtype.size_in_bytes();
+    let inner = HipNativeBuffer::elem_count(&src_shape[dim + 1..]);
+    let outer = HipNativeBuffer::elem_count(&src_shape[..dim]);
+    let src_chunk_bytes = src_shape[dim]
+        .saturating_mul(inner)
+        .saturating_mul(elem_bytes);
+    let dst_chunk_bytes = out_shape[dim]
+        .saturating_mul(inner)
+        .saturating_mul(elem_bytes);
+    let left_bytes = left.saturating_mul(inner).saturating_mul(elem_bytes);
+    for outer_idx in 0..outer {
+        let src_off = outer_idx.saturating_mul(src_chunk_bytes);
+        let dst_off = outer_idx
+            .saturating_mul(dst_chunk_bytes)
+            .saturating_add(left_bytes);
+        hip::copy_device_to_device(
+            ordinal,
+            (buffer.raw_device_ptr() as usize + dst_off) as *mut c_void,
+            (src_ptr as usize + src_off) as *const c_void,
+            src_chunk_bytes,
+        )?;
+    }
+    Ok(Some(out))
+}
+
+fn cat_hip_owned_device(buffers: &[&HipDeviceBuffer], dim: usize) -> Result<Option<HipDeviceBuffer>> {
+    let tensors = buffers
+        .iter()
+        .map(|buffer| buffer.materialize_tensor()?.contiguous())
+        .collect::<Result<Vec<_>>>()?;
+    let mut specs = Vec::with_capacity(tensors.len());
+    for tensor in &tensors {
+        let Some(spec) = contiguous_hip_tensor_spec(tensor)? else {
+            return Ok(None);
+        };
+        specs.push(spec);
+    }
+    let (ordinal, dtype, first_shape, _) = &specs[0];
+    if dim >= first_shape.len() {
+        candle_core::bail!("invalid concat dim {} for shape {:?}", dim, first_shape);
+    }
+    let mut out_shape = first_shape.clone();
+    out_shape[dim] = 0;
+    for (src_ordinal, src_dtype, shape, _) in &specs {
+        if src_ordinal != ordinal || *src_dtype != *dtype || shape.len() != first_shape.len() {
+            return Ok(None);
+        }
+        for axis in 0..shape.len() {
+            if axis == dim {
+                continue;
+            }
+            if shape[axis] != first_shape[axis] {
+                candle_core::bail!(
+                    "incompatible cat shapes {:?} and {:?} on dim {}",
+                    first_shape,
+                    shape,
+                    dim
+                );
+            }
+        }
+        out_shape[dim] = out_shape[dim].saturating_add(shape[dim]);
+    }
+    let out = HipDeviceBuffer::from_raw_hip_device_output(out_shape.clone(), *dtype, tensors[0].device())?;
+    let HipDeviceStorage::OwnedDeviceBuffer(buffer) = &out.storage else {
+        return Ok(None);
+    };
+    let elem_bytes = dtype.size_in_bytes();
+    let inner = HipNativeBuffer::elem_count(&out_shape[dim + 1..]);
+    let outer = HipNativeBuffer::elem_count(&out_shape[..dim]);
+    let out_row_bytes = out_shape[dim].saturating_mul(inner).saturating_mul(elem_bytes);
+    for outer_idx in 0..outer {
+        let mut dst_off = outer_idx.saturating_mul(out_row_bytes);
+        for (_, _, shape, src_ptr) in &specs {
+            let chunk_bytes = shape[dim].saturating_mul(inner).saturating_mul(elem_bytes);
+            let src_off = outer_idx.saturating_mul(chunk_bytes);
+            hip::copy_device_to_device(
+                *ordinal,
+                (buffer.raw_device_ptr() as usize + dst_off) as *mut c_void,
+                (*src_ptr as usize + src_off) as *const c_void,
+                chunk_bytes,
+            )?;
+            dst_off = dst_off.saturating_add(chunk_bytes);
+        }
+    }
+    Ok(Some(out))
 }
 
 fn exp_hip_host_buffer(xs: &Tensor) -> Result<Option<HipTensor>> {
