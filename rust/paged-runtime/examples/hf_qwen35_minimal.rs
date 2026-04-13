@@ -359,6 +359,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
     }
 
+    fn trace_cpu_oracle_cache_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_CPU_ORACLE_CACHE_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
     fn trace_cross_runner_generic_decode_delta_enabled() -> bool {
         matches!(
             std::env::var("DOTCACHE_QWEN35_TRACE_CROSS_RUNNER_GENERIC_DECODE_DELTA").as_deref(),
@@ -383,6 +390,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         for line in oracle.layer_max_abs_deltas(device)? {
             eprintln!("cross-runner-cache-delta[{label}] {line}");
+        }
+        Ok(())
+    }
+
+    fn trace_cpu_oracle_cache_delta(
+        label: &str,
+        oracle: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+        device: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+    ) -> Result<()> {
+        if !trace_cpu_oracle_cache_delta_enabled() {
+            return Ok(());
+        }
+        for line in oracle.layer_max_abs_deltas(device)? {
+            eprintln!("cpu-oracle-cache-delta[{label}] {line}");
         }
         Ok(())
     }
@@ -560,6 +581,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(oracle_cache) => cache_max_delta(oracle_cache, &device_cache)?,
         None => None,
     };
+    if let Some(oracle_cache) = oracle_cache.as_ref() {
+        trace_cpu_oracle_cache_delta("prefill", oracle_cache, &device_cache)?;
+    }
     if let (Some(oracle_cache), true) = (oracle_cache.as_ref(), oracle_device.location() == target_device.location()) {
         trace_cross_runner_cache_delta("prefill", oracle_cache, &device_cache)?;
     }
@@ -687,6 +711,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     None => cache_delta,
                 });
             }
+            trace_cpu_oracle_cache_delta("decode-step", oracle_cache_ref, &device_cache)?;
             if oracle_device.location() == target_device.location() {
                 trace_cross_runner_cache_delta("decode-step", oracle_cache_ref, &device_cache)?;
             }
