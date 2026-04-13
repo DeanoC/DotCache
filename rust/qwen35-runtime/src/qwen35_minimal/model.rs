@@ -3661,6 +3661,10 @@ impl candle::CustomOp1 for HipL2Norm {
 
 pub(crate) fn hip_l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     let xs = xs.contiguous()?;
+    #[cfg(feature = "qwen35-minimal-hip")]
+    if let Some((output, shape)) = hip_l2norm_host_buffer(&xs, eps)? {
+        return hip_tensor_from_host_bytes(xs.device(), xs.dtype(), shape, output);
+    }
     let dims = xs.dims();
     let n_cols = *dims
         .last()
