@@ -3135,13 +3135,17 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
     const int bs = blockDim.x;
     const int nb = gridDim.x;
 
-    // Workspace layout (F32):
-    float* hidden_f32 = workspace;
-    float* normed     = hidden_f32 + hidden_dim;
-    float* gate_up    = normed + hidden_dim;
-    float* mlp_out    = gate_up + intermediate_size * 2;
-    float* token_out  = mlp_out + hidden_dim;
-    // token_out[hidden_dim] for token mixer output
+    // Workspace layout (F32 unless noted):
+    // Section 1: persistent state
+    float* hidden_f32 = workspace;                              // [hidden_dim]
+    float* normed     = hidden_f32 + hidden_dim;                // [hidden_dim]
+    // Section 2: MLP scratch
+    float* gate_up    = normed + hidden_dim;                    // [intermediate_size * 2]
+    float* mlp_out    = gate_up + intermediate_size * 2;        // [hidden_dim]
+    // Section 3: token mixer scratch
+    float* token_out  = mlp_out + hidden_dim;                   // [hidden_dim]
+    float* proj_buf   = token_out + hidden_dim;                 // [8224] max proj output
+    // proj_buf holds projection results as F32 for all layer types
 
     extern __shared__ float lds[];
 
@@ -3163,15 +3167,156 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
         grid_barrier(barrier_counter, barrier_flag, nb);
 
         // === Token mixer: projections + core ===
-        // For now: just compute o_proj/out_proj output as zero (placeholder)
-        // This gets the MLP loop working first
-        if (blockIdx.x == 0) {
-            for (int c = tid; c < hidden_dim; c += bs) {
-                token_out[c] = 0.0f;
+        if (L.layer_type == 1) {
+            // ---- FULL ATTENTION ----
+            // Step A: Q/K/V projections via work-stealing
+            // Q: [q_out_dim, hidden_dim], K: [k_out_dim, hidden_dim], V: same as K
+            if (blockIdx.x == 0 && tid == 0) { counters[0] = 0; __threadfence(); }
+            grid_barrier(barrier_counter, barrier_flag, nb);
+
+            const int total_proj = L.q_out_dim + L.k_out_dim + L.k_out_dim;
+            {
+                for (;;) {
+                    __shared__ unsigned int sr;
+                    if (tid == 0) sr = atomicAdd(&counters[0], 1u);
+                    __syncthreads();
+                    if (sr >= static_cast<unsigned int>(total_proj)) break;
+
+                    const T* w;
+                    int row;
+                    if (sr < static_cast<unsigned int>(L.q_out_dim)) {
+                        w = static_cast<const T*>(L.q_proj_w);
+                        row = sr;
+                    } else if (sr < static_cast<unsigned int>(L.q_out_dim + L.k_out_dim)) {
+                        w = static_cast<const T*>(L.k_proj_w);
+                        row = sr - L.q_out_dim;
+                    } else {
+                        w = static_cast<const T*>(L.v_proj_w);
+                        row = sr - L.q_out_dim - L.k_out_dim;
+                    }
+                    const T* wr = w + static_cast<size_t>(row) * hidden_dim;
+
+                    float p = 0.0f;
+                    for (int c = tid; c < hidden_dim; c += bs)
+                        p += dotcache_qwen35_to_float(wr[c]) * normed[c];
+                    lds[tid] = p;
+                    __syncthreads();
+                    for (int s = bs/2; s > 0; s >>= 1) {
+                        if (tid < s) lds[tid] += lds[tid+s];
+                        __syncthreads();
+                    }
+                    if (tid == 0) proj_buf[sr] = lds[0];
+                    __syncthreads();
+                }
             }
-            __syncthreads();
+            grid_barrier(barrier_counter, barrier_flag, nb);
+
+            // Step B-G: QK-norm, RoPE, KV cache, attention, gating, o_proj
+            // Done by block 0 sequentially (these are small per-head ops)
+            if (blockIdx.x == 0) {
+                // proj_buf layout: Q[q_out_dim] | K[k_out_dim] | V[k_out_dim]
+                float* q_f32 = proj_buf;
+                float* k_f32 = proj_buf + L.q_out_dim;
+                float* v_f32 = proj_buf + L.q_out_dim + L.k_out_dim;
+
+                const int head_dim = L.attn_head_dim;
+                const int num_heads = L.attn_num_heads;
+                const int num_kv_heads = L.attn_num_kv_heads;
+                const int kv_groups = num_heads / num_kv_heads;
+
+                // Q is [q_out_dim] = [num_heads * head_dim * 2] (Q + gate interleaved per head)
+                // Split into query[num_heads * head_dim] and gate[num_heads * head_dim]
+                // Layout: for each head h, Q[h*head_dim*2 .. h*head_dim*2+head_dim] = query
+                //         Q[h*head_dim*2+head_dim .. (h+1)*head_dim*2] = gate
+
+                // Step B: QK-norm (RMSNorm per head on head_dim dimensions)
+                // TODO: implement per-head RMSNorm with q_norm_w and k_norm_w
+
+                // Step C: RoPE (partial rotation on first rotary_dim=64 of head_dim=256)
+                // TODO: implement RoPE using cos/sin tables
+
+                // Step D: KV cache append
+                // TODO: write new K/V to kv_cache at position seqlen_offset
+
+                // Step E: Attention (softmax(Q @ K.T / sqrt(head_dim)) @ V)
+                // TODO: implement per-head attention over cached tokens
+
+                // Step F: Gate (output * sigmoid(gate))
+                // TODO: apply gating
+
+                // Step G: o_proj
+                // For now: output zeros (will be replaced with matvec)
+                for (int c = tid; c < hidden_dim; c += bs) {
+                    token_out[c] = 0.0f;
+                }
+                __syncthreads();
+            }
+            grid_barrier(barrier_counter, barrier_flag, nb);
+
+        } else {
+            // ---- LINEAR ATTENTION ----
+            // Step A: qkv/z/b/a projections via work-stealing
+            if (blockIdx.x == 0 && tid == 0) { counters[0] = 0; __threadfence(); }
+            grid_barrier(barrier_counter, barrier_flag, nb);
+
+            const int total_proj = L.qkv_out_dim + L.z_out_dim + 16 + 16;
+            {
+                for (;;) {
+                    __shared__ unsigned int sr;
+                    if (tid == 0) sr = atomicAdd(&counters[0], 1u);
+                    __syncthreads();
+                    if (sr >= static_cast<unsigned int>(total_proj)) break;
+
+                    const T* w;
+                    int row;
+                    int offset = 0;
+                    if (sr < static_cast<unsigned int>(L.qkv_out_dim)) {
+                        w = static_cast<const T*>(L.qkv_proj_w);
+                        row = sr;
+                    } else if (sr < static_cast<unsigned int>(L.qkv_out_dim + L.z_out_dim)) {
+                        w = static_cast<const T*>(L.z_proj_w);
+                        row = sr - L.qkv_out_dim;
+                    } else if (sr < static_cast<unsigned int>(L.qkv_out_dim + L.z_out_dim + 16)) {
+                        w = static_cast<const T*>(L.b_proj_w);
+                        row = sr - L.qkv_out_dim - L.z_out_dim;
+                    } else {
+                        w = static_cast<const T*>(L.a_proj_w);
+                        row = sr - L.qkv_out_dim - L.z_out_dim - 16;
+                    }
+                    const T* wr = w + static_cast<size_t>(row) * hidden_dim;
+
+                    float p = 0.0f;
+                    for (int c = tid; c < hidden_dim; c += bs)
+                        p += dotcache_qwen35_to_float(wr[c]) * normed[c];
+                    lds[tid] = p;
+                    __syncthreads();
+                    for (int s = bs/2; s > 0; s >>= 1) {
+                        if (tid < s) lds[tid] += lds[tid+s];
+                        __syncthreads();
+                    }
+                    if (tid == 0) proj_buf[sr] = lds[0];
+                    __syncthreads();
+                }
+            }
+            grid_barrier(barrier_counter, barrier_flag, nb);
+
+            // Step B-E: conv1d, recurrent state, gated norm, out_proj
+            if (blockIdx.x == 0) {
+                // proj_buf layout: qkv[qkv_out_dim] | z[z_out_dim] | b[16] | a[16]
+
+                // TODO: implement conv1d state update
+                // TODO: implement delta recurrent state update
+                // TODO: implement gated norm output
+                // TODO: implement out_proj matvec
+
+                // For now: output zeros
+                for (int c = tid; c < hidden_dim; c += bs) {
+                    token_out[c] = 0.0f;
+                }
+                __syncthreads();
+            }
+            grid_barrier(barrier_counter, barrier_flag, nb);
         }
-        grid_barrier(barrier_counter, barrier_flag, nb);
 
         // === Residual add: hidden += token_mixer_output ===
         for (int c = tid + blockIdx.x * bs; c < hidden_dim; c += bs * nb) {
