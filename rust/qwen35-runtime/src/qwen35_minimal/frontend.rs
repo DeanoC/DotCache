@@ -431,6 +431,13 @@ pub(super) enum OutputProjectionSource {
 }
 
 impl OutputProjectionSource {
+    pub(super) fn weight(&self) -> Result<Tensor> {
+        match self {
+            Self::Materialized(linear) => Ok(linear.weight.clone()),
+            Self::TiedImmutable(_) => candle_core::bail!("tied embedding has no standalone weight"),
+        }
+    }
+
     pub(super) fn forward_buffer(&self, hidden_states: &StateBuffer) -> Result<StateBuffer> {
         match self {
             Self::Materialized(linear) => linear.forward_buffer(hidden_states),

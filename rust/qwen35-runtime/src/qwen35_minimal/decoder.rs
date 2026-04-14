@@ -1496,17 +1496,14 @@ impl TextModel {
             if status != 0 {
                 candle::bail!("persistent decode kernel failed with status {status}");
             }
+        }
 
-            // Debug: read back intermediate values from mlp_out workspace
-            if std::env::var("CANDLE_QWEN35_PERSISTENT_COMPARE").is_ok() {
-                let mlp_out_offset = (hidden_dim + hidden_dim + intermediate_size * 2) * 4; // bytes
-                let dbg_ptr = unsafe { (cache.workspace_ptr as *const u8).add(mlp_out_offset) };
-                let mut dbg = [0.0f32; 6];
-                super::hip::copy_device_to_host(
-                    ordinal, dbg.as_mut_ptr() as *mut c_void, dbg_ptr as *const c_void, 24,
-                )?;
-                eprintln!("[persistent_dbg] seq={seqlen_offset} conv_q0={:.6} conv_q1={:.6} conv_k0={:.6} conv_v0={:.6} state00={:.6} state01={:.6}",
-                    dbg[0], dbg[1], dbg[2], dbg[3], dbg[4], dbg[5]);
+        // After kernel: trim KV cache to actual filled length (seqlen_offset + 1)
+        // so that sequence_length() returns the correct value
+        let filled = seqlen_offset + 1;
+        for layer in &mut self.layers {
+            if let LayerKind::Full(fa) = &mut layer.token_mixer {
+                fa.trim_kv_cache_to(filled)?;
             }
         }
 
@@ -1521,6 +1518,8 @@ impl TextModel {
         let device = hidden_states.device();
         let (b_size, seq_len, _) = hidden_states.dims3()?;
         let mut profile = RuntimeProfile::default();
+        #[cfg(feature = "qwen35-minimal-hip")]
+        eprintln!("[fhsp] seq={seq_len} off={seqlen_offset} hip={} persist={}", device.is_hip(), seqlen_offset > 0 && self.use_persistent_decode(device, seq_len));
 
         // Try persistent decode kernel for single-token decode
         // Requires seqlen_offset > 0 (need initialized KV/conv/recurrent state from prefill)
@@ -1531,13 +1530,23 @@ impl TextModel {
             let n = std::env::var("CANDLE_QWEN35_PERSISTENT_LAYERS")
                 .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(total).min(total);
             if n > 0 {
-                if let Ok(result) = self.persistent_decode_forward(hidden_states, seqlen_offset) {
-                    if n == total {
-                        let normed = self.norm.forward_buffer(&result)?;
-                        return Ok((normed, profile));
+                let t0 = std::time::Instant::now();
+                match self.persistent_decode_forward(hidden_states, seqlen_offset) {
+                    Ok(result) => {
+                        if n == total {
+                            let t_k = t0.elapsed().as_secs_f64() * 1000.0;
+                            let normed = self.norm.forward_buffer(&result)?;
+                            eprintln!("[persistent] layers={t_k:.0}ms norm={:.0}ms seq={seqlen_offset}",
+                                t0.elapsed().as_secs_f64() * 1000.0 - t_k);
+                            return Ok((normed, profile));
+                        }
+                        Some((result, n))
                     }
-                    Some((result, n))
-                } else { None }
+                    Err(e) => {
+                        eprintln!("[persistent] fallback: {e}");
+                        None
+                    }
+                }
             } else { None }
         } else { None };
 
@@ -1779,9 +1788,68 @@ impl ModelForCausalLM {
                 .forward_hidden_states_profiled(hidden_states, seqlen_offset)?;
         let output_start = profile_start(device)?;
         let logits = backend.slice_last_token(&hidden_states)?;
+        // Use standalone matvec kernel for lm_head on HIP (avoids F32 upcast overhead)
+        #[cfg(feature = "qwen35-minimal-hip")]
+        let logits = if logits.device().is_hip() && logits.tensor().dims3().map_or(false, |(_, s, _)| s == 1) {
+            self.lm_head_matvec(&logits)?
+        } else {
+            self.lm_head.forward_buffer(&logits)?
+        };
+        #[cfg(not(feature = "qwen35-minimal-hip"))]
         let logits = self.lm_head.forward_buffer(&logits)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         Ok((logits, profile))
+    }
+
+    /// Fast lm_head via standalone matvec kernel (BF16 native, no F32 upcast).
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn lm_head_matvec(&self, input: &StateBuffer) -> Result<StateBuffer> {
+        use candle::Storage;
+        let weight = self.lm_head.weight()?;
+        let weight = weight.contiguous()?;
+        let input = input.contiguous()?;
+        let in_dim = input.tensor().dim(2)?;
+        let out_dim = weight.dim(0)?;
+        let ordinal = match input.device().location() {
+            DeviceLocation::Hip { gpu_id } => gpu_id,
+            _ => return self.lm_head.forward_buffer(&input),
+        };
+        let dtype_code = super::hip::dtype_code(input.tensor().dtype())
+            .map_err(|e| candle::Error::Msg(format!("{e}")))?;
+
+        let output = Tensor::zeros((1, 1, out_dim), input.tensor().dtype(), input.device())?;
+
+        let (i_s, i_l) = input.tensor().storage_and_layout();
+        let (w_s, w_l) = weight.storage_and_layout();
+        let (o_s, o_l) = output.storage_and_layout();
+        let (Storage::Hip(i_h), Storage::Hip(w_h), Storage::Hip(o_h)) = (&*i_s, &*w_s, &*o_s) else {
+            drop(i_s); drop(w_s); drop(o_s);
+            return self.lm_head.forward_buffer(&input);
+        };
+
+        // Allocate atomic row counter (reuse persistent cache if available)
+        let counter_ptr = super::hip::alloc_device_bytes(ordinal, 4)?;
+        super::hip::memset_device_bytes(ordinal, counter_ptr, 0, 4)?;
+
+        let status = unsafe {
+            super::hip::ffi::dotcache_qwen35_hip_standalone_matvec(
+                dtype_code,
+                ordinal,
+                in_dim,
+                out_dim,
+                i_h.raw_device_ptr_with_offset(i_l.start_offset())? as *const c_void,
+                w_h.raw_device_ptr_with_offset(w_l.start_offset())? as *const c_void,
+                o_h.raw_device_ptr_with_offset(o_l.start_offset())? as *mut c_void,
+                counter_ptr as *mut c_void,
+            )
+        };
+        drop(i_s); drop(w_s); drop(o_s);
+        super::hip::free_device_bytes(ordinal, counter_ptr);
+
+        if status != 0 {
+            candle::bail!("lm_head standalone matvec failed with status {status}");
+        }
+        StateBuffer::from_tensor(output)
     }
 
     pub(crate) fn forward_hidden_states_profiled_direct_hip_v1(

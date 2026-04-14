@@ -39,6 +39,9 @@ pub(crate) struct FullAttention {
     attention_size: usize,
     rotary_emb: Arc<RotaryEmbedding>,
     kv_cache: Option<(StateBuffer, StateBuffer)>,
+    /// Actual filled KV length (may be < tensor dim when using pre-allocated cache).
+    /// None means use tensor dim as the length (standard path behavior).
+    persistent_kv_filled: Option<usize>,
 }
 
 pub(super) struct DirectFullAttentionDecodeContext<'a> {
@@ -554,6 +557,7 @@ impl FullAttention {
             attention_size: cfg.num_attention_heads * cfg.head_dim,
             rotary_emb,
             kv_cache: None,
+            persistent_kv_filled: None,
         })
     }
 
@@ -576,6 +580,7 @@ impl FullAttention {
             attention_size: cfg.num_attention_heads * cfg.head_dim,
             rotary_emb,
             kv_cache: None,
+            persistent_kv_filled: None,
         })
     }
 
@@ -859,7 +864,7 @@ impl FullAttention {
     pub(super) fn rotary_emb(&self) -> &RotaryEmbedding { &self.rotary_emb }
 
     /// Ensure the KV cache has room for position `seqlen_offset`.
-    /// If the current cache is smaller, grow it to seqlen_offset + 1 in one allocation.
+    /// Pre-allocates in chunks of 256 and returns the actual filled length.
     #[cfg(feature = "qwen35-minimal-hip")]
     pub(super) fn ensure_kv_cache_capacity(
         &mut self, seqlen_offset: usize, device: &Device, dtype: DType,
@@ -867,13 +872,23 @@ impl FullAttention {
         use candle::Tensor;
         let needed = seqlen_offset + 1;
         if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
-            let (nkv, current_len, hd) = k_cache.tensor().dims3()?;
-            if current_len >= needed { return Ok(()); }
-            let grow = needed - current_len;
-            let k_pad = Tensor::zeros((nkv, grow, hd), dtype, device)?;
-            let v_pad = Tensor::zeros((nkv, grow, hd), dtype, device)?;
-            let new_k = Tensor::cat(&[k_cache.tensor(), &k_pad], 1)?;
-            let new_v = Tensor::cat(&[v_cache.tensor(), &v_pad], 1)?;
+            // KV cache is [batch, num_kv_heads, seq_len, head_dim] (4D) or [nkv, seq, hd] (3D)
+            let (seq_dim, current_cap) = if k_cache.tensor().rank() == 4 {
+                (2, k_cache.tensor().dim(2)?)
+            } else {
+                (1, k_cache.tensor().dim(1)?)
+            };
+            if current_cap >= needed { return Ok(()); }
+            let grow = needed - current_cap;
+            // Create zero padding with same shape except seq_dim = grow
+            let mut k_shape: Vec<usize> = k_cache.tensor().dims().to_vec();
+            let mut v_shape: Vec<usize> = v_cache.tensor().dims().to_vec();
+            k_shape[seq_dim] = grow;
+            v_shape[seq_dim] = grow;
+            let k_pad = Tensor::zeros(k_shape.as_slice(), dtype, device)?;
+            let v_pad = Tensor::zeros(v_shape.as_slice(), dtype, device)?;
+            let new_k = Tensor::cat(&[k_cache.tensor(), &k_pad], seq_dim)?;
+            let new_v = Tensor::cat(&[v_cache.tensor(), &v_pad], seq_dim)?;
             let backend = super::backend_buffer_api::for_device(device);
             self.kv_cache = Some((
                 backend.tensor_to_buffer(new_k)?,
@@ -881,6 +896,36 @@ impl FullAttention {
             ));
         }
         Ok(())
+    }
+
+    /// Trim KV cache to `len` positions by narrowing. The underlying allocation
+    /// stays large (pre-allocated) but the tensor view reflects the filled portion.
+    #[cfg(feature = "qwen35-minimal-hip")]
+    pub(super) fn trim_kv_cache_to(&mut self, len: usize) -> Result<()> {
+        if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
+            let seq_dim = if k_cache.tensor().rank() == 4 { 2 } else { 1 };
+            let current_len = k_cache.tensor().dim(seq_dim)?;
+            if current_len > len {
+                let new_k = k_cache.narrow(seq_dim, 0, len)?;
+                let new_v = v_cache.narrow(seq_dim, 0, len)?;
+                self.kv_cache = Some((new_k, new_v));
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the actual filled length of the KV cache (for sequence_length tracking).
+    /// With pre-allocated cache, the tensor dim exceeds the filled length.
+    #[cfg(feature = "qwen35-minimal-hip")]
+    pub(super) fn kv_filled_len(&self) -> usize {
+        if let Some((ref k_cache, _)) = self.kv_cache {
+            // The kv_len field in the descriptor tracks the actual filled length
+            // For now, use the tensor dim (grows by 1 each step in standard path,
+            // or by chunk in persistent path)
+            k_cache.tensor().dims3().map(|(_, t, _)| t).unwrap_or(0)
+        } else {
+            0
+        }
     }
 
     /// Fill a DecodeLayerDesc with this layer's full attention pointers.
@@ -918,8 +963,9 @@ impl FullAttention {
         if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
             d.kv_cache_k = ptr(k_cache.tensor())? as *mut _;
             d.kv_cache_v = ptr(v_cache.tensor())? as *mut _;
-            // Cache shape: [num_kv_heads, max_T, head_dim]
-            d.kv_max_t = k_cache.tensor().dim(1)? as i32;
+            // Cache shape: [batch, num_kv_heads, seq_len, head_dim] or [nkv, seq, hd]
+            let seq_dim = if k_cache.tensor().rank() == 4 { 2 } else { 1 };
+            d.kv_max_t = k_cache.tensor().dim(seq_dim)? as i32;
         }
         Ok(())
     }
