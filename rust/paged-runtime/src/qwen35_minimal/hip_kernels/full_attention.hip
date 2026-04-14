@@ -6,6 +6,51 @@
 #include <math.h>
 #include <stdint.h>
 
+// Weight descriptor for the persistent decode megakernel.
+// See qwen35-runtime copy for full documentation.
+struct Qwen35DecodeLayerDesc {
+    int layer_type;
+    int intermediate_size;
+    const void* input_norm_w;
+    float input_norm_eps;
+    const void* post_attn_norm_w;
+    float post_attn_norm_eps;
+    const void* gate_proj_w;
+    const void* up_proj_w;
+    const void* down_proj_w;
+    const void* qkv_proj_w;
+    int qkv_out_dim;
+    const void* z_proj_w;
+    int z_out_dim;
+    const void* b_proj_w;
+    const void* a_proj_w;
+    const void* conv1d_w;
+    int conv_kernel_size;
+    const void* linear_out_proj_w;
+    int linear_value_dim;
+    int linear_num_v_heads;
+    int linear_head_k_dim;
+    int linear_head_v_dim;
+    void* conv_state;
+    void* recurrent_state;
+    const void* q_proj_w;
+    int q_out_dim;
+    const void* k_proj_w;
+    int k_out_dim;
+    const void* v_proj_w;
+    const void* o_proj_w;
+    int attn_head_dim;
+    int attn_num_heads;
+    int attn_num_kv_heads;
+    const void* q_norm_w;
+    const void* k_norm_w;
+    float q_norm_eps;
+    float k_norm_eps;
+    void* kv_cache_k;
+    void* kv_cache_v;
+    int kv_len;
+};
+
 template <typename T>
 __device__ inline float dotcache_qwen35_to_float(T value);
 

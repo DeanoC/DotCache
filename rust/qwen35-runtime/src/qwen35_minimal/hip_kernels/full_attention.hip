@@ -6,6 +6,56 @@
 #include <math.h>
 #include <stdint.h>
 
+// Weight descriptor for the persistent decode megakernel.
+// One struct per decoder layer (24 total for Qwen3.5-0.8B).
+// Immutable weight pointers are const; mutable state pointers are non-const.
+struct Qwen35DecodeLayerDesc {
+    int layer_type;                    // 0=linear_attention, 1=full_attention
+    int intermediate_size;             // MLP intermediate dim (3584)
+    // --- RMSNorm weights (both layer types) ---
+    const void* input_norm_w;          // [hidden_size] BF16
+    float input_norm_eps;
+    const void* post_attn_norm_w;      // [hidden_size] BF16
+    float post_attn_norm_eps;
+    // --- MLP weights (both layer types) ---
+    const void* gate_proj_w;           // [intermediate_size, hidden_size] BF16
+    const void* up_proj_w;             // [intermediate_size, hidden_size] BF16
+    const void* down_proj_w;           // [hidden_size, intermediate_size] BF16
+    // --- Linear attention weights (layer_type==0) ---
+    const void* qkv_proj_w;           // [6144, hidden_size] BF16
+    int qkv_out_dim;                   // 6144
+    const void* z_proj_w;             // [2048, hidden_size] BF16
+    int z_out_dim;                     // 2048
+    const void* b_proj_w;             // [16, hidden_size] BF16
+    const void* a_proj_w;             // [16, hidden_size] BF16
+    const void* conv1d_w;             // [6144, 1, 4] BF16 (depthwise)
+    int conv_kernel_size;              // 4
+    const void* linear_out_proj_w;    // [hidden_size, 2048] BF16
+    int linear_value_dim;              // 2048
+    int linear_num_v_heads;            // 16
+    int linear_head_k_dim;             // 128
+    int linear_head_v_dim;             // 128
+    void* conv_state;                  // [6144, 3] BF16 mutable
+    void* recurrent_state;             // [num_v_heads, head_k_dim, head_v_dim] F32 mutable
+    // --- Full attention weights (layer_type==1) ---
+    const void* q_proj_w;             // [4096, hidden_size] BF16
+    int q_out_dim;                     // 4096
+    const void* k_proj_w;             // [512, hidden_size] BF16
+    int k_out_dim;                     // 512
+    const void* v_proj_w;             // [512, hidden_size] BF16
+    const void* o_proj_w;             // [hidden_size, 2048] BF16
+    int attn_head_dim;                 // 256
+    int attn_num_heads;                // 8
+    int attn_num_kv_heads;             // 2
+    const void* q_norm_w;             // [head_dim] BF16
+    const void* k_norm_w;             // [head_dim] BF16
+    float q_norm_eps;
+    float k_norm_eps;
+    void* kv_cache_k;                  // [num_kv_heads, max_T, head_dim] BF16 mutable
+    void* kv_cache_v;                  // [num_kv_heads, max_T, head_dim] BF16 mutable
+    int kv_len;                        // current cache length before this token
+};
+
 template <typename T>
 __device__ inline float dotcache_qwen35_to_float(T value);
 

@@ -30,7 +30,7 @@ pub use qwen35_minimal_impl::{
     MinimalQwen35NativeFullAttentionCacheState, MinimalQwen35NativeLayerCacheState,
     MinimalQwen35NativeLinearAttentionCacheState, MinimalQwen35Runner,
     MinimalQwen35RuntimeProfile, MinimalQwen35StateBuffer, MinimalQwen35TextConfig,
-    MinimalQwen35Weights, ModelForCausalLM,
+    MinimalQwen35Weights, DecodeLayerDesc, ModelForCausalLM,
 };
 #[cfg(feature = "qwen35-minimal")]
 pub type Qwen35Runtime = MinimalQwen35Runner;
