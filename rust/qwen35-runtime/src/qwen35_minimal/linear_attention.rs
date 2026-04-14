@@ -3371,8 +3371,14 @@ impl GatedDeltaNet {
                 return Err(e.into());
             }
 
-            let output_bytes = total_rows * std::mem::size_of::<f32>();
-            let output_ptr = super::hip::alloc_device_bytes(ordinal, output_bytes)?;
+            // Allocate F32 output on device — no D2H/H2D round-trip
+            let dev = hidden.device();
+            let output_tensor = Tensor::zeros(total_rows, DType::F32, dev)?;
+            let (out_storage, out_layout) = output_tensor.storage_and_layout();
+            let Storage::Hip(out_s) = &*out_storage else { return Ok(None); };
+            let output_device_ptr =
+                out_s.raw_device_ptr_with_offset(out_layout.start_offset())? as *mut c_void;
+
             let counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
 
             let status = unsafe {
@@ -3381,7 +3387,7 @@ impl GatedDeltaNet {
                     h_hip.raw_device_ptr_with_offset(h_l.start_offset())? as *const c_void,
                     nw_hip.raw_device_ptr_with_offset(nw_l.start_offset())? as *const c_void,
                     table_ptr as *const c_void, 4,
-                    output_ptr as *mut c_void,
+                    output_device_ptr,
                     counter_ptr as *mut c_void,
                 )
             };
@@ -3390,38 +3396,24 @@ impl GatedDeltaNet {
             super::hip::free_device_bytes(ordinal, counter_ptr);
 
             if status != 0 {
-                super::hip::free_device_bytes(ordinal, output_ptr);
                 candle::bail!("fused_norm_linear_proj: kernel failed with status {status}");
             }
 
-            let mut out_host = vec![0u8; output_bytes];
-            if let Err(e) = super::hip::copy_device_to_host(
-                ordinal, out_host.as_mut_ptr() as *mut c_void,
-                output_ptr as *const c_void, output_bytes,
-            ) {
-                super::hip::free_device_bytes(ordinal, output_ptr);
-                return Err(e.into());
-            }
-            super::hip::free_device_bytes(ordinal, output_ptr);
-
-            let floats: &[f32] = unsafe {
-                std::slice::from_raw_parts(out_host.as_ptr() as *const f32, total_rows)
-            };
+            drop(out_storage);
 
             let dt = hidden.tensor().dtype();
-            let dev = hidden.device();
-            let mut pos = 0;
-            let qkv_t = Tensor::from_vec(floats[pos..pos + qkv_out].to_vec(), (1, 1, qkv_out), dev)?
-                .to_dtype(dt)?;
+            let mut pos = 0usize;
+            let qkv_t = output_tensor.narrow(0, pos, qkv_out)?
+                .reshape((1, 1, qkv_out))?.to_dtype(dt)?;
             pos += qkv_out;
-            let z_t = Tensor::from_vec(floats[pos..pos + z_out].to_vec(), (1, 1, z_out), dev)?
-                .to_dtype(dt)?;
+            let z_t = output_tensor.narrow(0, pos, z_out)?
+                .reshape((1, 1, z_out))?.to_dtype(dt)?;
             pos += z_out;
-            let b_t = Tensor::from_vec(floats[pos..pos + b_out].to_vec(), (1, 1, b_out), dev)?
-                .to_dtype(dt)?;
+            let b_t = output_tensor.narrow(0, pos, b_out)?
+                .reshape((1, 1, b_out))?.to_dtype(dt)?;
             pos += b_out;
-            let a_t = Tensor::from_vec(floats[pos..pos + a_out].to_vec(), (1, 1, a_out), dev)?
-                .to_dtype(dt)?;
+            let a_t = output_tensor.narrow(0, pos, a_out)?
+                .reshape((1, 1, a_out))?.to_dtype(dt)?;
 
             Ok(Some((
                 StateBuffer::from_tensor(qkv_t)?,

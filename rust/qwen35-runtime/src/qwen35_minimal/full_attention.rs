@@ -868,8 +868,14 @@ impl FullAttention {
                 return Err(e.into());
             }
 
-            let output_bytes = total_rows * std::mem::size_of::<f32>();
-            let output_ptr = super::hip::alloc_device_bytes(ordinal, output_bytes)?;
+            // Allocate F32 output tensor on device (stays on GPU — no D2H/H2D)
+            let dev = hidden.device();
+            let output_tensor = Tensor::zeros(total_rows, DType::F32, dev)?;
+            let (out_storage, out_layout) = output_tensor.storage_and_layout();
+            let Storage::Hip(out_s) = &*out_storage else { return Ok(None); };
+            let output_device_ptr =
+                out_s.raw_device_ptr_with_offset(out_layout.start_offset())? as *mut c_void;
+
             let counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
 
             let status = unsafe {
@@ -878,7 +884,7 @@ impl FullAttention {
                     h_s.raw_device_ptr_with_offset(h_layout.start_offset())? as *const c_void,
                     nw_s.raw_device_ptr_with_offset(nw_layout.start_offset())? as *const c_void,
                     table_ptr as *const c_void, 3,
-                    output_ptr as *mut c_void,
+                    output_device_ptr,
                     counter_ptr as *mut c_void,
                 )
             };
@@ -887,32 +893,20 @@ impl FullAttention {
             super::hip::free_device_bytes(ordinal, counter_ptr);
 
             if status != 0 {
-                super::hip::free_device_bytes(ordinal, output_ptr);
                 candle::bail!("fused_norm_qkv: kernel failed with status {status}");
             }
 
-            let mut out_host = vec![0u8; output_bytes];
-            if let Err(e) = super::hip::copy_device_to_host(
-                ordinal, out_host.as_mut_ptr() as *mut c_void,
-                output_ptr as *const c_void, output_bytes,
-            ) {
-                super::hip::free_device_bytes(ordinal, output_ptr);
-                return Err(e.into());
-            }
-            super::hip::free_device_bytes(ordinal, output_ptr);
+            // Drop storage refs before narrowing
+            drop(out_storage);
 
-            let floats: &[f32] = unsafe {
-                std::slice::from_raw_parts(out_host.as_ptr() as *const f32, total_rows)
-            };
-
+            // Split F32 tensor on device and cast to hidden dtype
             let dt = hidden.tensor().dtype();
-            let dev = hidden.device();
-            let q = Tensor::from_vec(floats[..q_out_dim].to_vec(), (1, 1, q_out_dim), dev)?
-                .to_dtype(dt)?;
-            let k = Tensor::from_vec(floats[q_out_dim..q_out_dim + k_out_dim].to_vec(), (1, 1, k_out_dim), dev)?
-                .to_dtype(dt)?;
-            let v = Tensor::from_vec(floats[q_out_dim + k_out_dim..].to_vec(), (1, 1, v_out_dim), dev)?
-                .to_dtype(dt)?;
+            let q = output_tensor.narrow(0, 0, q_out_dim)?
+                .reshape((1, 1, q_out_dim))?.to_dtype(dt)?;
+            let k = output_tensor.narrow(0, q_out_dim, k_out_dim)?
+                .reshape((1, 1, k_out_dim))?.to_dtype(dt)?;
+            let v = output_tensor.narrow(0, q_out_dim + k_out_dim, v_out_dim)?
+                .reshape((1, 1, v_out_dim))?.to_dtype(dt)?;
 
             Ok(Some((
                 StateBuffer::from_tensor(q)?,
