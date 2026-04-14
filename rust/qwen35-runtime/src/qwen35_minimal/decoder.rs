@@ -1367,11 +1367,11 @@ impl TextModel {
             .min(total_layers);
         let intermediate_size = self.layers[0].mlp.weight_tensors()?.0.dim(0)?;
 
-        // Grow KV cache by 1 position for each full attention layer
+        // Ensure KV cache has room for position seqlen_offset
         // (standard path grows by concatenation; persistent kernel writes at seqlen_offset)
         for layer in &mut self.layers {
             if let LayerKind::Full(fa) = &mut layer.token_mixer {
-                fa.grow_kv_cache_by_one(hidden.device(), hidden.tensor().dtype())?;
+                fa.ensure_kv_cache_capacity(seqlen_offset, hidden.device(), hidden.tensor().dtype())?;
             }
         }
 
