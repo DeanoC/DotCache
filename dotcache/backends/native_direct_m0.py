@@ -32,7 +32,13 @@ def native_direct_m0_available() -> bool:
         from torch.utils.cpp_extension import CUDA_HOME
     except Exception:
         return False
-    return bool(torch.cuda.is_available() and CUDA_HOME)
+    if not (torch.cuda.is_available() and CUDA_HOME):
+        return False
+    try:
+        _load_extension()
+    except Exception:
+        return False
+    return True
 
 
 def native_direct_m0_final_mix_available() -> bool:
@@ -43,7 +49,13 @@ def native_direct_m0_final_mix_available() -> bool:
         from torch.utils.cpp_extension import CUDA_HOME
     except Exception:
         return False
-    return bool(torch.cuda.is_available() and CUDA_HOME)
+    if not (torch.cuda.is_available() and CUDA_HOME):
+        return False
+    try:
+        _load_extension()
+    except Exception:
+        return False
+    return True
 
 
 def _load_extension():
