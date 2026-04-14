@@ -872,6 +872,8 @@ impl FullAttention {
         use candle::Tensor;
         let needed = seqlen_offset + 1;
         if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
+            eprintln!("[kv_cap] shape={:?} rank={} needed={needed} seqlen_offset={seqlen_offset}",
+                k_cache.tensor().shape(), k_cache.tensor().rank());
             // KV cache is [batch, num_kv_heads, seq_len, head_dim] (4D) or [nkv, seq, hd] (3D)
             let (seq_dim, current_cap) = if k_cache.tensor().rank() == 4 {
                 (2, k_cache.tensor().dim(2)?)
