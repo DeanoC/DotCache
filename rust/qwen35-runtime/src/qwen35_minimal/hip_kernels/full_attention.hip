@@ -3580,6 +3580,8 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                 //           state += outer(key, delta), output = state @ query
                 {
                     float* conv_out = gate_up;  // reused
+                    // Recurrent state is F32 on HIP (stored by delta_recurrent_prefill_kernel
+                    // which outputs BF16, but Rust reshape path ends up with F32 via to_dtype).
                     float* state = static_cast<float*>(L.recurrent_state);
 
                     // Beta and decay computed per-iteration to minimize VGPR pressure
@@ -3628,47 +3630,25 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                                     conv_out[k_key_offset + h * hkd + k] * delta;
                             }
 
-                            // output[v] = sum_k(state[k, v] * query[k])
+                            // output[v] = sum_k(state[k, v] * query[k] / sqrt(k_head_dim))
+                            const float q_scale = rsqrtf(static_cast<float>(hkd));
                             float out_v = 0.0f;
                             for (int k = 0; k < hkd; ++k) {
                                 out_v += sh[k * hvd + v]
                                        * conv_out[q_key_offset + h * hkd + k];
                             }
 
-                            attn_scratch[h * hvd + v] = out_v;
+                            attn_scratch[h * hvd + v] = out_v * q_scale;
                         }
                         __syncthreads();
                     }
                 }
 
-                // Step D: Gated RMSNorm — RMSNorm(output, weight) * SiLU(z)
-                // output: attn_scratch[val_dim], z: z_f32[z_out_dim=val_dim]
-                // RMSNorm is per-head: each head's hvd elements normalized independently
+                // Step D: SiLU(z) gating (TODO: add per-head RMSNorm + weight)
                 {
-                    const T* nw = static_cast<const T*>(L.linear_norm_w);
-
-                    // Per-head RMSNorm: compute rms over hvd dims, normalize, apply weight
-                    for (int h = tid / hvd; h < nv; h += (bs / hvd)) {
-                        const int d = tid % hvd;
-                        float* head_out = attn_scratch + h * hvd;
-
-                        // Compute sum of squares for this head (need reduction across hvd)
-                        // Since hvd=128 and we have 256 threads, 2 heads processed at a time
-                        // Use a simple serial sum within each thread for its head
-                        float sq_sum = 0.0f;
-                        for (int j = 0; j < hvd; ++j) {
-                            sq_sum += head_out[j] * head_out[j];
-                        }
-                        float inv_rms = rsqrtf(sq_sum / static_cast<float>(hvd) + L.linear_norm_eps);
-
-                        // Apply norm weight and gating: normed * weight * silu(z)
-                        float normed = head_out[d] * inv_rms;
-                        float weight = (nw != nullptr)
-                            ? dotcache_qwen35_to_float(nw[h * hvd + d])
-                            : 1.0f;
-                        float z = z_f32[h * hvd + d];
-                        float silu_z = z / (1.0f + expf(-z));
-                        attn_scratch[h * hvd + d] = normed * weight * silu_z;
+                    for (int d = tid; d < val_dim; d += bs) {
+                        float zv = z_f32[d];
+                        attn_scratch[d] *= zv / (1.0f + expf(-zv));
                     }
                     __syncthreads();
                 }
