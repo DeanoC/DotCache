@@ -856,6 +856,8 @@ impl FullAttention {
         Ok((output, profile))
     }
 
+    pub(super) fn rotary_emb(&self) -> &RotaryEmbedding { &self.rotary_emb }
+
     /// Fill a DecodeLayerDesc with this layer's full attention pointers.
     #[cfg(feature = "qwen35-minimal-hip")]
     pub(super) fn fill_persistent_desc(
@@ -891,6 +893,8 @@ impl FullAttention {
         if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
             d.kv_cache_k = ptr(k_cache.tensor())? as *mut _;
             d.kv_cache_v = ptr(v_cache.tensor())? as *mut _;
+            // Cache shape: [num_kv_heads, max_T, head_dim]
+            d.kv_max_t = k_cache.tensor().dim(1)? as i32;
         }
         Ok(())
     }

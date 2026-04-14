@@ -605,6 +605,10 @@ impl RotaryEmbedding {
         })
     }
 
+    pub(super) fn cos(&self) -> &Tensor { &self.cos }
+    pub(super) fn sin(&self) -> &Tensor { &self.sin }
+    pub(super) fn rotary_dim(&self) -> usize { self.rotary_dim }
+
     pub(super) fn apply_buffer(
         &self,
         q: &StateBuffer,

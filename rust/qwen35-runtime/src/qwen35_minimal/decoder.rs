@@ -507,6 +507,54 @@ impl DecoderLayer {
     }
 }
 
+/// Cached device-side allocations for the persistent decode kernel.
+/// Allocated lazily on first use, reused across tokens to avoid hipMalloc/hipFree overhead.
+#[cfg(feature = "qwen35-minimal-hip")]
+struct PersistentDecodeCache {
+    ordinal: usize,
+    desc_ptr: *mut c_void,
+    desc_capacity: usize,
+    workspace_ptr: *mut c_void,
+    /// Combined: counters[4×u32] + barrier_counter[u32] + barrier_flag[u32] = 24 bytes
+    sync_ptr: *mut c_void,
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+impl PersistentDecodeCache {
+    fn counters_ptr(&self) -> *mut c_void { self.sync_ptr }
+    fn barrier_counter_ptr(&self) -> *mut c_void {
+        unsafe { (self.sync_ptr as *mut u8).add(16) as *mut c_void }
+    }
+    fn barrier_flag_ptr(&self) -> *mut c_void {
+        unsafe { (self.sync_ptr as *mut u8).add(20) as *mut c_void }
+    }
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+impl Drop for PersistentDecodeCache {
+    fn drop(&mut self) {
+        super::hip::free_device_bytes(self.ordinal, self.desc_ptr);
+        super::hip::free_device_bytes(self.ordinal, self.workspace_ptr);
+        super::hip::free_device_bytes(self.ordinal, self.sync_ptr);
+    }
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+impl Clone for PersistentDecodeCache {
+    fn clone(&self) -> Self {
+        // Don't clone device pointers — the clone gets a fresh cache.
+        Self { ordinal: 0, desc_ptr: std::ptr::null_mut(), desc_capacity: 0,
+               workspace_ptr: std::ptr::null_mut(), sync_ptr: std::ptr::null_mut() }
+    }
+}
+
+#[cfg(feature = "qwen35-minimal-hip")]
+impl std::fmt::Debug for PersistentDecodeCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "PersistentDecodeCache(ordinal={})", self.ordinal)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TextModel {
     embed_tokens: EmbeddingSource,
@@ -519,6 +567,8 @@ pub struct TextModel {
     immutable_embedding_fallback_reason: Option<String>,
     immutable_linear_requested: bool,
     deferred_linear_count: usize,
+    #[cfg(feature = "qwen35-minimal-hip")]
+    persistent_decode_cache: Option<PersistentDecodeCache>,
 }
 
 impl TextModel {
@@ -549,6 +599,8 @@ impl TextModel {
             immutable_embedding_fallback_reason: None,
             immutable_linear_requested: false,
             deferred_linear_count: 0,
+            #[cfg(feature = "qwen35-minimal-hip")]
+            persistent_decode_cache: None,
         })
     }
 
@@ -592,6 +644,8 @@ impl TextModel {
             immutable_embedding_fallback_reason,
             immutable_linear_requested,
             deferred_linear_count,
+            #[cfg(feature = "qwen35-minimal-hip")]
+            persistent_decode_cache: None,
         })
     }
 
@@ -1214,11 +1268,11 @@ impl TextModel {
 
     /// Build DecodeLayerDesc array from model layers (called once per forward pass).
     #[cfg(feature = "qwen35-minimal-hip")]
-    fn build_layer_descs(&self, seqlen_offset: usize) -> Result<Vec<super::DecodeLayerDesc>> {
+    fn build_layer_descs(&mut self, seqlen_offset: usize) -> Result<Vec<super::DecodeLayerDesc>> {
         use std::ptr;
 
         let mut descs = Vec::with_capacity(self.layers.len());
-        for layer in &self.layers {
+        for layer in &mut self.layers {
             let mut d = super::DecodeLayerDesc::default();
 
             // Common fields
@@ -1234,7 +1288,7 @@ impl TextModel {
             d.down_proj_w = Self::tensor_device_ptr(&down_w)?;
             d.intermediate_size = gate_w.dim(0)? as i32;
 
-            match &layer.token_mixer {
+            match &mut layer.token_mixer {
                 LayerKind::Linear(la) => {
                     d.layer_type = 0;
                     la.fill_persistent_desc(&mut d)?;
@@ -1292,7 +1346,7 @@ impl TextModel {
 
     #[cfg(feature = "qwen35-minimal-hip")]
     fn persistent_decode_forward(
-        &self,
+        &mut self,
         hidden: &StateBuffer,
         seqlen_offset: usize,
     ) -> Result<StateBuffer> {
@@ -1308,24 +1362,57 @@ impl TextModel {
         let num_layers = self.layers.len();
         let intermediate_size = self.layers[0].mlp.weight_tensors()?.0.dim(0)?;
 
-        // Build and upload layer descriptors
+        // Extract RoPE cos/sin device pointers from first full attention layer
+        let (cos_ptr, sin_ptr, rotary_dim) = {
+            let mut found = None;
+            for layer in &self.layers {
+                if let LayerKind::Full(fa) = &layer.token_mixer {
+                    let re = fa.rotary_emb();
+                    let cos_p = Self::tensor_device_ptr(re.cos())?;
+                    let sin_p = Self::tensor_device_ptr(re.sin())?;
+                    found = Some((cos_p, sin_p, re.rotary_dim()));
+                    break;
+                }
+            }
+            found.unwrap_or((std::ptr::null(), std::ptr::null(), 0))
+        };
+
+        // Build layer descriptors (must be rebuilt each token — kv_len changes)
         let descs = self.build_layer_descs(seqlen_offset)?;
         let desc_bytes = descs.len() * std::mem::size_of::<super::DecodeLayerDesc>();
-        let desc_ptr = super::hip::alloc_device_bytes(ordinal, desc_bytes)?;
+
+        // Lazily initialize cached device allocations (workspace, sync buffers)
+        let cache = if let Some(ref mut c) = self.persistent_decode_cache {
+            c
+        } else {
+            let workspace_floats = hidden_dim + hidden_dim + intermediate_size * 2
+                + hidden_dim + hidden_dim + 8224 + 2048;
+            let workspace_bytes = workspace_floats * std::mem::size_of::<f32>();
+            let workspace_ptr = super::hip::alloc_device_bytes(ordinal, workspace_bytes)?;
+            // counters[4×u32=16B] + barrier_counter[u32=4B] + barrier_flag[u32=4B] = 24B
+            let sync_ptr = super::hip::alloc_device_bytes(ordinal, 24)?;
+            // Zero the sync region (barrier_counter=0, barrier_flag=0 for first launch)
+            super::hip::memset_device_bytes(ordinal, sync_ptr, 0, 24)?;
+            let desc_ptr = super::hip::alloc_device_bytes(ordinal, desc_bytes)?;
+            self.persistent_decode_cache = Some(PersistentDecodeCache {
+                ordinal,
+                desc_ptr,
+                desc_capacity: desc_bytes,
+                workspace_ptr,
+                sync_ptr,
+            });
+            self.persistent_decode_cache.as_mut().unwrap()
+        };
+
+        // Re-upload descriptors (kv_len changes every token)
+        if desc_bytes > cache.desc_capacity {
+            super::hip::free_device_bytes(cache.ordinal, cache.desc_ptr);
+            cache.desc_ptr = super::hip::alloc_device_bytes(ordinal, desc_bytes)?;
+            cache.desc_capacity = desc_bytes;
+        }
         super::hip::copy_host_to_device(
-            ordinal, desc_ptr, descs.as_ptr() as *const c_void, desc_bytes,
+            ordinal, cache.desc_ptr, descs.as_ptr() as *const c_void, desc_bytes,
         )?;
-
-        // Allocate workspace (F32 scratch)
-        // hidden_f32[1024] + normed[1024] + gate_up[3584*2] + mlp_out[1024] + token_out[1024] + proj_buf[8224] + attn_scratch[2048]
-        let workspace_floats = hidden_dim + hidden_dim + intermediate_size * 2 + hidden_dim + hidden_dim + 8224 + 2048;
-        let workspace_bytes = workspace_floats * std::mem::size_of::<f32>();
-        let workspace_ptr = super::hip::alloc_device_bytes(ordinal, workspace_bytes)?;
-
-        // Counters and barriers
-        let counters_ptr = super::hip::alloc_device_bytes(ordinal, 4 * std::mem::size_of::<u32>())?;
-        let barrier_counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
-        let barrier_flag_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
 
         // Create output tensor (kernel writes BF16 in-place)
         let output = Tensor::zeros((1, 1, hidden_dim), hidden.tensor().dtype(), hidden.device())?;
@@ -1356,20 +1443,17 @@ impl TextModel {
                     hidden_dim,
                     intermediate_size,
                     seqlen_offset,
-                    desc_ptr as *const c_void,
+                    cache.desc_ptr as *const c_void,
                     hidden_io_ptr,
-                    workspace_ptr as *mut c_void,
-                    counters_ptr as *mut c_void,
-                    barrier_counter_ptr as *mut c_void,
-                    barrier_flag_ptr as *mut c_void,
+                    cache.workspace_ptr as *mut c_void,
+                    cache.counters_ptr() as *mut c_void,
+                    cache.barrier_counter_ptr() as *mut c_void,
+                    cache.barrier_flag_ptr() as *mut c_void,
+                    cos_ptr,
+                    sin_ptr,
+                    rotary_dim,
                 )
             };
-
-            super::hip::free_device_bytes(ordinal, desc_ptr);
-            super::hip::free_device_bytes(ordinal, workspace_ptr);
-            super::hip::free_device_bytes(ordinal, counters_ptr);
-            super::hip::free_device_bytes(ordinal, barrier_counter_ptr);
-            super::hip::free_device_bytes(ordinal, barrier_flag_ptr);
 
             if status != 0 {
                 candle::bail!("persistent decode kernel failed with status {status}");

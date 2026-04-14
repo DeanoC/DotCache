@@ -4399,7 +4399,10 @@ int persistent_decode_device(
     float* workspace,
     unsigned int* counters,
     unsigned int* barrier_counter,
-    unsigned int* barrier_flag
+    unsigned int* barrier_flag,
+    const void* cos_table,
+    const void* sin_table,
+    int rotary_dim
 ) {
     ScopedHipDevice scoped(device_ordinal);
 
@@ -4408,13 +4411,12 @@ int persistent_decode_device(
 
     const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
     constexpr int block_size = 256;
-    const size_t shared_bytes = block_size * sizeof(float);
+    // LDS layout: [block_size] reduction scratch + [intermediate_size] input vector cache
+    const size_t shared_bytes = (block_size + intermediate_size) * sizeof(float);
 
-    // Zero the barrier counters
-    unsigned int zeros[2] = {0, 0};
-    if (hipMemcpy(barrier_counter, &zeros[0], sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess) return 251;
-    if (hipMemcpy(barrier_flag, &zeros[1], sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess) return 252;
-    if (hipDeviceSynchronize() != hipSuccess) return 253;
+    // Barrier counters zeroed on first allocation by Rust PersistentDecodeCache.
+    // Grid barrier self-resets between uses (barrier_counter reset by last block,
+    // barrier_flag monotonically increments and wraps safely).
 
     hipLaunchKernelGGL(
         HIP_KERNEL_NAME(dotcache_qwen35_persistent_decode_kernel<T>),
@@ -4431,7 +4433,10 @@ int persistent_decode_device(
         workspace,
         counters,
         barrier_counter,
-        barrier_flag);
+        barrier_flag,
+        static_cast<const T*>(cos_table),
+        static_cast<const T*>(sin_table),
+        rotary_dim);
     if (hipGetLastError() != hipSuccess) return 254;
     if (hipDeviceSynchronize() != hipSuccess) return 255;
     return 0;
@@ -4449,7 +4454,10 @@ extern "C" int dotcache_qwen35_hip_persistent_decode(
     float* workspace,
     unsigned int* counters,
     unsigned int* barrier_counter,
-    unsigned int* barrier_flag) {
+    unsigned int* barrier_flag,
+    const void* cos_table,
+    const void* sin_table,
+    size_t rotary_dim) {
     switch (dtype) {
     case 2:
         return persistent_decode_device<hip_bfloat16>(
@@ -4459,7 +4467,8 @@ extern "C" int dotcache_qwen35_hip_persistent_decode(
             static_cast<int>(intermediate_size),
             static_cast<int>(seqlen_offset),
             layers, hidden_io, workspace, counters,
-            barrier_counter, barrier_flag);
+            barrier_counter, barrier_flag,
+            cos_table, sin_table, static_cast<int>(rotary_dim));
     default:
         return 256;
     }

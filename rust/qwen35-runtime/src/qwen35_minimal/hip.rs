@@ -569,6 +569,9 @@ pub mod ffi {
             counters: *mut c_void,           // [4] atomic counters
             barrier_counter: *mut c_void,    // atomic barrier counter
             barrier_flag: *mut c_void,       // atomic barrier flag
+            cos_table: *const c_void,        // [max_pos, rotary_dim/2] BF16 RoPE cos
+            sin_table: *const c_void,        // [max_pos, rotary_dim/2] BF16 RoPE sin
+            rotary_dim: usize,               // partial rotary dimension
         ) -> c_int;
 
         pub fn dotcache_qwen35_hip_standalone_matvec(

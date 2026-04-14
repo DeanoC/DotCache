@@ -86,7 +86,7 @@ struct LinearValueCache {
 impl GatedDeltaNet {
     /// Fill a DecodeLayerDesc with this layer's linear attention pointers.
     #[cfg(feature = "qwen35-minimal-hip")]
-    pub(super) fn fill_persistent_desc(&self, d: &mut super::DecodeLayerDesc) -> Result<()> {
+    pub(super) fn fill_persistent_desc(&mut self, d: &mut super::DecodeLayerDesc) -> Result<()> {
         use candle::Storage;
         use std::ffi::c_void;
 
@@ -110,6 +110,24 @@ impl GatedDeltaNet {
         d.linear_head_k_dim = self.head_k_dim as i32;
         d.linear_head_v_dim = self.head_v_dim as i32;
         d.conv_kernel_size = self.conv_kernel_size as i32;
+
+        // Decay parameters via cached value_cache (computes exp(A_log) on first call)
+        {
+            let device = if let Some(ref rs) = self.recurrent_state {
+                rs.device().clone()
+            } else if let Some(ref cs) = self.conv_state {
+                cs.device().clone()
+            } else {
+                candle::bail!("persistent desc: no state tensors to determine device");
+            };
+            let dtype = DType::BF16;
+            let (dt_bias, a_log_exp) = self.value_cache(&device, dtype)?;
+            d.dt_bias_w = ptr(&dt_bias)?;
+            d.a_log_exp_w = ptr(&a_log_exp)?;
+        }
+        // Gated RMSNorm weight and epsilon
+        d.linear_norm_w = ptr(self.norm.weight())?;
+        d.linear_norm_eps = self.norm.eps() as f32;
 
         if let Some(ref cs) = self.conv_state {
             d.conv_state = ptr(cs.tensor())? as *mut _;

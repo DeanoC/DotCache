@@ -68,6 +68,10 @@ pub struct DecodeLayerDesc {
     pub linear_num_v_heads: c_int,
     pub linear_head_k_dim: c_int,
     pub linear_head_v_dim: c_int,
+    pub dt_bias_w: *const c_void,
+    pub a_log_exp_w: *const c_void,
+    pub linear_norm_w: *const c_void,
+    pub linear_norm_eps: f32,
     pub conv_state: *mut c_void,
     pub recurrent_state: *mut c_void,
     pub q_proj_w: *const c_void,
@@ -86,6 +90,7 @@ pub struct DecodeLayerDesc {
     pub kv_cache_k: *mut c_void,
     pub kv_cache_v: *mut c_void,
     pub kv_len: c_int,
+    pub kv_max_t: c_int,
 }
 
 /// Rust mirror of `Qwen35ProjectionDesc` in full_attention.hip.

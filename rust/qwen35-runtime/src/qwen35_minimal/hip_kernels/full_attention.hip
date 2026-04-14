@@ -35,6 +35,10 @@ struct Qwen35DecodeLayerDesc {
     int linear_num_v_heads;            // 16
     int linear_head_k_dim;             // 128
     int linear_head_v_dim;             // 128
+    const void* dt_bias_w;             // [num_v_heads] BF16 (decay bias)
+    const void* a_log_exp_w;           // [num_v_heads] BF16 (decay scaling)
+    const void* linear_norm_w;         // [value_dim] BF16 (gated RMSNorm weight)
+    float linear_norm_eps;              // gated RMSNorm epsilon
     void* conv_state;                  // [6144, 3] BF16 mutable
     void* recurrent_state;             // [num_v_heads, head_k_dim, head_v_dim] F32 mutable
     // --- Full attention weights (layer_type==1) ---
@@ -54,6 +58,7 @@ struct Qwen35DecodeLayerDesc {
     void* kv_cache_k;                  // [num_kv_heads, max_T, head_dim] BF16 mutable
     void* kv_cache_v;                  // [num_kv_heads, max_T, head_dim] BF16 mutable
     int kv_len;                        // current cache length before this token
+    int kv_max_t;                      // allocated T dimension of KV cache
 };
 
 template <typename T>
@@ -3129,7 +3134,10 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
     float* __restrict__ workspace,
     unsigned int* __restrict__ counters,
     unsigned int* __restrict__ barrier_counter,
-    unsigned int* __restrict__ barrier_flag
+    unsigned int* __restrict__ barrier_flag,
+    const T* __restrict__ cos_table,   // [max_positions, rotary_dim/2] RoPE cos
+    const T* __restrict__ sin_table,   // [max_positions, rotary_dim/2] RoPE sin
+    int rotary_dim                      // partial rotary dimension (64 for Qwen3.5)
 ) {
     const int tid = threadIdx.x;
     const int bs = blockDim.x;
@@ -3150,6 +3158,8 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
     // attn_scratch holds intermediate attention or recurrent output
 
     extern __shared__ float lds[];
+    // LDS layout: lds[0..bs-1] = reduction scratch, lds[bs..] = input vector cache
+    float* lds_input = lds + bs;  // LDS-resident copy of input vectors for matvecs
 
     // Load hidden BF16 → F32
     for (int c = tid + blockIdx.x * bs; c < hidden_dim; c += bs * nb) {
@@ -3167,6 +3177,11 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                 hidden_dim, L.input_norm_eps, lds);
         }
         grid_barrier(barrier_counter, barrier_flag, nb);
+
+        // All blocks: cache normed vector in LDS for fast projection reads
+        for (int c = tid; c < hidden_dim; c += bs)
+            lds_input[c] = normed[c];
+        __syncthreads();
 
         // === Token mixer: projections + core ===
         if (L.layer_type == 1) {
@@ -3200,7 +3215,7 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
 
                     float p = 0.0f;
                     for (int c = tid; c < hidden_dim; c += bs)
-                        p += dotcache_qwen35_to_float(wr[c]) * normed[c];
+                        p += dotcache_qwen35_to_float(wr[c]) * lds_input[c];
                     lds[tid] = p;
                     __syncthreads();
                     for (int s = bs/2; s > 0; s >>= 1) {
@@ -3267,10 +3282,42 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     __syncthreads();
                 }
 
-                // Step C: RoPE (partial, first rotary_dim=64 of head_dim=256)
-                // TODO: needs cos/sin tables passed via kernel args or descriptor
-                // For now skip RoPE — will cause attention to be slightly wrong
-                // but structurally correct
+                // Step C: RoPE (partial, first rotary_dim dims of head_dim)
+                // Standard half-rotation: new[2i] = old[2i]*cos[i] - old[2i+1]*sin[i]
+                //                         new[2i+1] = old[2i]*sin[i] + old[2i+1]*cos[i]
+                if (cos_table != nullptr && rotary_dim > 0) {
+                    const int half_rot = rotary_dim / 2;
+                    const size_t cos_off =
+                        static_cast<size_t>(seqlen_offset) * half_rot;
+
+                    // Apply to all Q heads in parallel (nh * half_rot <= 256)
+                    if (tid < nh * half_rot) {
+                        const int h = tid / half_rot;
+                        const int i = tid % half_rot;
+                        float* qh = q_f32 + h * hd * 2;
+                        float c = dotcache_qwen35_to_float(cos_table[cos_off + i]);
+                        float s = dotcache_qwen35_to_float(sin_table[cos_off + i]);
+                        float x0 = qh[2 * i];
+                        float x1 = qh[2 * i + 1];
+                        qh[2 * i]     = x0 * c - x1 * s;
+                        qh[2 * i + 1] = x0 * s + x1 * c;
+                    }
+                    __syncthreads();
+
+                    // Apply to all K heads (nkv * half_rot threads)
+                    if (tid < nkv * half_rot) {
+                        const int h = tid / half_rot;
+                        const int i = tid % half_rot;
+                        float* kh = k_f32 + h * hd;
+                        float c = dotcache_qwen35_to_float(cos_table[cos_off + i]);
+                        float s = dotcache_qwen35_to_float(sin_table[cos_off + i]);
+                        float x0 = kh[2 * i];
+                        float x1 = kh[2 * i + 1];
+                        kh[2 * i]     = x0 * c - x1 * s;
+                        kh[2 * i + 1] = x0 * s + x1 * c;
+                    }
+                    __syncthreads();
+                }
 
                 // Step D: KV cache append — write new K/V at seqlen_offset
                 {
@@ -3281,7 +3328,7 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     for (int h = 0; h < nkv; ++h) {
                         for (int d = tid; d < hd; d += bs) {
                             const size_t offset =
-                                static_cast<size_t>(h) * 32768 * hd +   // max_T hardcoded
+                                static_cast<size_t>(h) * L.kv_max_t * hd +
                                 static_cast<size_t>(seqlen_offset) * hd + d;
                             cache_k[offset] = dotcache_qwen35_from_float<T>(k_f32[h * hd + d]);
                             cache_v[offset] = dotcache_qwen35_from_float<T>(v_f32[h * hd + d]);
@@ -3290,80 +3337,59 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     __syncthreads();
                 }
 
-                // Step E: Attention — per head, softmax(Q @ K.T * scale) @ V
-                // attn_out goes to token_out as flat [nh * hd] then will be
-                // reshaped + gated + o_proj'd
-                float* attn_out = token_out;  // reuse token_out temporarily [nh * hd enough? need 2048]
-                // Actually attention_size = nh * hd = 8 * 256 = 2048
-                // token_out is only [hidden_dim=1024] — not big enough!
-                // Use proj_buf tail as extra scratch (we're done with projections)
+                // Step E: Parallel attention — Flash-style online softmax
+                // All 256 threads cooperate per head: parallel Q·K reduction,
+                // each thread accumulates one V dimension with running max/sum.
+                // hd == bs == 256, so thread tid owns dimension tid.
                 float* attn_flat = proj_buf;  // reuse projection buffer [8224] > 2048
 
+                const T* ck = static_cast<const T*>(L.kv_cache_k);
+                const T* cv = static_cast<const T*>(L.kv_cache_v);
+
                 for (int qh = 0; qh < nh; ++qh) {
-                    const int kvh = qh / kv_groups;  // which KV head
-                    const float* q_head = q_f32 + qh * hd * 2;  // query portion (first hd)
+                    const int kvh = qh / kv_groups;
+                    const float* q_head = q_f32 + qh * hd * 2;
 
-                    // Online softmax: compute max and sum in one pass over KV cache
-                    float max_score = -1e30f;
-                    float sum_exp = 0.0f;
-                    float acc[4] = {0}; // accumulate V weighted sum
-                    // We need hd accumulators but can't have 256 in registers.
-                    // Use a simple two-pass: first compute softmax weights, then weighted sum.
+                    // Per-thread online softmax accumulators (one V dim each)
+                    float my_acc = 0.0f;
+                    float my_max = -1e30f;
+                    float my_sum = 0.0f;
 
-                    const T* ck = static_cast<const T*>(L.kv_cache_k);
-                    const T* cv = static_cast<const T*>(L.kv_cache_v);
+                    const float q_val = q_head[tid];
+                    const size_t kv_head_base =
+                        static_cast<size_t>(kvh) * L.kv_max_t * hd;
 
-                    // Pass 1: compute attention scores and find max
-                    // With 256 threads, each thread handles kv_len/256 positions
-                    // For short sequences this is fine; for long sequences it's memory-bound anyway.
-                    // Simple serial loop per thread for correctness first:
+                    for (int t = 0; t < kv_len; ++t) {
+                        const size_t pos_base = kv_head_base +
+                            static_cast<size_t>(t) * hd;
 
-                    if (tid == 0) {
-                        // Single-threaded attention for correctness
-                        // (will be parallelized later for performance)
-                        float scores_max = -1e30f;
-                        // First pass: compute scores, find max
-                        for (int t = 0; t < kv_len; ++t) {
-                            float dot = 0.0f;
-                            for (int d = 0; d < hd; ++d) {
-                                const size_t kidx =
-                                    static_cast<size_t>(kvh) * 32768 * hd +
-                                    static_cast<size_t>(t) * hd + d;
-                                dot += q_head[d] * dotcache_qwen35_to_float(ck[kidx]);
-                            }
-                            dot *= scale;
-                            if (dot > scores_max) scores_max = dot;
-                            lds[t % bs] = dot;  // stash score temporarily
+                        // All 256 threads: partial Q·K dot product
+                        float partial = q_val *
+                            dotcache_qwen35_to_float(ck[pos_base + tid]);
+                        lds[tid] = partial;
+                        __syncthreads();
+                        for (int s = bs / 2; s > 0; s >>= 1) {
+                            if (tid < s) lds[tid] += lds[tid + s];
+                            __syncthreads();
                         }
-                        // Second pass: softmax + weighted V sum
-                        float attn_acc[256]; // head_dim up to 256
-                        for (int d = 0; d < hd; ++d) attn_acc[d] = 0.0f;
-                        float norm = 0.0f;
-                        for (int t = 0; t < kv_len; ++t) {
-                            // Recompute score (or cache if kv_len small)
-                            float dot = 0.0f;
-                            for (int d = 0; d < hd; ++d) {
-                                const size_t kidx =
-                                    static_cast<size_t>(kvh) * 32768 * hd +
-                                    static_cast<size_t>(t) * hd + d;
-                                dot += q_head[d] * dotcache_qwen35_to_float(ck[kidx]);
-                            }
-                            dot *= scale;
-                            float w = expf(dot - scores_max);
-                            norm += w;
-                            for (int d = 0; d < hd; ++d) {
-                                const size_t vidx =
-                                    static_cast<size_t>(kvh) * 32768 * hd +
-                                    static_cast<size_t>(t) * hd + d;
-                                attn_acc[d] += w * dotcache_qwen35_to_float(cv[vidx]);
-                            }
-                        }
-                        // Normalize and write output
-                        float inv_norm = (norm > 0.0f) ? (1.0f / norm) : 0.0f;
-                        for (int d = 0; d < hd; ++d) {
-                            attn_flat[qh * hd + d] = attn_acc[d] * inv_norm;
-                        }
+                        float score = lds[0] * scale;
+
+                        // Load this thread's V dimension
+                        float v_val =
+                            dotcache_qwen35_to_float(cv[pos_base + tid]);
+
+                        // Online softmax + V accumulation
+                        float old_max = my_max;
+                        my_max = fmaxf(my_max, score);
+                        float rescale = expf(old_max - my_max);
+                        float w = expf(score - my_max);
+                        my_acc = my_acc * rescale + w * v_val;
+                        my_sum = my_sum * rescale + w;
                     }
+
+                    // Write normalized attention output
+                    attn_flat[qh * hd + tid] =
+                        (my_sum > 0.0f) ? (my_acc / my_sum) : 0.0f;
                     __syncthreads();
                 }
 
@@ -3379,27 +3405,44 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                 }
                 __syncthreads();
 
-                // Step G: o_proj [hidden_dim, nh*hd] × attn_flat[nh*hd] → token_out[hidden_dim]
-                // This is a matvec from gated attention output to hidden_dim
-                // Done by block 0's 256 threads (one row at a time)
-                {
-                    const int attn_size = nh * hd;  // 2048
-                    const T* ow = static_cast<const T*>(L.o_proj_w);
-                    for (int row = 0; row < hidden_dim; ++row) {
-                        const T* wr = ow + static_cast<size_t>(row) * attn_size;
-                        float p = 0.0f;
-                        for (int c = tid; c < attn_size; c += bs) {
-                            p += dotcache_qwen35_to_float(wr[c]) * attn_flat[c];
-                        }
-                        lds[tid] = p;
-                        __syncthreads();
-                        for (int s = bs/2; s > 0; s >>= 1) {
-                            if (tid < s) lds[tid] += lds[tid+s];
-                            __syncthreads();
-                        }
-                        if (tid == 0) token_out[row] = lds[0];
+            }
+            // Grid barrier: block 0 wrote attn_flat, all blocks need it for o_proj
+            grid_barrier(barrier_counter, barrier_flag, nb);
+
+            // Step G: o_proj [hidden_dim, attn_size] × attn_flat → hidden_f32 (fused residual)
+            // ALL blocks work-steal rows; result added directly to hidden_f32
+            {
+                const int attn_size = L.attn_num_heads * L.attn_head_dim;  // 2048
+
+                // Cache attn_flat in LDS for fast o_proj reads
+                for (int c = tid; c < attn_size; c += bs)
+                    lds_input[c] = proj_buf[c];
+                __syncthreads();
+
+                const T* ow = static_cast<const T*>(L.o_proj_w);
+
+                if (blockIdx.x == 0 && tid == 0) { counters[0] = 0; __threadfence(); }
+                grid_barrier(barrier_counter, barrier_flag, nb);
+
+                for (;;) {
+                    __shared__ unsigned int sr;
+                    if (tid == 0) sr = atomicAdd(&counters[0], 1u);
+                    __syncthreads();
+                    if (sr >= static_cast<unsigned int>(hidden_dim)) break;
+
+                    const T* wr = ow + static_cast<size_t>(sr) * attn_size;
+                    float p = 0.0f;
+                    for (int c = tid; c < attn_size; c += bs) {
+                        p += dotcache_qwen35_to_float(wr[c]) * lds_input[c];
+                    }
+                    lds[tid] = p;
+                    __syncthreads();
+                    for (int s = bs / 2; s > 0; s >>= 1) {
+                        if (tid < s) lds[tid] += lds[tid + s];
                         __syncthreads();
                     }
+                    if (tid == 0) hidden_f32[sr] += lds[0];  // fused residual add
+                    __syncthreads();
                 }
             }
             grid_barrier(barrier_counter, barrier_flag, nb);
@@ -3438,7 +3481,7 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
 
                     float p = 0.0f;
                     for (int c = tid; c < hidden_dim; c += bs)
-                        p += dotcache_qwen35_to_float(wr[c]) * normed[c];
+                        p += dotcache_qwen35_to_float(wr[c]) * lds_input[c];
                     lds[tid] = p;
                     __syncthreads();
                     for (int s = bs/2; s > 0; s >>= 1) {
@@ -3529,135 +3572,162 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     // Total = 6144 ✓
                 }
 
-                // Step C: Delta recurrent state update
+                // Step C: Parallel delta recurrent state update
                 // state: [nv, hkd, hvd] F32 — the recurrent memory
-                // query/key from conv_out: need to be reshaped per head
-                // This is the core delta-net recurrent step:
-                //   for each head:
-                //     state *= exp(g)
-                //     kv_mem = state @ k (sum over k_dim)
-                //     delta = (v - kv_mem) * beta
-                //     state += outer(k, delta)
-                //     output = state @ q (sum over k_dim)
+                // 256 threads process 2 heads at a time: threads 0-127 → head h,
+                // threads 128-255 → head h+1. Each thread owns one v-dimension.
+                // Per head: kv_mem = state @ key, delta = (val - kv_mem) * beta,
+                //           state += outer(key, delta), output = state @ query
                 {
                     float* conv_out = gate_up;  // reused
                     float* state = static_cast<float*>(L.recurrent_state);
-                    // state: [nv, hkd, hvd] F32
-
-                    // Compute g (decay) from a_f32
-                    // g = -log1p(exp(a + dt_bias)) * a_log_exp
-                    // TODO: needs dt_bias and a_log_exp from descriptor
-                    // For now use g = 0 (no decay) as placeholder
 
                     // Compute beta from b_f32: beta = sigmoid(b)
+                    // Compute decay: g = -softplus(a + dt_bias) * a_log_exp
+                    //                  = -log(1 + exp(a + dt_bias)) * a_log_exp
                     float beta_vals[16];
+                    float decay_vals[16];  // exp(g) per head
+                    const T* dt_bw = static_cast<const T*>(L.dt_bias_w);
+                    const T* ale_w = static_cast<const T*>(L.a_log_exp_w);
                     for (int h = 0; h < nv && h < 16; ++h) {
                         beta_vals[h] = 1.0f / (1.0f + expf(-b_f32[h]));
+                        if (dt_bw != nullptr && ale_w != nullptr) {
+                            float a_val = a_f32[h];
+                            float dt_b = dotcache_qwen35_to_float(dt_bw[h]);
+                            float a_le = dotcache_qwen35_to_float(ale_w[h]);
+                            float sp = logf(1.0f + expf(a_val + dt_b));
+                            float g = -sp * a_le;
+                            decay_vals[h] = expf(g);
+                        } else {
+                            decay_vals[h] = 1.0f;  // no decay
+                        }
                     }
 
-                    // Single-threaded recurrent update for correctness
-                    if (tid == 0) {
-                        const int q_key_offset = 0;
-                        const int k_key_offset = key_dim;
-                        const int v_val_offset = key_dim * 2;
+                    const int q_key_offset = 0;
+                    const int k_key_offset = key_dim;
+                    const int v_val_offset = key_dim * 2;
+                    const int v = tid % hvd;          // v-dimension for this thread
 
-                        // Reshape heads: conv_out[6144] → per-head vectors
-                        // head h query: conv_out[h*hkd .. (h+1)*hkd]
-                        // head h key:   conv_out[key_dim + h*hkd .. key_dim + (h+1)*hkd]
-                        // head h value: conv_out[key_dim*2 + h*hvd .. key_dim*2 + (h+1)*hvd]
+                    // Process 2 heads per iteration (256 threads / 128 hvd)
+                    for (int hp = 0; hp < nv; hp += 2) {
+                        const int h = hp + (tid >= hvd ? 1 : 0);
 
-                        float output_buf[2048]; // val_dim max
-                        for (int d = 0; d < val_dim; ++d) output_buf[d] = 0.0f;
-
-                        for (int h = 0; h < nv; ++h) {
+                        if (h < nv) {
                             float* sh = state + h * hkd * hvd;
-                            float beta = beta_vals[h];
-                            // decay: state *= exp(g) — skip for now (g=0 → exp(0)=1)
+                            const float beta = beta_vals[h];
+                            const float decay = decay_vals[h];
 
-                            // kv_mem[hvd] = sum_k(state[k,v] * key[k])
-                            float kv_mem[128]; // hvd max
-                            for (int v = 0; v < hvd; ++v) {
-                                float acc = 0.0f;
-                                for (int k = 0; k < hkd; ++k) {
-                                    acc += sh[k * hvd + v]
-                                         * conv_out[k_key_offset + h * hkd + k];
-                                }
-                                kv_mem[v] = acc;
+                            // Apply decay: state *= exp(g)
+                            for (int k = 0; k < hkd; ++k) {
+                                sh[k * hvd + v] *= decay;
                             }
 
-                            // delta[hvd] = (value - kv_mem) * beta
-                            for (int v = 0; v < hvd; ++v) {
-                                float val = conv_out[v_val_offset + h * hvd + v];
-                                float delta = (val - kv_mem[v]) * beta;
-                                // state update: state[k,v] += key[k] * delta[v]
-                                for (int k = 0; k < hkd; ++k) {
-                                    sh[k * hvd + v] +=
-                                        conv_out[k_key_offset + h * hkd + k] * delta;
-                                }
+                            // kv_mem[v] = sum_k(state[k, v] * key[k])
+                            float kv_mem_v = 0.0f;
+                            for (int k = 0; k < hkd; ++k) {
+                                kv_mem_v += sh[k * hvd + v]
+                                          * conv_out[k_key_offset + h * hkd + k];
                             }
 
-                            // output[hvd] = sum_k(state[k,v] * query[k])
-                            for (int v = 0; v < hvd; ++v) {
-                                float acc = 0.0f;
-                                for (int k = 0; k < hkd; ++k) {
-                                    acc += sh[k * hvd + v]
-                                         * conv_out[q_key_offset + h * hkd + k];
-                                }
-                                output_buf[h * hvd + v] = acc;
+                            // delta = (value - kv_mem) * beta
+                            const float val = conv_out[v_val_offset + h * hvd + v];
+                            const float delta = (val - kv_mem_v) * beta;
+
+                            // state[k, v] += key[k] * delta (each thread owns its v)
+                            for (int k = 0; k < hkd; ++k) {
+                                sh[k * hvd + v] +=
+                                    conv_out[k_key_offset + h * hkd + k] * delta;
                             }
+
+                            // output[v] = sum_k(state[k, v] * query[k])
+                            float out_v = 0.0f;
+                            for (int k = 0; k < hkd; ++k) {
+                                out_v += sh[k * hvd + v]
+                                       * conv_out[q_key_offset + h * hkd + k];
+                            }
+
+                            attn_scratch[h * hvd + v] = out_v;
                         }
-
-                        // output_buf[val_dim=2048] has the raw recurrent output
-                        // Store for gated norm + out_proj
-                        for (int d = 0; d < val_dim; ++d) {
-                            attn_scratch[d] = output_buf[d];
-                        }
+                        __syncthreads();
                     }
-                    __syncthreads();
                 }
 
-                // Step D: Gated norm — RMSNorm(output) * SiLU(z)
+                // Step D: Gated RMSNorm — RMSNorm(output, weight) * SiLU(z)
                 // output: attn_scratch[val_dim], z: z_f32[z_out_dim=val_dim]
-                // norm weight: L.linear_norm_w doesn't exist in descriptor yet
-                // TODO: add norm weight to descriptor. For now skip norm (identity)
+                // RMSNorm is per-head: each head's hvd elements normalized independently
                 {
-                    // Apply gating: output *= silu(z)
-                    for (int d = tid; d < val_dim; d += bs) {
-                        float z = z_f32[d];
+                    const T* nw = static_cast<const T*>(L.linear_norm_w);
+
+                    // Per-head RMSNorm: compute rms over hvd dims, normalize, apply weight
+                    for (int h = tid / hvd; h < nv; h += (bs / hvd)) {
+                        const int d = tid % hvd;
+                        float* head_out = attn_scratch + h * hvd;
+
+                        // Compute sum of squares for this head (need reduction across hvd)
+                        // Since hvd=128 and we have 256 threads, 2 heads processed at a time
+                        // Use a simple serial sum within each thread for its head
+                        float sq_sum = 0.0f;
+                        for (int j = 0; j < hvd; ++j) {
+                            sq_sum += head_out[j] * head_out[j];
+                        }
+                        float inv_rms = rsqrtf(sq_sum / static_cast<float>(hvd) + L.linear_norm_eps);
+
+                        // Apply norm weight and gating: normed * weight * silu(z)
+                        float normed = head_out[d] * inv_rms;
+                        float weight = (nw != nullptr)
+                            ? dotcache_qwen35_to_float(nw[h * hvd + d])
+                            : 1.0f;
+                        float z = z_f32[h * hvd + d];
                         float silu_z = z / (1.0f + expf(-z));
-                        attn_scratch[d] *= silu_z;
+                        attn_scratch[h * hvd + d] = normed * weight * silu_z;
                     }
                     __syncthreads();
                 }
 
-                // Step E: out_proj [hidden_dim, val_dim] × attn_scratch[val_dim] → token_out
-                {
-                    const T* ow = static_cast<const T*>(L.linear_out_proj_w);
-                    for (int row = 0; row < hidden_dim; ++row) {
-                        const T* wr = ow + static_cast<size_t>(row) * val_dim;
-                        float p = 0.0f;
-                        for (int c = tid; c < val_dim; c += bs) {
-                            p += dotcache_qwen35_to_float(wr[c]) * attn_scratch[c];
-                        }
-                        lds[tid] = p;
-                        __syncthreads();
-                        for (int s = bs/2; s > 0; s >>= 1) {
-                            if (tid < s) lds[tid] += lds[tid+s];
-                            __syncthreads();
-                        }
-                        if (tid == 0) token_out[row] = lds[0];
+            }
+            // Grid barrier: block 0 wrote attn_scratch, all blocks need it for out_proj
+            grid_barrier(barrier_counter, barrier_flag, nb);
+
+            // Step E: out_proj [hidden_dim, val_dim] × attn_scratch → hidden_f32 (fused residual)
+            // ALL blocks work-steal rows; result added directly to hidden_f32
+            {
+                const int vd = L.linear_value_dim;  // 2048
+
+                // Cache attn_scratch in LDS for fast out_proj reads
+                for (int c = tid; c < vd; c += bs)
+                    lds_input[c] = attn_scratch[c];
+                __syncthreads();
+
+                const T* ow = static_cast<const T*>(L.linear_out_proj_w);
+
+                if (blockIdx.x == 0 && tid == 0) { counters[0] = 0; __threadfence(); }
+                grid_barrier(barrier_counter, barrier_flag, nb);
+
+                for (;;) {
+                    __shared__ unsigned int sr;
+                    if (tid == 0) sr = atomicAdd(&counters[0], 1u);
+                    __syncthreads();
+                    if (sr >= static_cast<unsigned int>(hidden_dim)) break;
+
+                    const T* wr = ow + static_cast<size_t>(sr) * vd;
+                    float p = 0.0f;
+                    for (int c = tid; c < vd; c += bs) {
+                        p += dotcache_qwen35_to_float(wr[c]) * lds_input[c];
+                    }
+                    lds[tid] = p;
+                    __syncthreads();
+                    for (int s = bs / 2; s > 0; s >>= 1) {
+                        if (tid < s) lds[tid] += lds[tid + s];
                         __syncthreads();
                     }
+                    if (tid == 0) hidden_f32[sr] += lds[0];  // fused residual add
+                    __syncthreads();
                 }
             }
             grid_barrier(barrier_counter, barrier_flag, nb);
         }
 
-        // === Residual add: hidden += token_mixer_output ===
-        for (int c = tid + blockIdx.x * bs; c < hidden_dim; c += bs * nb) {
-            hidden_f32[c] += token_out[c];
-        }
-        grid_barrier(barrier_counter, barrier_flag, nb);
+        // Residual add for token mixer is fused into o_proj/out_proj above.
 
         // === Post-attention RMSNorm (block 0 only) ===
         if (blockIdx.x == 0) {
@@ -3667,49 +3737,68 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
         }
         grid_barrier(barrier_counter, barrier_flag, nb);
 
-        // === MLP gate_proj + up_proj (all blocks work-steal) ===
+        // All blocks: cache normed vector in LDS for fast MLP projection reads
+        for (int c = tid; c < hidden_dim; c += bs)
+            lds_input[c] = normed[c];
+        __syncthreads();
+
+        // === Fused MLP gate+up+SwiGLU (all blocks work-steal) ===
+        // Each work unit computes gate[i] AND up[i], applies SwiGLU, writes result.
+        // Removes 2 barriers vs. separate gate+up → SwiGLU phases.
         if (blockIdx.x == 0 && tid == 0) { counters[0] = 0; __threadfence(); }
         grid_barrier(barrier_counter, barrier_flag, nb);
 
         {
-            const int total = L.intermediate_size * 2;
+            const T* gw = static_cast<const T*>(L.gate_proj_w);
+            const T* uw = static_cast<const T*>(L.up_proj_w);
             for (;;) {
                 __shared__ unsigned int sr;
                 if (tid == 0) sr = atomicAdd(&counters[0], 1u);
                 __syncthreads();
-                if (sr >= static_cast<unsigned int>(total)) break;
+                if (sr >= static_cast<unsigned int>(L.intermediate_size)) break;
 
-                const bool is_up = sr >= static_cast<unsigned int>(L.intermediate_size);
-                const int row = is_up ? (sr - L.intermediate_size) : sr;
-                const T* w = is_up
-                    ? static_cast<const T*>(L.up_proj_w)
-                    : static_cast<const T*>(L.gate_proj_w);
-                const T* wr = w + static_cast<size_t>(row) * hidden_dim;
-
-                float p = 0.0f;
+                // gate_proj row (reads normed from LDS)
+                const T* gr = gw + static_cast<size_t>(sr) * hidden_dim;
+                float gp = 0.0f;
                 for (int c = tid; c < hidden_dim; c += bs)
-                    p += dotcache_qwen35_to_float(wr[c]) * normed[c];
-                lds[tid] = p;
+                    gp += dotcache_qwen35_to_float(gr[c]) * lds_input[c];
+                lds[tid] = gp;
                 __syncthreads();
                 for (int s = bs/2; s > 0; s >>= 1) {
                     if (tid < s) lds[tid] += lds[tid+s];
                     __syncthreads();
                 }
-                if (tid == 0) gate_up[sr] = lds[0];
+                float gate_val = lds[0];
+
+                // up_proj row (reads normed from LDS)
+                const T* ur = uw + static_cast<size_t>(sr) * hidden_dim;
+                float up = 0.0f;
+                for (int c = tid; c < hidden_dim; c += bs)
+                    up += dotcache_qwen35_to_float(ur[c]) * lds_input[c];
+                lds[tid] = up;
+                __syncthreads();
+                for (int s = bs/2; s > 0; s >>= 1) {
+                    if (tid < s) lds[tid] += lds[tid+s];
+                    __syncthreads();
+                }
+                float up_val = lds[0];
+
+                // SwiGLU: silu(gate) * up
+                if (tid == 0) {
+                    float silu = gate_val / (1.0f + expf(-gate_val));
+                    gate_up[sr] = silu * up_val;
+                }
                 __syncthreads();
             }
         }
         grid_barrier(barrier_counter, barrier_flag, nb);
 
-        // === SwiGLU ===
-        for (int i = tid + blockIdx.x * bs; i < L.intermediate_size; i += bs * nb) {
-            float g = gate_up[i];
-            float u = gate_up[L.intermediate_size + i];
-            gate_up[i] = (g / (1.0f + expf(-g))) * u;
-        }
-        grid_barrier(barrier_counter, barrier_flag, nb);
-
         // === MLP down_proj (all blocks work-steal) ===
+        // Cache SwiGLU output in LDS for fast down_proj reads
+        for (int c = tid; c < L.intermediate_size; c += bs)
+            lds_input[c] = gate_up[c];
+        __syncthreads();
+
         if (blockIdx.x == 0 && tid == 0) { counters[0] = 0; __threadfence(); }
         grid_barrier(barrier_counter, barrier_flag, nb);
 
@@ -3724,24 +3813,20 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                 const T* wr = dw + static_cast<size_t>(sr) * L.intermediate_size;
                 float p = 0.0f;
                 for (int c = tid; c < L.intermediate_size; c += bs)
-                    p += dotcache_qwen35_to_float(wr[c]) * gate_up[c];
+                    p += dotcache_qwen35_to_float(wr[c]) * lds_input[c];
                 lds[tid] = p;
                 __syncthreads();
                 for (int s = bs/2; s > 0; s >>= 1) {
                     if (tid < s) lds[tid] += lds[tid+s];
                     __syncthreads();
                 }
-                if (tid == 0) mlp_out[sr] = lds[0];
+                if (tid == 0) hidden_f32[sr] += lds[0];  // fused residual add
                 __syncthreads();
             }
         }
         grid_barrier(barrier_counter, barrier_flag, nb);
 
-        // === Residual add: hidden += mlp_out ===
-        for (int c = tid + blockIdx.x * bs; c < hidden_dim; c += bs * nb) {
-            hidden_f32[c] += mlp_out[c];
-        }
-        grid_barrier(barrier_counter, barrier_flag, nb);
+        // Residual add for MLP is fused into down_proj above.
     }
 
     // Write back F32 → BF16
