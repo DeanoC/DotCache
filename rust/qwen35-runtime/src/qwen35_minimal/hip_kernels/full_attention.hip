@@ -3064,3 +3064,208 @@ __global__ void dotcache_qwen35_norm_multi_proj_kernel(
         __syncthreads();
     }
 }
+
+// =============================================================================
+// MONOLITHIC PERSISTENT DECODE MEGAKERNEL
+//
+// Processes all 24 decoder layers in a single kernel launch.
+// Hidden state lives in global workspace (F32). All matvecs use multi-block
+// work-stealing. Sequential ops done by block 0, others spin on barrier.
+//
+// Grid:  (num_cus, 1, 1)
+// Block: (256, 1, 1)
+// =============================================================================
+
+__device__ inline void grid_barrier(
+    unsigned int* barrier_counter,
+    unsigned int* barrier_flag,
+    int num_blocks
+) {
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        unsigned int old = atomicAdd(barrier_counter, 1u);
+        if (old == static_cast<unsigned int>(num_blocks) - 1) {
+            *barrier_counter = 0;
+            __threadfence();
+            atomicAdd(barrier_flag, 1u);
+        } else {
+            unsigned int expected = atomicAdd(barrier_flag, 0u) + 1;
+            while (atomicAdd(barrier_flag, 0u) < expected) {}
+        }
+    }
+    __syncthreads();
+}
+
+template <typename T>
+__device__ inline void block_rms_norm_global(
+    float* dst, const float* src, const T* weight,
+    int dim, float eps, float* scratch
+) {
+    const int tid = threadIdx.x;
+    const int bs = blockDim.x;
+    float sq = 0.0f;
+    for (int c = tid; c < dim; c += bs) sq += src[c] * src[c];
+    scratch[tid] = sq;
+    __syncthreads();
+    for (int s = bs / 2; s > 0; s >>= 1) {
+        if (tid < s) scratch[tid] += scratch[tid + s];
+        __syncthreads();
+    }
+    float inv = rsqrtf(scratch[0] / static_cast<float>(dim) + eps);
+    for (int c = tid; c < dim; c += bs) {
+        dst[c] = src[c] * inv * (dotcache_qwen35_to_float(weight[c]) + 1.0f);
+    }
+    __syncthreads();
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_persistent_decode_kernel(
+    int num_layers,
+    int hidden_dim,
+    int intermediate_size,
+    int seqlen_offset,
+    const Qwen35DecodeLayerDesc* __restrict__ layers,
+    T* __restrict__ hidden_io,
+    float* __restrict__ workspace,
+    unsigned int* __restrict__ counters,
+    unsigned int* __restrict__ barrier_counter,
+    unsigned int* __restrict__ barrier_flag
+) {
+    const int tid = threadIdx.x;
+    const int bs = blockDim.x;
+    const int nb = gridDim.x;
+
+    // Workspace layout (F32):
+    float* hidden_f32 = workspace;
+    float* normed     = hidden_f32 + hidden_dim;
+    float* gate_up    = normed + hidden_dim;
+    float* mlp_out    = gate_up + intermediate_size * 2;
+    float* token_out  = mlp_out + hidden_dim;
+    // token_out[hidden_dim] for token mixer output
+
+    extern __shared__ float lds[];
+
+    // Load hidden BF16 → F32
+    for (int c = tid + blockIdx.x * bs; c < hidden_dim; c += bs * nb) {
+        hidden_f32[c] = dotcache_qwen35_to_float(hidden_io[c]);
+    }
+    grid_barrier(barrier_counter, barrier_flag, nb);
+
+    for (int layer = 0; layer < num_layers; ++layer) {
+        const Qwen35DecodeLayerDesc& L = layers[layer];
+
+        // === Input RMSNorm (block 0 only) ===
+        if (blockIdx.x == 0) {
+            block_rms_norm_global<T>(normed, hidden_f32,
+                static_cast<const T*>(L.input_norm_w),
+                hidden_dim, L.input_norm_eps, lds);
+        }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        // === Token mixer: projections + core ===
+        // For now: just compute o_proj/out_proj output as zero (placeholder)
+        // This gets the MLP loop working first
+        if (blockIdx.x == 0) {
+            for (int c = tid; c < hidden_dim; c += bs) {
+                token_out[c] = 0.0f;
+            }
+            __syncthreads();
+        }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        // === Residual add: hidden += token_mixer_output ===
+        for (int c = tid + blockIdx.x * bs; c < hidden_dim; c += bs * nb) {
+            hidden_f32[c] += token_out[c];
+        }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        // === Post-attention RMSNorm (block 0 only) ===
+        if (blockIdx.x == 0) {
+            block_rms_norm_global<T>(normed, hidden_f32,
+                static_cast<const T*>(L.post_attn_norm_w),
+                hidden_dim, L.post_attn_norm_eps, lds);
+        }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        // === MLP gate_proj + up_proj (all blocks work-steal) ===
+        if (blockIdx.x == 0 && tid == 0) { counters[0] = 0; __threadfence(); }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        {
+            const int total = L.intermediate_size * 2;
+            for (;;) {
+                __shared__ unsigned int sr;
+                if (tid == 0) sr = atomicAdd(&counters[0], 1u);
+                __syncthreads();
+                if (sr >= static_cast<unsigned int>(total)) break;
+
+                const bool is_up = sr >= static_cast<unsigned int>(L.intermediate_size);
+                const int row = is_up ? (sr - L.intermediate_size) : sr;
+                const T* w = is_up
+                    ? static_cast<const T*>(L.up_proj_w)
+                    : static_cast<const T*>(L.gate_proj_w);
+                const T* wr = w + static_cast<size_t>(row) * hidden_dim;
+
+                float p = 0.0f;
+                for (int c = tid; c < hidden_dim; c += bs)
+                    p += dotcache_qwen35_to_float(wr[c]) * normed[c];
+                lds[tid] = p;
+                __syncthreads();
+                for (int s = bs/2; s > 0; s >>= 1) {
+                    if (tid < s) lds[tid] += lds[tid+s];
+                    __syncthreads();
+                }
+                if (tid == 0) gate_up[sr] = lds[0];
+                __syncthreads();
+            }
+        }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        // === SwiGLU ===
+        for (int i = tid + blockIdx.x * bs; i < L.intermediate_size; i += bs * nb) {
+            float g = gate_up[i];
+            float u = gate_up[L.intermediate_size + i];
+            gate_up[i] = (g / (1.0f + expf(-g))) * u;
+        }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        // === MLP down_proj (all blocks work-steal) ===
+        if (blockIdx.x == 0 && tid == 0) { counters[0] = 0; __threadfence(); }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        {
+            const T* dw = static_cast<const T*>(L.down_proj_w);
+            for (;;) {
+                __shared__ unsigned int sr;
+                if (tid == 0) sr = atomicAdd(&counters[0], 1u);
+                __syncthreads();
+                if (sr >= static_cast<unsigned int>(hidden_dim)) break;
+
+                const T* wr = dw + static_cast<size_t>(sr) * L.intermediate_size;
+                float p = 0.0f;
+                for (int c = tid; c < L.intermediate_size; c += bs)
+                    p += dotcache_qwen35_to_float(wr[c]) * gate_up[c];
+                lds[tid] = p;
+                __syncthreads();
+                for (int s = bs/2; s > 0; s >>= 1) {
+                    if (tid < s) lds[tid] += lds[tid+s];
+                    __syncthreads();
+                }
+                if (tid == 0) mlp_out[sr] = lds[0];
+                __syncthreads();
+            }
+        }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+
+        // === Residual add: hidden += mlp_out ===
+        for (int c = tid + blockIdx.x * bs; c < hidden_dim; c += bs * nb) {
+            hidden_f32[c] += mlp_out[c];
+        }
+        grid_barrier(barrier_counter, barrier_flag, nb);
+    }
+
+    // Write back F32 → BF16
+    for (int c = tid + blockIdx.x * bs; c < hidden_dim; c += bs * nb) {
+        hidden_io[c] = dotcache_qwen35_from_float<T>(hidden_f32[c]);
+    }
+}

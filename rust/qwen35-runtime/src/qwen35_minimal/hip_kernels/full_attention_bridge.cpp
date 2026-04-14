@@ -4386,3 +4386,81 @@ extern "C" int dotcache_qwen35_hip_standalone_matvec(
         return 235;
     }
 }
+
+template <typename T>
+int persistent_decode_device(
+    int device_ordinal,
+    int num_layers,
+    int hidden_dim,
+    int intermediate_size,
+    int seqlen_offset,
+    const void* layers,
+    void* hidden_io,
+    float* workspace,
+    unsigned int* counters,
+    unsigned int* barrier_counter,
+    unsigned int* barrier_flag
+) {
+    ScopedHipDevice scoped(device_ordinal);
+
+    hipDeviceProp_t props;
+    if (hipGetDeviceProperties(&props, device_ordinal) != hipSuccess) return 250;
+
+    const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
+    constexpr int block_size = 256;
+    const size_t shared_bytes = block_size * sizeof(float);
+
+    // Zero the barrier counters
+    unsigned int zeros[2] = {0, 0};
+    if (hipMemcpy(barrier_counter, &zeros[0], sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess) return 251;
+    if (hipMemcpy(barrier_flag, &zeros[1], sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess) return 252;
+    if (hipDeviceSynchronize() != hipSuccess) return 253;
+
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_persistent_decode_kernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        shared_bytes,
+        0,
+        num_layers,
+        hidden_dim,
+        intermediate_size,
+        seqlen_offset,
+        static_cast<const Qwen35DecodeLayerDesc*>(layers),
+        static_cast<T*>(hidden_io),
+        workspace,
+        counters,
+        barrier_counter,
+        barrier_flag);
+    if (hipGetLastError() != hipSuccess) return 254;
+    if (hipDeviceSynchronize() != hipSuccess) return 255;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_persistent_decode(
+    int dtype,
+    size_t device_ordinal,
+    size_t num_layers,
+    size_t hidden_dim,
+    size_t intermediate_size,
+    size_t seqlen_offset,
+    const void* layers,
+    void* hidden_io,
+    float* workspace,
+    unsigned int* counters,
+    unsigned int* barrier_counter,
+    unsigned int* barrier_flag) {
+    switch (dtype) {
+    case 2:
+        return persistent_decode_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(num_layers),
+            static_cast<int>(hidden_dim),
+            static_cast<int>(intermediate_size),
+            static_cast<int>(seqlen_offset),
+            layers, hidden_io, workspace, counters,
+            barrier_counter, barrier_flag);
+    default:
+        return 256;
+    }
+}

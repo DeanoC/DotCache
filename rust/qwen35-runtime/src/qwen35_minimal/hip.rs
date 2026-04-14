@@ -556,6 +556,21 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_persistent_decode(
+            dtype: c_int,
+            device_ordinal: usize,
+            num_layers: usize,
+            hidden_dim: usize,
+            intermediate_size: usize,
+            seqlen_offset: usize,
+            layers: *const c_void,           // Qwen35DecodeLayerDesc* on device
+            hidden_io: *mut c_void,          // [hidden_dim] BF16 in/out
+            workspace: *mut c_void,          // F32 scratch workspace
+            counters: *mut c_void,           // [4] atomic counters
+            barrier_counter: *mut c_void,    // atomic barrier counter
+            barrier_flag: *mut c_void,       // atomic barrier flag
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_standalone_matvec(
             dtype: c_int,
             device_ordinal: usize,
