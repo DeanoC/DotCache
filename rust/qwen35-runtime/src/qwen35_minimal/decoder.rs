@@ -1313,21 +1313,12 @@ impl TextModel {
         let mut profile = RuntimeProfile::default();
 
         // Try persistent decode kernel for single-token decode
-        eprintln!("[decode_check] seq_len={seq_len} device={:?} cfg_hip={}", device.location(), cfg!(feature = "qwen35-minimal-hip"));
         #[cfg(feature = "qwen35-minimal-hip")]
         if self.use_persistent_decode(device, seq_len) {
             let xs = self.hidden_states_from_input_ids(input_ids)?;
-            let t_start = std::time::Instant::now();
-            match self.persistent_decode_forward(&xs, seqlen_offset) {
-                Ok(result) => {
-                    let elapsed = t_start.elapsed().as_secs_f64() * 1000.0;
-                    eprintln!("[persistent] total={elapsed:.1}ms seq={seqlen_offset}");
-                    let normed = self.norm.forward_buffer(&result)?;
-                    return Ok((normed.clone_tensor(), profile));
-                }
-                Err(e) => {
-                    eprintln!("[persistent] fallback: {e}");
-                }
+            if let Ok(result) = self.persistent_decode_forward(&xs, seqlen_offset) {
+                let normed = self.norm.forward_buffer(&result)?;
+                return Ok((normed.clone_tensor(), profile));
             }
         }
 
@@ -1466,23 +1457,8 @@ impl TextModel {
                 bytes,
             )?;
             let hidden_io_ptr = o_hip.raw_device_ptr_with_offset(o_l.start_offset())? as *mut c_void;
-
-            // Verify input copy worked: read back first 4 BF16 values
-            {
-                let mut check = [0u16; 4];
-                super::hip::copy_device_to_host(
-                    ordinal,
-                    check.as_mut_ptr() as *mut c_void,
-                    hidden_io_ptr as *const c_void,
-                    8,
-                )?;
-                let vals: Vec<f32> = check.iter().map(|&v| half::bf16::from_bits(v).to_f32()).collect();
-                eprintln!("[persistent] pre-kernel hidden_io[0..4] = {vals:?}");
-            }
-
             drop(h_s); drop(o_s);
 
-            let t0 = std::time::Instant::now();
             let status = unsafe {
                 super::hip::ffi::dotcache_qwen35_hip_persistent_decode(
                     dtype_code,
@@ -1502,8 +1478,6 @@ impl TextModel {
                     rotary_dim,
                 )
             };
-            let kernel_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            eprintln!("[persistent] kernel+sync={:.1}ms seq={}", kernel_ms, seqlen_offset);
 
             if status != 0 {
                 candle::bail!("persistent decode kernel failed with status {status}");
@@ -1526,20 +1500,9 @@ impl TextModel {
         // Requires seqlen_offset > 0 (need initialized KV/conv/recurrent state from prefill)
         #[cfg(feature = "qwen35-minimal-hip")]
         if seqlen_offset > 0 && self.use_persistent_decode(device, seq_len) {
-            eprintln!("[persistent] input shape={:?} dtype={:?} device={:?}", hidden_states.tensor().shape(), hidden_states.tensor().dtype(), hidden_states.device().location());
-            match self.persistent_decode_forward(hidden_states, seqlen_offset) {
-                Ok(result) => {
-                    // Debug: check for NaN in kernel output
-                    let vals = result.tensor().to_dtype(candle::DType::F32)?.to_vec3::<f32>()?;
-                    let nans = vals[0][0].iter().filter(|v| v.is_nan()).count();
-                    let sample: Vec<f32> = vals[0][0].iter().take(8).copied().collect();
-                    eprintln!("[persistent] output nans={nans}/1024 sample={sample:?}");
-                    let normed = self.norm.forward_buffer(&result)?;
-                    return Ok((normed, profile));
-                }
-                Err(e) => {
-                    eprintln!("[persistent_decode] fallback: {e}");
-                }
+            if let Ok(result) = self.persistent_decode_forward(hidden_states, seqlen_offset) {
+                let normed = self.norm.forward_buffer(&result)?;
+                return Ok((normed, profile));
             }
         }
 
@@ -1724,12 +1687,9 @@ impl ModelForCausalLM {
     ) -> Result<(Tensor, RuntimeProfile)> {
         let device = input_ids.device();
         let backend = backend_buffer_api::for_device(device);
-        let t0 = std::time::Instant::now();
         let (hidden_states, mut profile) = self
             .language_model
             .forward_profiled(input_ids, seqlen_offset)?;
-        let layers_ms = t0.elapsed().as_secs_f64() * 1000.0;
-        eprintln!("[forward] layers={layers_ms:.1}ms seq={seqlen_offset}");
         let output_start = profile_start(device)?;
         let logits = backend.slice_last_token(&backend.tensor_to_buffer(hidden_states)?)?;
         let logits = self.lm_head.forward_buffer(&logits)?;

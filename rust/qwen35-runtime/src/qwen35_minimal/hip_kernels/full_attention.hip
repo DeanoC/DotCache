@@ -3644,11 +3644,33 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     }
                 }
 
-                // Step D: Gated SiLU only (norm TODO)
+                // Step D: Per-head RMSNorm + weight + SiLU(z) gating
+                // Single-threaded to avoid LDS reduction issues (will parallelize once correct)
                 {
+                    // Norm weight is F32 (not BF16) — matches the standard path's dtype
+                    const float* nw = static_cast<const float*>(L.linear_norm_w);
+                    // Per-head RMSNorm: weight is [hvd] shared across all heads
+                    // Two-pass to avoid data race (read RMS → barrier → write normalized)
+                    // Pass 1: compute per-head rms_inv, store in lds[h]
+                    // With nv=16 heads, use threads 0..15 to compute each head's RMS
+                    if (tid < nv) {
+                        const int h = tid;
+                        const float* ho = attn_scratch + h * hvd;
+                        float sq = 0.0f;
+                        for (int j = 0; j < hvd; ++j)
+                            sq += ho[j] * ho[j];
+                        lds[h] = rsqrtf(sq / static_cast<float>(hvd) + L.linear_norm_eps);
+                    }
+                    __syncthreads();
+                    // Pass 2: normalize + weight + gate
                     for (int d = tid; d < val_dim; d += bs) {
+                        const int h = d / hvd;
+                        const int hd_idx = d % hvd;
+                        float rms_inv = lds[h];
+                        float n = attn_scratch[d] * rms_inv;
+                        float w = (nw != nullptr) ? nw[hd_idx] : 1.0f;
                         float zv = z_f32[d];
-                        attn_scratch[d] *= zv / (1.0f + expf(-zv));
+                        attn_scratch[d] = n * w * (zv / (1.0f + expf(-zv)));
                     }
                     __syncthreads();
                 }
