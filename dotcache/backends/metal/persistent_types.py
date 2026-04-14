@@ -125,6 +125,9 @@ class PersistentLayerTelemetry:
     compression_rerank_count: int = 0
     last_fallback_rung: int = 0
     mutation_count: int = 0
+    bound_spherical_active_count: int = 0
+    bound_interval_active_count: int = 0
+    bound_ellipsoidal_active_count: int = 0
 
 
 @dataclass(slots=True)

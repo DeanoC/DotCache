@@ -2085,12 +2085,13 @@ def _compute_ellipsoidal_upper_bound(
     *,
     query_vec: Any,
     query_norm: float,
-    center: Any,
+    center: Any | None = None,
     pc1: Any,
     r_along: Any,
     r_perp: Any,
     comp_error: Any,
     query_scale: float,
+    center_sim: Any | None = None,
 ) -> Any:
     """Ellipsoidal bound: U_E = center_sim + anisotropic_radius_term.
 
@@ -2100,28 +2101,105 @@ def _compute_ellipsoidal_upper_bound(
     where Q_perp = Q - <Q, v1> × v1 is the query component perpendicular to v1.
 
     Args:
-        query_vec: [head_dim] — single query head vector
+        query_vec:  [head_dim] — single query head vector
         query_norm: scalar — ||Q||
-        center: [num_blocks, head_dim] — block key centroids
-        pc1: [num_blocks, head_dim] — first principal component per block
-        r_along: [num_blocks] — max |projection| along pc1
-        r_perp: [num_blocks] — max perpendicular norm
+        center:     [num_blocks, head_dim] — block key centroids (unused when center_sim provided)
+        pc1:        [num_blocks, head_dim] — first principal component per block
+        r_along:    [num_blocks] — max |projection| along pc1
+        r_perp:     [num_blocks] — max perpendicular norm
         comp_error: [num_blocks] — scalar compression error per block
         query_scale: scalar attention scale
+        center_sim: [num_blocks] — pre-computed <Q,center>×scale (avoids redundant matmul
+                    when the caller has already computed this for the spherical bound)
 
     Returns:
         [num_blocks] — upper bound on max(Q·K) for each block
     """
     torch = _load_torch()
-    center_sim = torch.matmul(center, query_vec) * float(query_scale)
-    # <Q, v1> for each block
+    if center_sim is None:
+        assert center is not None, "either center or center_sim must be provided"
+        center_sim = torch.matmul(center, query_vec) * float(query_scale)
+    # <Q, v1> for each block — one matmul (not redundant: different from center dot product)
     q_dot_v1 = torch.matmul(pc1, query_vec)  # [num_blocks]
-    q_dot_v1_abs = q_dot_v1.abs()
     # ||Q_perp||^2 = ||Q||^2 - <Q,v1>^2
     q_perp_sq = max(float(query_norm) ** 2, 0.0) - q_dot_v1 ** 2
     q_perp_norm = torch.sqrt(q_perp_sq.clamp_min(0.0))
-    aniso_term = q_dot_v1_abs * r_along + q_perp_norm * r_perp + float(query_norm) * comp_error
+    aniso_term = q_dot_v1.abs() * r_along + q_perp_norm * r_perp + float(query_norm) * comp_error
     return center_sim + aniso_term * abs(float(query_scale))
+
+
+def _compute_interval_upper_bound_batched(
+    *,
+    query_tensor: Any,
+    k_min_per_q: Any,
+    k_max_per_q: Any,
+    comp_error_dim_per_q: Any,
+    query_scale: float,
+) -> Any:
+    """Vectorised interval bound for all q_heads simultaneously.
+
+    Args:
+        query_tensor: [q_heads, head_dim]
+        k_min_per_q:  [blocks, q_heads, head_dim] — K_min gathered per q_head
+        k_max_per_q:  [blocks, q_heads, head_dim]
+        comp_error_dim_per_q: [blocks, q_heads, head_dim]
+        query_scale: scalar
+
+    Returns:
+        [blocks, q_heads] upper bounds
+    """
+    torch = _load_torch()
+    k_max_prime = k_max_per_q + comp_error_dim_per_q   # [blocks, q_heads, head_dim]
+    k_min_prime = k_min_per_q - comp_error_dim_per_q
+    q = query_tensor.unsqueeze(0)                       # [1, q_heads, head_dim]
+    s = torch.where(q >= 0, q * k_max_prime, q * k_min_prime)  # [blocks, q_heads, head_dim]
+    return s.sum(dim=-1) * float(query_scale)           # [blocks, q_heads]
+
+
+def _compute_ellipsoidal_upper_bound_batched(
+    *,
+    query_tensor: Any,
+    query_norm: Any,
+    center_per_q: Any,
+    pc1_per_q: Any,
+    r_along_per_q: Any,
+    r_perp_per_q: Any,
+    comp_error_per_q: Any,
+    query_scale: float,
+) -> Any:
+    """Vectorised ellipsoidal bound for all q_heads simultaneously.
+
+    Replaces the Python-level KV-head loop that made ellipsoidal −54% on MPS.
+    All operations are single batched kernels across [blocks, q_heads].
+
+    Args:
+        query_tensor:    [q_heads, head_dim]
+        query_norm:      [q_heads]
+        center_per_q:    [blocks, q_heads, head_dim]
+        pc1_per_q:       [blocks, q_heads, head_dim]
+        r_along_per_q:   [blocks, q_heads]
+        r_perp_per_q:    [blocks, q_heads]
+        comp_error_per_q:[blocks, q_heads]
+        query_scale: scalar
+
+    Returns:
+        [blocks, q_heads] upper bounds
+    """
+    torch = _load_torch()
+    # center_sim: [blocks, q_heads]
+    center_sim = torch.einsum("bqd,qd->bq", center_per_q, query_tensor) * float(query_scale)
+    # q_dot_v1: [blocks, q_heads] — projection of each query onto each block's PC1
+    q_dot_v1 = torch.einsum("bqd,qd->bq", pc1_per_q, query_tensor)
+    # ||Q_perp||: [blocks, q_heads]
+    q_perp_sq = query_norm.unsqueeze(0).pow(2) - q_dot_v1.pow(2)  # [blocks, q_heads]
+    q_perp_norm = q_perp_sq.clamp_min(0.0).sqrt()
+    # Anisotropic radius term
+    aniso_term = (
+        q_dot_v1.abs() * r_along_per_q
+        + q_perp_norm * r_perp_per_q
+        + query_norm.unsqueeze(0) * comp_error_per_q
+    )
+    return center_sim + aniso_term * abs(float(query_scale))  # [blocks, q_heads]
 
 
 def _resolve_block_score_inputs(
@@ -2140,7 +2218,74 @@ def _resolve_block_score_inputs(
     num_blocks = int(len(state.block_token_starts))
     priority_scores = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=query_tensor.device)
     upper_bounds = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=query_tensor.device)
+    # Bound winner counters: accumulated across all q_heads, counts how many
+    # (block, q_head) evaluations each method provided the tightest upper bound.
+    _spherical_active = 0
+    _interval_active = 0
+    _ellipsoidal_active = 0
     block_indices = torch.arange(max(num_blocks, 1), dtype=torch.float32, device=query_tensor.device)
+
+    # Device-aware dispatch for bound computation:
+    #   CUDA  → batched path: single set of [blocks, q_heads] kernels, amortises launch
+    #           overhead across all heads in one shot. Tensor cores handle large matmuls
+    #           efficiently; HBM bandwidth absorbs the [blocks, q_heads, head_dim] tensors.
+    #   MPS/CPU → per-head loop: natural [:, kv_head_idx, :] slices are cache-optimal on
+    #           MPS unified memory. Batching expands kv_heads=2 → q_heads=8, blowing 4×
+    #           more data through the bandwidth budget, which costs more than the launch
+    #           overhead it saves.
+    _device_str = str(query_tensor.device)
+    _use_batched = _device_str.startswith("cuda")
+    _upper_I_all: Any = None   # [blocks, q_heads] — populated on CUDA only
+    _upper_E_all: Any = None   # [blocks, q_heads] — populated on CUDA only
+    if _use_batched and num_blocks > 0:
+        q_to_kv_t = torch.tensor(list(q_to_kv), dtype=torch.long, device=query_tensor.device)
+        if bool(getattr(config, "enable_interval_bound", True)):
+            _upper_I_all = _compute_interval_upper_bound_batched(
+                query_tensor=query_tensor,
+                k_min_per_q=state.block_k_min[:, q_to_kv_t, :].to(
+                    device=query_tensor.device, dtype=torch.float32
+                ),
+                k_max_per_q=state.block_k_max[:, q_to_kv_t, :].to(
+                    device=query_tensor.device, dtype=torch.float32
+                ),
+                comp_error_dim_per_q=state.block_k_comp_error_dim[:, q_to_kv_t, :].to(
+                    device=query_tensor.device, dtype=torch.float32
+                ),
+                query_scale=float(query_scale),
+            )
+        if (
+            bool(getattr(config, "enable_ellipsoidal_bound", False))
+            and state.block_k_pc1 is not None
+            and state.block_k_r_along is not None
+            and state.block_k_r_perp is not None
+        ):
+            _comp_err_per_q = (
+                state.block_k_comp_error[:, q_to_kv_t].to(device=query_tensor.device, dtype=torch.float32)
+                if bool(config.enable_compression)
+                else torch.zeros(
+                    (num_blocks, int(query_tensor.shape[0])),
+                    dtype=torch.float32,
+                    device=query_tensor.device,
+                )
+            )
+            _upper_E_all = _compute_ellipsoidal_upper_bound_batched(
+                query_tensor=query_tensor,
+                query_norm=query_norm,
+                center_per_q=state.block_k_center[:, q_to_kv_t, :].to(
+                    device=query_tensor.device, dtype=torch.float32
+                ),
+                pc1_per_q=state.block_k_pc1[:, q_to_kv_t, :].to(
+                    device=query_tensor.device, dtype=torch.float32
+                ),
+                r_along_per_q=state.block_k_r_along[:, q_to_kv_t].to(
+                    device=query_tensor.device, dtype=torch.float32
+                ),
+                r_perp_per_q=state.block_k_r_perp[:, q_to_kv_t].to(
+                    device=query_tensor.device, dtype=torch.float32
+                ),
+                comp_error_per_q=_comp_err_per_q,
+                query_scale=float(query_scale),
+            )
     tail_distance = torch.flip(block_indices, dims=[0])
     recency_decay = max(float(config.full_attention_priority_recency_decay_blocks), 1.0)
     local_recency = torch.exp(-tail_distance / recency_decay)
@@ -2176,20 +2321,29 @@ def _resolve_block_score_inputs(
                 float(query_scale)
             )
             upper = torch.minimum(upper, sub_upper.max(dim=1).values)
+        upper_after_spherical = upper
+        upper_I = None
+        upper_E = None
         # --- Interval bound (tighter than spherical, same O(d) cost) ---
         if config is not None and bool(getattr(config, "enable_interval_bound", True)):
-            k_min_head = state.block_k_min[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
-            k_max_head = state.block_k_max[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
-            comp_error_dim_head = state.block_k_comp_error_dim[:, kv_head_idx, :].to(
-                device=query_tensor.device, dtype=torch.float32
-            )
-            upper_I = _compute_interval_upper_bound(
-                query_vec=query_tensor[q_head_idx],
-                k_min=k_min_head,
-                k_max=k_max_head,
-                comp_error_dim=comp_error_dim_head,
-                query_scale=float(query_scale),
-            )
+            if _use_batched and _upper_I_all is not None:
+                # CUDA path: slice from the pre-computed [blocks, q_heads] tensor.
+                # Zero kernel launches here — just an index into an existing tensor.
+                upper_I = _upper_I_all[:, q_head_idx]
+            else:
+                # MPS/CPU path: per-head computation on natural [:, kv_head, :] slices.
+                k_min_head = state.block_k_min[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
+                k_max_head = state.block_k_max[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
+                comp_error_dim_head = state.block_k_comp_error_dim[:, kv_head_idx, :].to(
+                    device=query_tensor.device, dtype=torch.float32
+                )
+                upper_I = _compute_interval_upper_bound(
+                    query_vec=query_tensor[q_head_idx],
+                    k_min=k_min_head,
+                    k_max=k_max_head,
+                    comp_error_dim=comp_error_dim_head,
+                    query_scale=float(query_scale),
+                )
             upper = torch.minimum(upper, upper_I)
         # --- Ellipsoidal bound (optional, anisotropic) ---
         if (
@@ -2199,20 +2353,44 @@ def _resolve_block_score_inputs(
             and state.block_k_r_along is not None
             and state.block_k_r_perp is not None
         ):
-            pc1_head = state.block_k_pc1[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
-            r_along_head = state.block_k_r_along[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
-            r_perp_head = state.block_k_r_perp[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
-            upper_E = _compute_ellipsoidal_upper_bound(
-                query_vec=query_tensor[q_head_idx],
-                query_norm=float(query_norm[q_head_idx].item()),
-                center=center,
-                pc1=pc1_head,
-                r_along=r_along_head,
-                r_perp=r_perp_head,
-                comp_error=comp_error,
-                query_scale=float(query_scale),
-            )
+            if _use_batched and _upper_E_all is not None:
+                # CUDA path: slice from the pre-computed [blocks, q_heads] tensor.
+                upper_E = _upper_E_all[:, q_head_idx]
+            else:
+                # MPS/CPU path: per-head computation.
+                # Pass center_sim (already computed for the spherical bound) to avoid
+                # a redundant matmul(center, query_vec) — saves 1 O(blocks×d) op per head.
+                pc1_head = state.block_k_pc1[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
+                r_along_head = state.block_k_r_along[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+                r_perp_head = state.block_k_r_perp[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+                upper_E = _compute_ellipsoidal_upper_bound(
+                    query_vec=query_tensor[q_head_idx],
+                    query_norm=float(query_norm[q_head_idx].item()),
+                    pc1=pc1_head,
+                    r_along=r_along_head,
+                    r_perp=r_perp_head,
+                    comp_error=comp_error,
+                    query_scale=float(query_scale),
+                    center_sim=center_sim,  # reuse spherical computation, avoids redundant matmul
+                )
             upper = torch.minimum(upper, upper_E)
+        # --- Track which bound is active (tightest) per block for this q_head ---
+        if num_blocks > 0:
+            # Winner = the method whose value equals the final upper bound per block.
+            # Resolve priority: ellipsoidal > interval > spherical (last-wins ties).
+            active = upper  # final tightest upper per block
+            spherical_mask = torch.ones(num_blocks, dtype=torch.bool, device=active.device)
+            if upper_I is not None:
+                interval_wins = upper_I <= upper_after_spherical
+                spherical_mask = spherical_mask & ~interval_wins
+                _interval_active += int(interval_wins.sum().item())
+            if upper_E is not None:
+                ellipsoidal_wins = upper_E <= upper_after_spherical
+                if upper_I is not None:
+                    ellipsoidal_wins = ellipsoidal_wins & (upper_E <= upper_I)
+                spherical_mask = spherical_mask & ~ellipsoidal_wins
+                _ellipsoidal_active += int(ellipsoidal_wins.sum().item())
+            _spherical_active += int(spherical_mask.sum().item())
         normalized_value_norm = value_norm / value_norm.max().clamp_min(1e-6)
         priority = center_sim
         priority = priority + prev_weight * state.block_prev_attention_ema.to(device=query_tensor.device, dtype=torch.float32)
@@ -2273,7 +2451,11 @@ def _resolve_block_score_inputs(
                 exact_max = max(exact_max, float(logits.max().item()))
             if math.isfinite(exact_max):
                 upper_bounds[int(block_id)] = min(float(upper_bounds[int(block_id)].item()), float(exact_max))
-    return priority_scores, upper_bounds
+    return priority_scores, upper_bounds, {
+        "spherical": _spherical_active,
+        "interval": _interval_active,
+        "ellipsoidal": _ellipsoidal_active,
+    }
 
 
 def _resolve_recent_policy(
@@ -5950,7 +6132,7 @@ class PersistentFullAttentionState:
         start = time.perf_counter()
         state = self.layers[int(layer_id)]
         resolved_config = config_override or self.config
-        priority_scores, upper_bounds = _resolve_block_score_inputs(
+        priority_scores, upper_bounds, winner_counts = _resolve_block_score_inputs(
             state=state,
             config=resolved_config,
             layer_id=int(layer_id),
@@ -5959,7 +6141,11 @@ class PersistentFullAttentionState:
             query_scale=float(query_scale),
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        self.telemetry.require_layer(int(layer_id)).score_ms_total += elapsed_ms
+        layer_tel = self.telemetry.require_layer(int(layer_id))
+        layer_tel.score_ms_total += elapsed_ms
+        layer_tel.bound_spherical_active_count += winner_counts["spherical"]
+        layer_tel.bound_interval_active_count += winner_counts["interval"]
+        layer_tel.bound_ellipsoidal_active_count += winner_counts["ellipsoidal"]
         return {
             "priority_scores": priority_scores,
             "upper_bounds": upper_bounds,

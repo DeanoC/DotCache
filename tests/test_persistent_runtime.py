@@ -1529,17 +1529,19 @@ def test_persistent_full_attention_multi_centroid_tightens_upper_bound() -> None
         )
     }
     query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+    # Disable interval bound to isolate multi-centroid feature: interval is exact on
+    # axis-aligned data, which would equalise coarse and centroid scores.
     coarse_state = PersistentFullAttentionState.from_prefill_tensors(
         prefill_tensors=prefill_tensors,
         device=torch.device("cpu"),
         q_head_to_kv_head=np.asarray([0], dtype=np.int32),
-        config=PersistentServingConfig(block_size=4, full_attention_key_centroid_count=1),
+        config=PersistentServingConfig(block_size=4, full_attention_key_centroid_count=1, enable_interval_bound=False),
     )
     centroid_state = PersistentFullAttentionState.from_prefill_tensors(
         prefill_tensors=prefill_tensors,
         device=torch.device("cpu"),
         q_head_to_kv_head=np.asarray([0], dtype=np.int32),
-        config=PersistentServingConfig(block_size=4, full_attention_key_centroid_count=2),
+        config=PersistentServingConfig(block_size=4, full_attention_key_centroid_count=2, enable_interval_bound=False),
     )
     coarse_scores = coarse_state.score_blocks(20, query, query_scale=1.0)
     centroid_scores = centroid_state.score_blocks(20, query, query_scale=1.0)
@@ -1674,10 +1676,14 @@ def test_persistent_full_attention_residual_clusters_tighten_omitted_tail() -> N
 
 
 def test_persistent_full_attention_probe_refine_tightens_upper_bound_safely() -> None:
+    # Disable interval bound to isolate probe-refine feature: interval is exact on
+    # axis-aligned data (3.0), which makes probe-refinement a no-op and the 3.1
+    # assertion (probed spherical bound) meaningless.
     config = PersistentServingConfig(
         block_size=4,
         full_attention_probe_refine_top_k=1,
         full_attention_probe_sample_count=2,
+        enable_interval_bound=False,
     )
     prefill_tensors = {
         21: (
@@ -1696,7 +1702,7 @@ def test_persistent_full_attention_probe_refine_tightens_upper_bound_safely() ->
         prefill_tensors=prefill_tensors,
         device=torch.device("cpu"),
         q_head_to_kv_head=np.asarray([0], dtype=np.int32),
-        config=PersistentServingConfig(block_size=4, full_attention_probe_refine_top_k=0),
+        config=PersistentServingConfig(block_size=4, full_attention_probe_refine_top_k=0, enable_interval_bound=False),
     )
     probe_state = PersistentFullAttentionState.from_prefill_tensors(
         prefill_tensors=prefill_tensors,
