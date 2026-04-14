@@ -858,6 +858,26 @@ impl FullAttention {
 
     pub(super) fn rotary_emb(&self) -> &RotaryEmbedding { &self.rotary_emb }
 
+    /// Grow the KV cache by 1 position (append zeros) so the persistent kernel
+    /// can write the new K/V at position seqlen_offset without going out of bounds.
+    #[cfg(feature = "qwen35-minimal-hip")]
+    pub(super) fn grow_kv_cache_by_one(&mut self, device: &Device, dtype: DType) -> Result<()> {
+        use candle::Tensor;
+        if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
+            let (nkv, seq_len, hd) = k_cache.tensor().dims3()?;
+            let k_zero = Tensor::zeros((nkv, 1, hd), dtype, device)?;
+            let v_zero = Tensor::zeros((nkv, 1, hd), dtype, device)?;
+            let new_k = Tensor::cat(&[k_cache.tensor(), &k_zero], 1)?;
+            let new_v = Tensor::cat(&[v_cache.tensor(), &v_zero], 1)?;
+            let backend = super::backend_buffer_api::for_device(device);
+            self.kv_cache = Some((
+                backend.tensor_to_buffer(new_k)?,
+                backend.tensor_to_buffer(new_v)?,
+            ));
+        }
+        Ok(())
+    }
+
     /// Fill a DecodeLayerDesc with this layer's full attention pointers.
     #[cfg(feature = "qwen35-minimal-hip")]
     pub(super) fn fill_persistent_desc(

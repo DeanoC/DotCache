@@ -3563,6 +3563,53 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     // Total = 6144 ✓
                 }
 
+                // Debug: dump conv_out[0..3] and state[0..3] before normalization
+                if (blockIdx.x == 0 && tid == 0 && layer == 0) {
+                    float* dbg = mlp_out;  // reuse unused workspace for debug
+                    dbg[0] = gate_up[0];     // conv_out Q head0 dim0
+                    dbg[1] = gate_up[1];     // conv_out Q head0 dim1
+                    dbg[2] = gate_up[2048];  // conv_out K head0 dim0
+                    dbg[3] = gate_up[4096];  // conv_out V head0 dim0
+                    dbg[4] = static_cast<float*>(L.recurrent_state)[0]; // state[0,0,0]
+                    dbg[5] = static_cast<float*>(L.recurrent_state)[1]; // state[0,0,1]
+                }
+                __syncthreads();
+
+                // Step C0: L2-normalize Q and K per-head (matches standard path)
+                // Q_norm = Q / ||Q|| * rsqrt(k_head_dim)
+                // K_norm = K / ||K||
+                {
+                    float* conv_out = gate_up;  // reused
+                    const int nk = nv / L.linear_head_k_dim;  // num_k_heads (might differ from nv)
+                    // Actually: num_k_heads = num_v_heads / head_repeat where head_repeat = nv/nk
+                    // For Qwen3.5: nk=16, nv=16, head_repeat=1 so each v_head maps to one k_head
+                    // Q layout: conv_out[k_head * hkd .. (k_head+1) * hkd]
+                    // K layout: conv_out[key_dim + k_head * hkd .. key_dim + (k_head+1) * hkd]
+
+                    // Normalize Q and K per head using threads 0..nv-1
+                    if (tid < nv) {
+                        const int h = tid;
+                        // Q head
+                        float* qh = conv_out + h * hkd;  // q_key_offset + h * hkd
+                        float sq = 0.0f;
+                        for (int d = 0; d < hkd; ++d)
+                            sq += qh[d] * qh[d];
+                        float inv = rsqrtf(sq + 1e-6f) * rsqrtf(static_cast<float>(hkd));
+                        for (int d = 0; d < hkd; ++d)
+                            qh[d] *= inv;
+
+                        // K head
+                        float* kh = conv_out + key_dim + h * hkd;
+                        sq = 0.0f;
+                        for (int d = 0; d < hkd; ++d)
+                            sq += kh[d] * kh[d];
+                        inv = rsqrtf(sq + 1e-6f);
+                        for (int d = 0; d < hkd; ++d)
+                            kh[d] *= inv;
+                    }
+                    __syncthreads();
+                }
+
                 // Step C: Parallel delta recurrent state update
                 // state: [nv, hkd, hvd] F32 — the recurrent memory
                 // 256 threads process 2 heads at a time: threads 0-127 → head h,
@@ -3571,11 +3618,8 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                 //           state += outer(key, delta), output = state @ query
                 {
                     float* conv_out = gate_up;  // reused
-                    // Recurrent state is F32 on HIP (stored by delta_recurrent_prefill_kernel
-                    // which outputs BF16, but Rust reshape path ends up with F32 via to_dtype).
                     float* state = static_cast<float*>(L.recurrent_state);
 
-                    // Beta and decay computed per-iteration to minimize VGPR pressure
                     const T* dt_bw = static_cast<const T*>(L.dt_bias_w);
                     const T* ale_w = static_cast<const T*>(L.a_log_exp_w);
 
@@ -3621,15 +3665,15 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                                     conv_out[k_key_offset + h * hkd + k] * delta;
                             }
 
-                            // output[v] = sum_k(state[k, v] * query[k] / sqrt(k_head_dim))
-                            const float q_scale = rsqrtf(static_cast<float>(hkd));
+                            // output[v] = sum_k(state[k, v] * query[k])
+                            // (query already L2-normed with 1/sqrt(hkd) scaling in Step C0)
                             float out_v = 0.0f;
                             for (int k = 0; k < hkd; ++k) {
                                 out_v += sh[k * hvd + v]
                                        * conv_out[q_key_offset + h * hkd + k];
                             }
 
-                            attn_scratch[h * hvd + v] = out_v * q_scale;
+                            attn_scratch[h * hvd + v] = out_v;
                         }
                         __syncthreads();
                     }

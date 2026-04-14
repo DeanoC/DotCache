@@ -1358,8 +1358,22 @@ impl TextModel {
         let dtype_code = super::hip::dtype_code(hidden.tensor().dtype())
             .map_err(|e| candle::Error::Msg(format!("{e}")))?;
 
-        let num_layers = self.layers.len();
+        let total_layers = self.layers.len();
+        // Allow limiting layers for debugging: CANDLE_QWEN35_PERSISTENT_LAYERS=N
+        let num_layers = std::env::var("CANDLE_QWEN35_PERSISTENT_LAYERS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(total_layers)
+            .min(total_layers);
         let intermediate_size = self.layers[0].mlp.weight_tensors()?.0.dim(0)?;
+
+        // Grow KV cache by 1 position for each full attention layer
+        // (standard path grows by concatenation; persistent kernel writes at seqlen_offset)
+        for layer in &mut self.layers {
+            if let LayerKind::Full(fa) = &mut layer.token_mixer {
+                fa.grow_kv_cache_by_one(hidden.device(), hidden.tensor().dtype())?;
+            }
+        }
 
         // Extract RoPE cos/sin device pointers from first full attention layer
         let (cos_ptr, sin_ptr, rotary_dim) = {
@@ -1482,6 +1496,18 @@ impl TextModel {
             if status != 0 {
                 candle::bail!("persistent decode kernel failed with status {status}");
             }
+
+            // Debug: read back intermediate values from mlp_out workspace
+            if std::env::var("CANDLE_QWEN35_PERSISTENT_COMPARE").is_ok() {
+                let mlp_out_offset = (hidden_dim + hidden_dim + intermediate_size * 2) * 4; // bytes
+                let dbg_ptr = unsafe { (cache.workspace_ptr as *const u8).add(mlp_out_offset) };
+                let mut dbg = [0.0f32; 6];
+                super::hip::copy_device_to_host(
+                    ordinal, dbg.as_mut_ptr() as *mut c_void, dbg_ptr as *const c_void, 24,
+                )?;
+                eprintln!("[persistent_dbg] seq={seqlen_offset} conv_q0={:.6} conv_q1={:.6} conv_k0={:.6} conv_v0={:.6} state00={:.6} state01={:.6}",
+                    dbg[0], dbg[1], dbg[2], dbg[3], dbg[4], dbg[5]);
+            }
         }
 
         StateBuffer::from_tensor(output)
@@ -1498,13 +1524,25 @@ impl TextModel {
 
         // Try persistent decode kernel for single-token decode
         // Requires seqlen_offset > 0 (need initialized KV/conv/recurrent state from prefill)
+        // Persistent decode: process first N layers in GPU kernel, rest via standard path
         #[cfg(feature = "qwen35-minimal-hip")]
-        if seqlen_offset > 0 && self.use_persistent_decode(device, seq_len) {
-            if let Ok(result) = self.persistent_decode_forward(hidden_states, seqlen_offset) {
-                let normed = self.norm.forward_buffer(&result)?;
-                return Ok((normed, profile));
-            }
-        }
+        let persistent_layers = if seqlen_offset > 0 && self.use_persistent_decode(device, seq_len) {
+            let total = self.layers.len();
+            let n = std::env::var("CANDLE_QWEN35_PERSISTENT_LAYERS")
+                .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(total).min(total);
+            if n > 0 {
+                if let Ok(result) = self.persistent_decode_forward(hidden_states, seqlen_offset) {
+                    if n == total {
+                        let normed = self.norm.forward_buffer(&result)?;
+                        return Ok((normed, profile));
+                    }
+                    Some((result, n))
+                } else { None }
+            } else { None }
+        } else { None };
+
+        #[cfg(not(feature = "qwen35-minimal-hip"))]
+        let persistent_layers: Option<(StateBuffer, usize)> = None;
 
         let scheduler_start = profile_start(device)?;
         let attention_mask = if seq_len > 1 {
@@ -1513,8 +1551,12 @@ impl TextModel {
             None
         };
         profile.scheduler_planning_millis += profile_elapsed(scheduler_start, device)?;
-        let mut xs = hidden_states.clone();
-        for layer in self.layers.iter_mut() {
+        let (mut xs, skip_layers) = match persistent_layers {
+            Some((result, n)) => (result, n),
+            None => (hidden_states.clone(), 0),
+        };
+        for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
+            if layer_idx < skip_layers { continue; }
             let mask = if layer.layer_type() == "full_attention" {
                 attention_mask.as_ref()
             } else {
