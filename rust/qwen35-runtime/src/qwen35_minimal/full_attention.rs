@@ -794,6 +794,134 @@ impl FullAttention {
         Ok((output, profile))
     }
 
+    /// Fused norm + Q/K/V projections using the megakernel.
+    /// Returns (q_and_gate, k_proj, v_proj) or None if not available.
+    pub(super) fn fused_norm_qkv_projections(
+        &self,
+        pre_norm_hidden: &StateBuffer,
+        norm: &super::frontend::Qwen35RmsNorm,
+    ) -> Result<Option<(StateBuffer, StateBuffer, StateBuffer)>> {
+        #[cfg(not(feature = "qwen35-minimal-hip"))]
+        { return Ok(None); }
+
+        #[cfg(feature = "qwen35-minimal-hip")]
+        {
+            use candle::Storage;
+            use std::ffi::c_void;
+
+            let hidden = pre_norm_hidden.contiguous()?;
+            let (b_sz, seq_len, hidden_dim) = hidden.dims3()?;
+            if b_sz != 1 || seq_len != 1 { return Ok(None); }
+
+            let ordinal = match hidden.device().location() {
+                DeviceLocation::Hip { gpu_id } => gpu_id,
+                _ => return Ok(None),
+            };
+            let dtype_code = match super::hip::dtype_code(hidden.tensor().dtype()) {
+                Ok(c) => c,
+                Err(_) => return Ok(None),
+            };
+
+            let norm_w = norm.weight().contiguous()?;
+            let q_w = self.q_proj.weight.contiguous()?;
+            let k_w = self.k_proj.weight.contiguous()?;
+            let v_w = self.v_proj.weight.contiguous()?;
+
+            let q_out_dim = q_w.dim(0)?;
+            let k_out_dim = k_w.dim(0)?;
+            let v_out_dim = v_w.dim(0)?;
+            let total_rows = q_out_dim + k_out_dim + v_out_dim;
+
+            let (q_storage, q_layout) = q_w.storage_and_layout();
+            let (k_storage, k_layout) = k_w.storage_and_layout();
+            let (v_storage, v_layout) = v_w.storage_and_layout();
+            let (h_storage, h_layout) = hidden.tensor().storage_and_layout();
+            let (nw_storage, nw_layout) = norm_w.storage_and_layout();
+
+            let (
+                Storage::Hip(q_s), Storage::Hip(k_s), Storage::Hip(v_s),
+                Storage::Hip(h_s), Storage::Hip(nw_s),
+            ) = (&*q_storage, &*k_storage, &*v_storage, &*h_storage, &*nw_storage)
+            else { return Ok(None); };
+
+            let proj_table = [
+                super::ProjectionDesc {
+                    weight: q_s.raw_device_ptr_with_offset(q_layout.start_offset())? as *const c_void,
+                    out_dim: q_out_dim as i32, output_offset: 0,
+                },
+                super::ProjectionDesc {
+                    weight: k_s.raw_device_ptr_with_offset(k_layout.start_offset())? as *const c_void,
+                    out_dim: k_out_dim as i32, output_offset: q_out_dim as i32,
+                },
+                super::ProjectionDesc {
+                    weight: v_s.raw_device_ptr_with_offset(v_layout.start_offset())? as *const c_void,
+                    out_dim: v_out_dim as i32, output_offset: (q_out_dim + k_out_dim) as i32,
+                },
+            ];
+
+            let table_bytes = std::mem::size_of_val(&proj_table);
+            let table_ptr = super::hip::alloc_device_bytes(ordinal, table_bytes)?;
+            if let Err(e) = super::hip::copy_host_to_device(
+                ordinal, table_ptr, proj_table.as_ptr() as *const c_void, table_bytes,
+            ) {
+                super::hip::free_device_bytes(ordinal, table_ptr);
+                return Err(e.into());
+            }
+
+            let output_bytes = total_rows * std::mem::size_of::<f32>();
+            let output_ptr = super::hip::alloc_device_bytes(ordinal, output_bytes)?;
+            let counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
+
+            let status = unsafe {
+                super::hip::ffi::dotcache_qwen35_hip_norm_multi_proj(
+                    dtype_code, ordinal, hidden_dim, total_rows, norm.eps() as f32,
+                    h_s.raw_device_ptr_with_offset(h_layout.start_offset())? as *const c_void,
+                    nw_s.raw_device_ptr_with_offset(nw_layout.start_offset())? as *const c_void,
+                    table_ptr as *const c_void, 3,
+                    output_ptr as *mut c_void,
+                    counter_ptr as *mut c_void,
+                )
+            };
+
+            super::hip::free_device_bytes(ordinal, table_ptr);
+            super::hip::free_device_bytes(ordinal, counter_ptr);
+
+            if status != 0 {
+                super::hip::free_device_bytes(ordinal, output_ptr);
+                candle::bail!("fused_norm_qkv: kernel failed with status {status}");
+            }
+
+            let mut out_host = vec![0u8; output_bytes];
+            if let Err(e) = super::hip::copy_device_to_host(
+                ordinal, out_host.as_mut_ptr() as *mut c_void,
+                output_ptr as *const c_void, output_bytes,
+            ) {
+                super::hip::free_device_bytes(ordinal, output_ptr);
+                return Err(e.into());
+            }
+            super::hip::free_device_bytes(ordinal, output_ptr);
+
+            let floats: &[f32] = unsafe {
+                std::slice::from_raw_parts(out_host.as_ptr() as *const f32, total_rows)
+            };
+
+            let dt = hidden.tensor().dtype();
+            let dev = hidden.device();
+            let q = Tensor::from_vec(floats[..q_out_dim].to_vec(), (1, 1, q_out_dim), dev)?
+                .to_dtype(dt)?;
+            let k = Tensor::from_vec(floats[q_out_dim..q_out_dim + k_out_dim].to_vec(), (1, 1, k_out_dim), dev)?
+                .to_dtype(dt)?;
+            let v = Tensor::from_vec(floats[q_out_dim + k_out_dim..].to_vec(), (1, 1, v_out_dim), dev)?
+                .to_dtype(dt)?;
+
+            Ok(Some((
+                StateBuffer::from_tensor(q)?,
+                StateBuffer::from_tensor(k)?,
+                StateBuffer::from_tensor(v)?,
+            )))
+        }
+    }
+
     pub(super) fn forward_profiled_with_external_buffer(
         &mut self,
         xs: &StateBuffer,
@@ -1032,6 +1160,130 @@ impl FullAttention {
         profile.full_attention_gate_millis += profile_elapsed(gate_start, device)?;
         let output_start = profile_start(device)?;
         let output = self.o_proj.forward_buffer(&attn_output)?;
+        profile.output_projection_millis += profile_elapsed(output_start, device)?;
+        profile.full_attention_millis += profile_elapsed(full_start, device)?;
+        Ok((output, profile))
+    }
+
+    /// Forward pass using pre-computed Q/K/V projections from fused megakernel.
+    /// The projections are expected to have the same shapes as q_proj/k_proj/v_proj outputs.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn forward_from_projections_buffer(
+        &mut self,
+        q_and_gate: &StateBuffer,
+        k_proj_out: &StateBuffer,
+        v_proj_out: &StateBuffer,
+        attention_mask: Option<&Tensor>,
+        seqlen_offset: usize,
+        layer_id: usize,
+        external_full_attention: &mut Option<&mut dyn ExternalFullAttention>,
+        hidden_dtype: DType,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        let device = q_and_gate.device();
+        let backend = backend_buffer_api::for_device(device);
+        let full_start = profile_start(device)?;
+        let mut profile = RuntimeProfile::default();
+        let (b_sz, q_len, _) = q_and_gate.dims3()?;
+
+        let qkv_start = profile_start(device)?;
+        let (query_states, gate, key_states, value_states) = backend.prepare_full_attention_inputs(
+            q_and_gate,
+            k_proj_out,
+            v_proj_out,
+            b_sz,
+            q_len,
+            self.num_heads,
+            self.num_kv_heads,
+            self.head_dim,
+            self.q_norm.weight(),
+            self.q_norm.eps(),
+            self.k_norm.weight(),
+            self.k_norm.eps(),
+        )?;
+        profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
+
+        let layout_start = profile_start(device)?;
+        let (query_states, key_states) =
+            self.rotary_emb
+                .apply_buffer(&query_states, &key_states, seqlen_offset)?;
+        profile.layout_prepare_millis += profile_elapsed(layout_start, device)?;
+
+        let backend = backend_buffer_api::for_device(device);
+        let kv_append_start = profile_start(device)?;
+        let appended_kv = if external_full_attention.is_none() {
+            Some(backend.append_full_attention_kv_buffers(
+                self.kv_cache.as_ref().map(|(k, _)| k),
+                self.kv_cache.as_ref().map(|(_, v)| v),
+                key_states.tensor(),
+                value_states.tensor(),
+            )?)
+        } else {
+            None
+        };
+        profile.kv_append_write_millis += profile_elapsed(kv_append_start, device)?;
+
+        let input_layout_start = profile_start(device)?;
+        let (query_states, key_states, value_states) =
+            if let Some((ref key_states, ref value_states)) = appended_kv {
+                backend.prepare_full_attention_kernel_inputs_with_buffer_kv(
+                    &query_states, key_states, value_states,
+                )?
+            } else {
+                backend.prepare_full_attention_kernel_inputs(
+                    query_states.tensor(), key_states.tensor(), value_states.tensor(),
+                )?
+            };
+        let scale = 1f64 / f64::sqrt(self.head_dim as f64);
+        let input_layout_elapsed = profile_elapsed(input_layout_start, device)?;
+        profile.layout_prepare_millis += input_layout_elapsed;
+        profile.full_attention_input_layout_millis += input_layout_elapsed;
+
+        let kv_len = key_states.dim(2)?;
+        let prepared_attn_output =
+            if use_full_attention_decode_megakernel(device, q_len, kv_len, self.head_dim, seqlen_offset)
+            {
+                let kernel_start = profile_start(device)?;
+                let output = self.full_attention_decode_projected(
+                    hidden_dtype, b_sz, q_len,
+                    &query_states, &key_states, &value_states, &gate, seqlen_offset,
+                )?;
+                profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+                output
+            } else if use_full_attention_prefill_megakernel(device, q_len, kv_len, self.head_dim, seqlen_offset)
+            {
+                let kernel_start = profile_start(device)?;
+                let output = backend.full_attention_prefill(
+                    &query_states, &key_states, &value_states,
+                    self.num_kv_groups, scale as f32, seqlen_offset,
+                )?;
+                profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
+                backend.prepare_full_attention_output_buffer(
+                    &output, &gate, b_sz, q_len, self.attention_size, hidden_dtype,
+                )?
+            } else {
+                let kv_materialize_start = profile_start(device)?;
+                let key_states = repeat_kv(key_states.clone(), self.num_kv_groups)?.contiguous()?;
+                let value_states = repeat_kv(value_states.clone(), self.num_kv_groups)?.contiguous()?;
+                profile.layout_prepare_millis += profile_elapsed(kv_materialize_start, device)?;
+
+                let query_states_f = query_states.to_dtype(DType::F32)?;
+                let key_states_f = key_states.to_dtype(DType::F32)?;
+                let value_states_f = value_states.to_dtype(DType::F32)?;
+                let score_start = profile_start(device)?;
+                let attn_output = backend.dense_full_attention_fallback_buffer(
+                    &query_states_f, &key_states_f, &value_states_f,
+                    attention_mask, scale, &gate,
+                    b_sz, q_len, self.attention_size, hidden_dtype,
+                )?;
+                profile.attention_score_millis += profile_elapsed(score_start, device)?;
+                attn_output
+            };
+
+        if external_full_attention.is_none() {
+            self.kv_cache = appended_kv;
+        }
+        let output_start = profile_start(device)?;
+        let output = self.o_proj.forward_buffer(&prepared_attn_output)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))

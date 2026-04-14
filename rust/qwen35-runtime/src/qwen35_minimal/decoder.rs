@@ -133,6 +133,22 @@ impl DecoderLayer {
         StateBuffer::from_tensor(sum)
     }
 
+    fn use_attn_megakernel(device: &Device, xs: &StateBuffer) -> bool {
+        if !matches!(device.location(), DeviceLocation::Hip { .. }) {
+            return false;
+        }
+        let Ok((_, seq_len, _)) = xs.dims3() else {
+            return false;
+        };
+        if seq_len != 1 {
+            return false;
+        }
+        matches!(
+            std::env::var("CANDLE_QWEN35_ATTN_MEGAKERNEL").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        )
+    }
+
     fn use_mlp_megakernel(device: &Device, xs: &StateBuffer) -> bool {
         if !matches!(device.location(), DeviceLocation::Hip { .. }) {
             return false;
@@ -262,24 +278,44 @@ impl DecoderLayer {
         let hidden_dtype = xs.tensor().dtype();
         let mut profile = RuntimeProfile::default();
         let residual = xs.clone();
-        let xs_norm = self.input_layernorm.forward_buffer(xs)?;
         let xs = match &mut self.token_mixer {
             LayerKind::Linear(linear_attn) => {
+                let xs_norm = self.input_layernorm.forward_buffer(xs)?;
                 let (xs, layer_profile) =
                     linear_attn.forward_profiled_buffer(&xs_norm, attention_mask)?;
                 profile.add_assign(&layer_profile);
                 xs
             }
             LayerKind::Full(self_attn) => {
-                let (xs, layer_profile) = self_attn.forward_profiled_with_external_buffer(
-                    &xs_norm,
-                    attention_mask,
-                    seqlen_offset,
-                    layer_id,
-                    external_full_attention,
-                )?;
-                profile.add_assign(&layer_profile);
-                xs
+                if Self::use_attn_megakernel(device, xs) {
+                    if let Some((q, k, v)) =
+                        self_attn.fused_norm_qkv_projections(xs, &self.input_layernorm)?
+                    {
+                        let (xs, layer_profile) = self_attn.forward_from_projections_buffer(
+                            &q, &k, &v,
+                            attention_mask, seqlen_offset, layer_id,
+                            external_full_attention, hidden_dtype,
+                        )?;
+                        profile.add_assign(&layer_profile);
+                        xs
+                    } else {
+                        let xs_norm = self.input_layernorm.forward_buffer(xs)?;
+                        let (xs, lp) = self_attn.forward_profiled_with_external_buffer(
+                            &xs_norm, attention_mask, seqlen_offset, layer_id,
+                            external_full_attention,
+                        )?;
+                        profile.add_assign(&lp);
+                        xs
+                    }
+                } else {
+                    let xs_norm = self.input_layernorm.forward_buffer(xs)?;
+                    let (xs, layer_profile) = self_attn.forward_profiled_with_external_buffer(
+                        &xs_norm, attention_mask, seqlen_offset, layer_id,
+                        external_full_attention,
+                    )?;
+                    profile.add_assign(&layer_profile);
+                    xs
+                }
             }
         };
         let xs = Self::f32_residual_add(&residual, &xs, hidden_dtype)?;
