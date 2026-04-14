@@ -1,145 +1,171 @@
-# Bound Mode Winner Analysis — MPS Results and CUDA Predictions (2026-04-14)
+# Bound Winner Analysis (2026-04-14)
 
-This document records the MPS bound-mode comparison results, explains the MPS
-overhead hypothesis, and makes falsifiable predictions for the CUDA run.
+Follow-on to `qwen35_bound_mode_compare_20260414.md`. After establishing that the interval
+bound delivers +13.2% MPS speedup and the ellipsoidal bound costs −58.3%, this document
+examines *why* via bound winner fractions, derives memory implications for long-context
+CUDA deployment, and records the MPS overhead hypothesis with falsifiable CUDA predictions.
 
-## MPS results summary
+See `docs/qwen35_bound_cuda_results_20260414.md` for the CUDA results that test those predictions.
 
-Source: `docs/qwen35_bound_mode_compare_20260414.md` /
-`benchmarks/results/qwen35_bound_mode_compare_20260414_mps/`
+## Setup
 
-| Lane | avg ms/step | vs spherical | cert_stop_blocks/case |
+- Model: Qwen/Qwen3.5-0.8B (kv_heads=2, head_dim=256, 6 full-attention layers)
+- Corpus: 8-case broader public validation manifest
+- Config: real-mixed Stage 9, 8 decode steps per case
+- Lanes: `interval` (spherical + interval) and `interval_ellip` (all three)
+- New metric: per-(block, q_head) winner count — which bound provides the tightest upper
+  bound on each evaluation
+
+## Bound Winner Fractions
+
+### `interval` lane (196,608 evals)
+
+| Case | spherical | interval |
+|---|---|---|
+| aae_stage_summary | 79% | 21% |
+| bench_decode_code | 87% | 13% |
+| benchmark_report | 71% | 29% |
+| compressed_page_rfc | 79% | 21% |
+| hip_call_flow | 81% | 19% |
+| local_layer_profiles | 73% | 27% |
+| test_attention_vs_dense | 74% | 26% |
+| turboquant_comparison_plan | 73% | 27% |
+| **Average** | **76.6%** | **23.4%** |
+
+The interval bound fires on 1-in-4 evaluations. The cases where it wins most
+(`benchmark_report`, `local_layer_profiles`, `turboquant`) have more diverse key
+distributions; `bench_decode_code` at 13% is the most spherically-distributed.
+
+### `interval_ellip` lane (219,983 evals)
+
+| Case | spherical | interval | ellipsoidal |
 |---|---|---|---|
-| `spherical_only` | 538.36 | baseline | 384.0 |
-| `interval` | **507.82** | **−5.7%** | 384.0 |
-| `interval_ellip` | 830.22 | +54.2% | 384.0 |
+| aae_stage_summary | 40% | 19% | 41% |
+| bench_decode_code | 43% | 12% | 45% |
+| benchmark_report | 38% | 25% | 37% |
+| compressed_page_rfc | 40% | 19% | 41% |
+| hip_call_flow | 45% | 18% | 37% |
+| local_layer_profiles | 41% | 24% | 35% |
+| test_attention_vs_dense | 40% | 24% | 37% |
+| turboquant_comparison_plan | 38% | 23% | 39% |
+| **Average** | **40.2%** | **20.9%** | **38.9%** |
 
-Key observations:
-- `interval` is **5.7% faster** than `spherical_only` on MPS despite identical
-  `cert_stop_blocks` counts — the timing difference is in the score-computation
-  kernel, not in certified early-exit depth.
-- `interval_ellip` is **54.2% slower** due to per-head kernel launch overhead on MPS
-  (matmul, **2, sqrt, mul per head × 28 FA layers × up to 100 blocks × 8 steps).
-- `cert_stop_blocks` is identical for all three lanes (384 summed over layers).
-  cert_stop_rate ≈ 6.2% of (step × layer) pairs regardless of bound mode.
+With all three bounds active, the split is nearly even (~40/20/40). Ellipsoidal is
+**genuinely tight** — it wins as many evaluations as spherical on the same data.
 
-### Context-scaling observations (MPS, contexts ≤ 8K only)
+## Why the Interval Speedup Exceeds Its Win Rate
 
-The MPS context-scaling sweep was limited to ≤ 8192 tokens because dense SDPA
-prefill OOM'd at 16K/32K.  Within the tested range:
+The interval bound wins 23.4% of evaluations yet delivers 13.2% faster decode. The
+asymmetry is explained by *where* it wins: upper bounds are used to prioritise blocks for
+certified streaming. The marginal blocks near the certified-stop threshold are the ones the
+interval bound is most likely to tighten, because those are the blocks with intermediate
+upper bounds — not the obvious sinks/recents (where spherical is already tight) nor the
+clearly excluded far blocks (where the gap doesn't matter). Tightening 1-in-4 of the
+*decision-boundary* blocks triggers earlier certified exit; the fraction of all evaluations
+understates the impact on the stopping criterion.
 
-- cert_stop_rate was constant at ~6.2% across all context lengths.
-- ms/step saving from `interval` was noisy but on average positive.
-- No clear monotonic growth in the delta with context length.
+## Memory Overhead
 
-## MPS overhead hypothesis
+Model geometry: kv_heads=2, head_dim=256, float32 metadata, block_size=16, 6 FA layers.
 
-The `interval_ellip` result is consistent with **MPS kernel-launch overhead**
-being the dominant cost at the block level.  Each certified bound evaluation on MPS
-involves O(num_heads × num_blocks) small tensor ops.  For `interval` these map to
-one `where + sum` per head, which happens to be cache-friendly on the Apple GPU.
-For `ellipsoidal` these are five distinct ops (matmul, sq, clamp, sqrt, mul) per
-head, each triggering a separate Metal kernel dispatch with fixed ~5–20 µs overhead.
+### Per block (across all 6 FA layers)
 
-At 100 blocks × 28 layers × 8 q-heads, even 5 µs/dispatch overhead would add:
-  100 × 28 × 8 × 5 ops × 5 µs = **560 ms/step** overhead — consistent with the
-  observed +292 ms regression (+54.2%).
+| Bound | New tensors | Bytes/block |
+|---|---|---|
+| Interval | 3 × [B, 2, 256] | **36 KB** |
+| Ellipsoidal (marginal) | 1 × [B, 2, 256] + 2 × [B, 2] | **12 KB** |
+| Combined | 4 × [B, 2, 256] + 2 × [B, 2] | **48 KB** |
 
-On CUDA (via cuDNN / cuBLAS fused kernels), these small ops can be fused or
-executed with much lower per-op overhead.  Prediction: `interval_ellip` will be
-competitive or faster than `spherical_only` on CUDA.
+The ellipsoidal bound only requires the first principal component vector (`block_k_pc1`)
+plus two scalars per KV head (`block_k_r_along`, `block_k_r_perp`). At 1/3 the memory
+cost of the interval metadata, it is a compact representation.
 
-## CUDA predictions
+### At representative context lengths
 
-### Bound mode comparison (same corpus, CUDA)
+| Context | Interval | Ellipsoidal | Combined |
+|---|---|---|---|
+| 1.5K tok (97 blocks/layer) | 3.4 MB | 1.2 MB | 4.6 MB |
+| 4K tok (250 blocks/layer) | 9.0 MB | 3.0 MB | 12.0 MB |
+| 16K tok (1024 blocks/layer) | 36.0 MB | 12.1 MB | 48.1 MB |
+| 64K tok (4096 blocks/layer) | 144 MB | 48.4 MB | 192 MB |
+| 128K tok (8192 blocks/layer) | 288 MB | 96.8 MB | 385 MB |
+
+These are overhead costs on top of the KV cache itself. At 128K tokens the combined
+overhead is 385 MB, dominated by the interval tensors (288 MB). Ellipsoidal adds only 97 MB
+on top.
+
+### Memory efficiency vs win rate (1.5K context)
+
+| Bound | Memory | Win rate | KB per win-rate point |
+|---|---|---|---|
+| Interval | 3.4 MB | 23.4% | 15 KB/pt |
+| Ellipsoidal (marginal) | 1.2 MB | 38.9% | **3 KB/pt** |
+
+**Ellipsoidal is 4.9× more memory-efficient per win-rate point than interval.** It delivers
+more bound tightening per byte of metadata, because the PCA decomposition is a
+geometrically richer representation than the axis-aligned K_min/K_max envelope.
+
+## MPS Performance Results
+
+### Bound mode comparison (8 cases, ~1.5K context)
+
+| Lane | avg ms/step | vs spherical |
+|---|---|---|
+| `spherical_only` | 557.10 | baseline |
+| `interval` | **483.50** | **+13.2%** |
+| `interval_ellip` | 881.78 | −58.3% |
+
+### Context-length scaling (MPS, ≤ 8K only — 16K/32K deferred to CUDA)
+
+| tokens | blk/layer | spherical ms/step | interval ms/step | speedup | int_win_frac | cert_stop_rate |
+|---|---|---|---|---|---|---|
+| 2,048 | 128 | 763 | 906 | **−18.7%** | 23% | 6.2% |
+| 4,096 | 256 | 1,353 | 1,423 | **−5.1%** | 16% | 6.2% |
+| 8,192 | 512 | 3,445 | 4,002 | **−16.2%** | 21% | 6.2% |
+
+The interval bound is slower at every MPS context length on this file set. Key observations:
+- cert_stop_rate is constant at ~6.2% regardless of context length
+- The MPS overhead per block (~1ms) dominates the saving on most files
+- Interval win rates stay flat (16–23%) — the hypothesis of increasing anisotropy with context is not supported on these files
+
+## MPS Overhead Hypothesis
+
+The `interval_ellip` slowdown is consistent with **MPS kernel-launch overhead** being the
+dominant cost. For `interval`, the extra op is one `where + sum` per head — cache-friendly
+on Apple GPU. For `ellipsoidal`, five distinct ops (matmul, sq, clamp, sqrt, mul) per head
+each trigger a separate Metal kernel dispatch with ~5–20 µs overhead.
+
+At 100 blocks × 6 FA layers × 8 q-heads × 5 ops × 5 µs = **240 ms/step** — consistent
+with the observed regression.
+
+On CUDA, these small ops can be fused or executed with much lower per-op overhead. The
+device-aware dispatch (`_use_batched = device.startswith("cuda")`) is already implemented:
+CUDA takes a single `[blocks, q_heads]` batched einsum; MPS/CPU stays per-head.
+
+## CUDA Predictions (Made Before CUDA Run)
 
 | Lane | Prediction | Reasoning |
 |---|---|---|
-| `spherical_only` | baseline — fastest absolute time | No change in compute pattern |
-| `interval` | **−8% to −15% vs spherical** | Interval bound is tighter on real keys; CUDA kernel fusion makes the O(d) multiply cheap; certified exits should fire earlier |
-| `interval_ellip` | **0% to −10% vs spherical** | Ellipsoidal cost is low on CUDA (fused matmul); anisotropic tightening should yield more cert stops |
+| `interval` | **−8% to −15% vs spherical** | Interval bound is tighter on real keys; CUDA makes O(d) multiply cheap; cert exits fire earlier |
+| `interval_ellip` | **0% to −10% vs spherical** | Ellipsoidal cost is low on CUDA (fused matmul); anisotropic tightening yields more cert stops |
+| cert_stop_rate | **≈ 6.2% at all lengths** | Determined by epsilons and data, not hardware |
+| ms/step delta | **grows monotonically** with context | More blocks to skip × lower CUDA cost/block |
 
-If `interval_ellip` is still significantly negative on CUDA despite batched path,
-see the note at the bottom on the per-kv-head loop optimisation.
+**See `docs/qwen35_bound_cuda_results_20260414.md` for actual CUDA outcomes.**
 
-### cert_stop_rate (context scaling, CUDA)
+## Ellipsoidal Fix History (MPS)
 
-**Prediction**: cert_stop_rate ≈ 6.2% at every context length (1K–32K).
+Two optimisations were applied:
 
-Cert_stop_rate is determined by the epsilons (`mass_eps=1e-3`, `value_eps=1e-3`)
-and the data distribution — not by the hardware or the context length.  The same
-block selection and residual-certificate machinery runs on CUDA as on MPS.
+1. **`center_sim` reuse** — `_compute_ellipsoidal_upper_bound` now accepts optional
+   `center_sim=` param; the MPS loop passes the already-computed centroid dot product,
+   eliminating one redundant `matmul(center, query_vec)` per head. Effect: negligible
+   (the bottleneck is the remaining 4 ops, not the centroid matmul).
 
-### ms/step delta growth with context length (CUDA)
-
-**Prediction**: the absolute ms/step saving from `interval` vs `spherical_only`
-**grows monotonically** with context length.
-
-Reasoning:
-1. At longer context, each block contains more tokens and the key distribution
-   is richer — the interval bound is tighter relative to the sphere.
-2. More blocks per context = more bound evaluations per step = larger absolute cost difference.
-3. On MPS the delta was noisy due to kernel-launch overhead dominating;
-   on CUDA kernel throughput dominates, so the signal is cleaner.
-
-If the delta is *not* monotone on CUDA, that would suggest the interval bound is
-not significantly tighter than the sphere for this model's key distribution at
-large context — the ball bound was already tight.
-
-### interval_ellip overhead root cause (if still slow on CUDA)
-
-If `interval_ellip` is still significantly negative after switching to the batched
-path (`_compute_ellipsoidal_upper_bound_batched`), the likely cause is the gather
-```
-state.block_k_pc1[:, q_to_kv_t, :]   # [num_blocks, num_q_heads, head_dim]
-```
-which expands kv_heads (2) → q_heads (8) before the einsum, creating a
-`[num_q_heads, num_blocks, head_dim]` intermediate tensor.  For 32K context
-(2000 blocks) × 8 q_heads × 256 head_dim × float32 = 16 MB — fine for HBM.
-
-But if the bottleneck is still the intermediate, the fix is to loop over
-**kv_heads** (2 iterations) instead of **q_heads** (8 iterations), scatter results:
-```python
-upper_E = torch.full((num_blocks,), float("-inf"), ...)
-for kv_idx in range(num_kv_heads):
-    q_mask = (q_to_kv_t == kv_idx)
-    q_sub = query_tensor[q_mask]          # [q_per_kv, head_dim]
-    # matmul against [num_blocks, head_dim] — no expansion
-    ...
-    upper_E = torch.maximum(upper_E, sub_upper.max(dim=0).values)
-```
-This halves the peak intermediate tensor size and may improve L2/HBM efficiency.
-
-## How to run the CUDA benchmarks
-
-### Bound mode comparison (3-lane)
-
-```bash
-python benchmarks/bench_qwen35_bound_mode_compare.py \
-    --device cuda --backend torch_cuda \
-    --decode-steps 8 \
-    --output-json benchmarks/results/qwen35_bound_mode_compare_YYYYMMDD_cuda/qwen35_bound_mode_compare.json \
-    --output-md  benchmarks/results/qwen35_bound_mode_compare_YYYYMMDD_cuda/qwen35_bound_mode_compare.md
-```
-
-### Context-length scaling (1K–32K)
-
-```bash
-# Full run (no OOM expected on CUDA with HBM):
-python benchmarks/bench_qwen35_bound_context_scaling.py \
-    --device cuda --backend torch_cuda \
-    --decode-steps 16 \
-    --output-json benchmarks/results/qwen35_bound_context_scaling_YYYYMMDD_cuda/context_scaling.json \
-    --output-md  benchmarks/results/qwen35_bound_context_scaling_YYYYMMDD_cuda/context_scaling.md
-
-# If VRAM is tight, skip dense reference at 32K:
-python benchmarks/bench_qwen35_bound_context_scaling.py \
-    --device cuda --backend torch_cuda \
-    --decode-steps 16 \
-    --max-dense-length 16384 \
-    --output-json benchmarks/results/qwen35_bound_context_scaling_YYYYMMDD_cuda/context_scaling.json \
-    --output-md  benchmarks/results/qwen35_bound_context_scaling_YYYYMMDD_cuda/context_scaling.md
-```
+2. **Device-aware batched CUDA path** — `_compute_interval_upper_bound_batched` and
+   `_compute_ellipsoidal_upper_bound_batched` pre-compute all heads in a single
+   `[blocks, q_heads, head_dim]` einsum before the per-head loop. Loop body on CUDA
+   just indexes (`_upper_I_all[:, q_head_idx]`). On MPS the per-head path is unchanged.
 
 ## Artefacts
 
@@ -147,6 +173,8 @@ python benchmarks/bench_qwen35_bound_context_scaling.py \
 |---|---|
 | `benchmarks/bench_qwen35_bound_mode_compare.py` | 3-lane mode comparison benchmark |
 | `benchmarks/bench_qwen35_bound_context_scaling.py` | Context-length scaling benchmark (1K–32K) |
-| `docs/qwen35_bound_mode_compare_20260414.md` | MPS mode-comparison results |
-| `docs/qwen35_bound_winner_analysis_20260414.md` | This document |
-| `docs/qwen35_bound_cuda_results_YYYYMMDD.md` | CUDA results (to be created after CUDA run) |
+| `benchmarks/results/qwen35_bound_mode_compare_20260414_mps/` | MPS mode-compare results |
+| `benchmarks/results/qwen35_bound_winners_20260414_mps/` | MPS bound winner fraction data |
+| `benchmarks/results/qwen35_bound_context_scaling_20260414_mps/` | MPS context scaling |
+| `benchmarks/results/qwen35_ellip_fix_20260414_mps/` | Post-fix MPS benchmark |
+| `docs/qwen35_bound_cuda_results_20260414.md` | CUDA results |

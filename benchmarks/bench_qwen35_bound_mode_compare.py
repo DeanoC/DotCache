@@ -123,6 +123,16 @@ def _sum_by_layer_int(result: dict[str, Any], key: str) -> int:
 
 
 def _extract_telemetry(result: dict[str, Any]) -> dict[str, Any]:
+    bound_spherical = _sum_by_layer_int(
+        result, "persistent_full_attention_bound_spherical_active_count_by_layer"
+    )
+    bound_interval = _sum_by_layer_int(
+        result, "persistent_full_attention_bound_interval_active_count_by_layer"
+    )
+    bound_ellipsoidal = _sum_by_layer_int(
+        result, "persistent_full_attention_bound_ellipsoidal_active_count_by_layer"
+    )
+    bound_total = bound_spherical + bound_interval + bound_ellipsoidal
     return {
         "score_ms_total": _sum_by_layer(result, "persistent_full_attention_score_ms_total_by_layer"),
         "selection_ms_total": _sum_by_layer(result, "persistent_full_attention_selection_ms_total_by_layer"),
@@ -139,6 +149,15 @@ def _extract_telemetry(result: dict[str, Any]) -> dict[str, Any]:
         "last_checkpoint_count": _sum_by_layer_int(
             result, "persistent_full_attention_last_checkpoint_count_by_layer"
         ),
+        # Bound winner counts: how many (block, q_head) evals each bound won
+        "bound_spherical_count": bound_spherical,
+        "bound_interval_count": bound_interval,
+        "bound_ellipsoidal_count": bound_ellipsoidal,
+        "bound_total_count": bound_total,
+        # Fraction each bound provides the tightest upper bound
+        "bound_spherical_frac": float(bound_spherical) / float(bound_total) if bound_total > 0 else 0.0,
+        "bound_interval_frac": float(bound_interval) / float(bound_total) if bound_total > 0 else 0.0,
+        "bound_ellipsoidal_frac": float(bound_ellipsoidal) / float(bound_total) if bound_total > 0 else 0.0,
     }
 
 
@@ -179,6 +198,13 @@ def _run_one_lane(
         dense_cmp = dense_ids[:decode_steps]
         exact_match = bool(generated_ids == dense_cmp and len(generated_ids) >= decode_steps)
         tel = _extract_telemetry(result)
+        bound_winner_str = (
+            f"bound_wins: sph={tel['bound_spherical_frac']:.0%} "
+            f"int={tel['bound_interval_frac']:.0%} "
+            f"ellip={tel['bound_ellipsoidal_frac']:.0%}"
+            if tel["bound_total_count"] > 0
+            else "bound_wins: (no data)"
+        )
         records.append({
             "case_tag": case_tag,
             "decode_ms_per_step": float(decode_ms_per_step),
@@ -189,6 +215,13 @@ def _run_one_lane(
             "executed_m3_blocks_total": int(tel["executed_m3_blocks_total"]),
             "first_certified_stop_blocks": int(tel["first_certified_stop_blocks"]),
             "last_checkpoint_count": int(tel["last_checkpoint_count"]),
+            "bound_spherical_count": int(tel["bound_spherical_count"]),
+            "bound_interval_count": int(tel["bound_interval_count"]),
+            "bound_ellipsoidal_count": int(tel["bound_ellipsoidal_count"]),
+            "bound_total_count": int(tel["bound_total_count"]),
+            "bound_spherical_frac": float(tel["bound_spherical_frac"]),
+            "bound_interval_frac": float(tel["bound_interval_frac"]),
+            "bound_ellipsoidal_frac": float(tel["bound_ellipsoidal_frac"]),
         })
         print(
             f"  [{lane['name']}] {case_tag}: "
@@ -196,7 +229,8 @@ def _run_one_lane(
             f"exact={exact_match}, "
             f"M0={tel['executed_m0_blocks_total']} M3={tel['executed_m3_blocks_total']}, "
             f"cert_stop_blocks={tel['first_certified_stop_blocks']}, "
-            f"checkpoints={tel['last_checkpoint_count']}"
+            f"checkpoints={tel['last_checkpoint_count']}, "
+            f"{bound_winner_str}"
         )
     return records
 
@@ -205,6 +239,7 @@ def _summarize_lane(records: list[dict[str, Any]]) -> dict[str, Any]:
     if not records:
         return {}
     n = len(records)
+    total_bound = sum(r.get("bound_total_count", 0) for r in records)
     return {
         "case_count": int(n),
         "avg_ms_per_step": float(sum(r["decode_ms_per_step"] for r in records) / n),
@@ -215,6 +250,14 @@ def _summarize_lane(records: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_executed_m3_blocks_per_case": float(sum(r["executed_m3_blocks_total"] for r in records) / n),
         "avg_first_certified_stop_blocks": float(sum(r["first_certified_stop_blocks"] for r in records) / n),
         "avg_last_checkpoint_count": float(sum(r["last_checkpoint_count"] for r in records) / n),
+        # Bound winner fractions (aggregated across all cases in the lane)
+        "total_bound_spherical_count": int(sum(r.get("bound_spherical_count", 0) for r in records)),
+        "total_bound_interval_count": int(sum(r.get("bound_interval_count", 0) for r in records)),
+        "total_bound_ellipsoidal_count": int(sum(r.get("bound_ellipsoidal_count", 0) for r in records)),
+        "total_bound_count": int(total_bound),
+        "bound_spherical_frac": float(sum(r.get("bound_spherical_count", 0) for r in records)) / float(total_bound) if total_bound > 0 else 0.0,
+        "bound_interval_frac": float(sum(r.get("bound_interval_count", 0) for r in records)) / float(total_bound) if total_bound > 0 else 0.0,
+        "bound_ellipsoidal_frac": float(sum(r.get("bound_ellipsoidal_count", 0) for r in records)) / float(total_bound) if total_bound > 0 else 0.0,
     }
 
 
@@ -276,6 +319,34 @@ def _render_markdown(
                     f"- `{lane['name']}`: {speedup_pct:+.1f}% ({lane_ms:.2f} vs {spherical_ms:.2f} ms/step){cert_reduction}"
                 )
 
+    # Bound winner table (only when at least one lane has winner data)
+    summaries = payload.get("lane_summaries", {})
+    has_winner_data = any(
+        summaries.get(lane["name"], {}).get("total_bound_count", 0) > 0
+        for lane in active_lanes
+    )
+    if has_winner_data:
+        lines += ["", "## Bound winner fractions", ""]
+        lines.append("Which certified upper-bound method provides the tightest value per (block, q_head) evaluation.")
+        lines += [
+            "",
+            "| Lane | spherical | interval | ellipsoidal | total evals |",
+            "|---|---|---|---|---|",
+        ]
+        for lane in active_lanes:
+            s = summaries.get(lane["name"], {})
+            total = s.get("total_bound_count", 0)
+            if total > 0:
+                lines.append(
+                    f"| `{lane['name']}` "
+                    f"| {s.get('bound_spherical_frac', 0):.1%} "
+                    f"| {s.get('bound_interval_frac', 0):.1%} "
+                    f"| {s.get('bound_ellipsoidal_frac', 0):.1%} "
+                    f"| {total:,} |"
+                )
+            else:
+                lines.append(f"| `{lane['name']}` | — | — | — | 0 |")
+
     # Per-case detail
     lines += ["", "## Per-case results", ""]
     first_lane_records = payload.get("lane_records", {}).get(active_lanes[0]["name"], [])
@@ -288,11 +359,19 @@ def _render_markdown(
             case_record = next((r for r in records if r["case_tag"] == case_tag), None)
             if case_record is None:
                 continue
+            bound_str = ""
+            if case_record.get("bound_total_count", 0) > 0:
+                bound_str = (
+                    f", bound_wins: sph={case_record['bound_spherical_frac']:.0%}"
+                    f"/int={case_record['bound_interval_frac']:.0%}"
+                    f"/ellip={case_record['bound_ellipsoidal_frac']:.0%}"
+                )
             lines.append(
                 f"- `{lane['name']}`: {case_record['decode_ms_per_step']:.2f} ms/step, "
                 f"exact={case_record['exact_match_vs_dense']}, "
                 f"cert_stop={case_record['first_certified_stop_blocks']} blocks, "
                 f"chkpts={case_record['last_checkpoint_count']}"
+                f"{bound_str}"
             )
         lines.append("")
 
@@ -408,6 +487,27 @@ def main() -> None:
             if lane_ms > 0:
                 speedup_pct = (spherical_ms - lane_ms) / spherical_ms * 100.0
                 print(f"  {lane['name']} speedup vs spherical: {speedup_pct:+.1f}%")
+
+    # Print bound winner fractions
+    has_winner_data = any(
+        lane_summaries.get(lane["name"], {}).get("total_bound_count", 0) > 0
+        for lane in active_lanes
+    )
+    if has_winner_data:
+        print("\n=== Bound winner fractions (which bound provides the tightest upper bound) ===")
+        for lane in active_lanes:
+            s = lane_summaries[lane["name"]]
+            total = s.get("total_bound_count", 0)
+            if total > 0:
+                print(
+                    f"  {lane['name']:20s}: "
+                    f"spherical={s.get('bound_spherical_frac', 0):.1%}  "
+                    f"interval={s.get('bound_interval_frac', 0):.1%}  "
+                    f"ellipsoidal={s.get('bound_ellipsoidal_frac', 0):.1%}  "
+                    f"(total evals: {total:,})"
+                )
+            else:
+                print(f"  {lane['name']:20s}: (no bound winner data — interval/ellipsoidal both disabled)")
 
     payload: dict[str, Any] = {
         "lane_summaries": lane_summaries,

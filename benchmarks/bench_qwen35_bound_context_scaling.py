@@ -1,32 +1,34 @@
-"""Context-length scaling benchmark for certified upper-bound modes.
+"""Context-length scaling benchmark for certified bound modes.
 
-Sweeps over context lengths [1K, 2K, 4K, 8K, 16K, 32K], running the three
-bound lanes (spherical_only / interval / interval_ellip) at each length and
-recording ms/step, cert_stop_rate, and score_ms/step.
+Tests how interval-bound win rates, certified-exit efficiency, and ms/step scale
+with context length. Designed to run on Mac Mini MPS as a pre-CUDA predictor.
 
-16K and 32K are included intentionally (they were excluded from the MPS sweep
-due to dense SDPA OOM at prefill).  On CUDA with HBM neither should OOM.
-If GPU VRAM is tight, pass --max-dense-length 16384 to skip the dense
-reference pass for 32K cases; the persistent model uses sparse attention so
-it fits even when dense does not.
+Hypothesis
+----------
+Longer contexts → more block diversity → interval and ellipsoidal bounds win a
+larger fraction of evaluations → certified exit fires earlier → bigger speedup
+relative to spherical. If confirmed here, the CUDA gain from interval alone
+should exceed the 5.7% measured on the short 1.5K-token benchmark.
 
-Key hypotheses being tested
----------------------------
-1. cert_stop_rate ≈ 6.2% at every context length (property of the data,
-   not the hardware).
-2. ms/step saving from `interval` vs `spherical_only` *grows* with context
-   length on CUDA (each skipped block costs more to process at longer
-   contexts, and there are more blocks to skip).
-3. If `interval` is positive-delta at all lengths, MPS overhead (not
-   insufficient bound tightening) was the limiting factor on MPS.
+Design
+------
+- Primary file: performance_journal.md (130K tokens) sliced at each target length
+  from offset 0. Same text type at every length isolates the length effect.
+- Control files: benchmark_report.md and qwen35_stage9_thesis_status sliced at
+  their natural lengths (up to 8K), to catch any file-specific variance.
+- Lengths: 2K, 4K, 8K tokens (16K excluded on MPS — prefill OOMs; defer to CUDA box).
+- Lanes: spherical_only and interval (ellipsoidal excluded — too slow on MPS
+  for a 4-length sweep; its win rate is already characterised at 1.5K).
+- Decode steps: 16 per case (more stable timing than 8).
 
-cert_stop_rate definition
--------------------------
-For each decode step we check whether any FA layer issued a certified early
-exit (last_first_certified_stop_block_count > 0).  Rate = certified_steps /
-total_steps.  Because the harness only exposes last-step cert-stop info, we
-run decode_steps=1 in a tight loop over a single prefill, re-using the
-internal KV cache state via the adapter.  See _decode_steps_with_cert_tracking.
+Expected runtime on Mac Mini MPS: ~25–35 minutes.
+
+Key outputs
+-----------
+- Per-length summary: ms/step, cert_stop_block_rate (cert_stop / total_blocks),
+  interval_win_frac, exact_match_vs_dense
+- Scaling table: how each metric changes as context doubles
+- Raw JSON + MD artefacts for the CUDA run notes
 """
 from __future__ import annotations
 
@@ -43,8 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from benchmarks.bench_qwen35_persistent_serving_policy_compare import (
     _DEFAULT_POLICY_PATH,
     _build_prompt_text_inputs,
-    _persistent_base_config,
-    _matching_prefix_length,
+    _resolve_prompt_records,
 )
 from benchmarks.bench_qwen35_persistent_real_mixed_probe import (
     real_mixed_probe_dotcache_config,
@@ -60,9 +61,24 @@ from dotcache.integrations.qwen35 import (
     transformers_available,
 )
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
-_DEFAULT_CONTEXT_LENGTHS = [1024, 2048, 4096, 8192, 16384, 32768]
+# Primary file: 130K tokens — sliced at each target length from the start
+_PRIMARY_FILE = _REPO_ROOT / "docs" / "performance_journal.md"
 
+# Control files: natural-length diversity; capped to avoid exceeding their size
+_CONTROL_FILES = [
+    (_REPO_ROOT / "docs" / "benchmark_report.md",              8192),   # 8.6K tok
+    (_REPO_ROOT / "docs" / "qwen35_stage9_thesis_status_20260412.md", 6144),  # 6.6K tok
+]
+
+# Target lengths to sweep.
+# 16K is excluded from the MPS default: the persistent prefill at 16K uses full SDPA
+# (block-selective attention only applies during decode), which OOMs on Mac Mini MPS
+# (~20 GB unified memory limit). 16K+ should be run on the CUDA box.
+_DEFAULT_LENGTHS = [2048, 4096, 8192]
+
+# Lanes
 _LANES = [
     {
         "name": "spherical_only",
@@ -72,92 +88,49 @@ _LANES = [
     },
     {
         "name": "interval",
-        "label": "Interval bound (paper primary)",
+        "label": "Interval bound",
         "enable_interval_bound": True,
         "enable_ellipsoidal_bound": False,
     },
-    {
-        "name": "interval_ellip",
-        "label": "Interval + Ellipsoidal (full paper)",
-        "enable_interval_bound": True,
-        "enable_ellipsoidal_bound": True,
-    },
 ]
-
-# Minimal filler text used to pad prompts to the requested token count.
-# Repeated until at least the target number of tokens is available.
-_FILLER_PARAGRAPH = (
-    "The quick brown fox jumps over the lazy dog. "
-    "This sentence is used to pad the context to the required token length for benchmarking purposes. "
-    "Attention patterns at longer contexts reveal properties of the underlying key distribution. "
-)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Sweep context lengths [1K–32K] for certified bound mode timing on CUDA. "
-            "16K and 32K are included; use --max-dense-length 16384 to skip dense "
-            "reference for 32K if VRAM is tight."
-        )
+        description="Context-length scaling benchmark for certified bound modes."
     )
     parser.add_argument("--model-id", default="Qwen/Qwen3.5-0.8B")
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--backend", default="torch_cuda")
+    parser.add_argument("--device", default="mps")
+    parser.add_argument("--backend", default="torch_mps")
     parser.add_argument("--torch-dtype", default="float16")
+    parser.add_argument("--decode-steps", type=int, default=16)
     parser.add_argument(
-        "--contexts",
-        nargs="*",
+        "--lengths",
+        nargs="+",
         type=int,
-        default=None,
-        help="Context lengths to sweep (default: 1024 2048 4096 8192 16384 32768)",
+        default=_DEFAULT_LENGTHS,
+        help="Context lengths to sweep (in tokens).",
     )
-    parser.add_argument("--decode-steps", type=int, default=16,
-                        help="Decode steps per case (default: 16)")
+    parser.add_argument(
+        "--lanes",
+        nargs="*",
+        default=None,
+        help="Subset of lane names (default: spherical_only interval).",
+    )
+    parser.add_argument("--output-json", default=None)
+    parser.add_argument("--output-md", default=None)
     parser.add_argument(
         "--max-dense-length",
         type=int,
-        default=0,
+        default=8192,
         help=(
-            "Skip the dense reference pass for contexts longer than this value. "
-            "Set to 16384 to skip dense at 32K if GPU VRAM is tight. "
-            "0 = no limit (run dense at all lengths)."
+            "Skip the dense reference pass for cases with target_length > this value. "
+            "Full-attention dense prefill at 16K+ tokens OOMs on Mac Mini MPS (unified "
+            "memory limit ~20 GB). The persistent path is fine since it never materialises "
+            "the full attention matrix. Default: 8192."
         ),
     )
-    parser.add_argument("--lanes", nargs="*", default=None,
-                        help="Subset of lane names to run (default: all three)")
-    parser.add_argument("--prompt-file", default=None,
-                        help="Optional base text file for prompt (padded/truncated to each context length)")
-    parser.add_argument("--output-json", default=None)
-    parser.add_argument("--output-md", default=None)
     return parser.parse_args()
-
-
-def _build_padded_prompt_text(base_text: str, *, target_tokens: int, tokenizer: Any) -> str:
-    """Repeat *base_text* until it tokenises to at least *target_tokens*, then truncate."""
-    chunk = base_text.strip()
-    repeated = chunk
-    # Rough estimate: 1 token ≈ 4 chars; overshoot by 2× to be safe
-    while len(repeated) < target_tokens * 8:
-        repeated = repeated + " " + chunk
-    return repeated
-
-
-def _build_context_inputs(
-    tokenizer: Any,
-    *,
-    device: Any,
-    base_text: str,
-    target_length: int,
-) -> tuple[Any, Any]:
-    """Tokenise *base_text* padded to *target_length* tokens."""
-    repeated_text = _build_padded_prompt_text(base_text, target_tokens=target_length, tokenizer=tokenizer)
-    return _build_prompt_text_inputs(
-        tokenizer,
-        device=device,
-        prompt_text=repeated_text,
-        prompt_length=target_length,
-    )
 
 
 def _build_serving_config(lane: dict[str, Any]) -> PersistentServingConfig:
@@ -167,58 +140,59 @@ def _build_serving_config(lane: dict[str, Any]) -> PersistentServingConfig:
     return config
 
 
+def _build_cases(lengths: list[int]) -> list[dict[str, Any]]:
+    """Build (case_tag, prompt_file, target_length) list for the sweep.
+
+    Each target length gets:
+      - A slice of performance_journal.md (primary; always available)
+      - Slices of the control files up to their natural cap
+    """
+    cases: list[dict[str, Any]] = []
+    for length in sorted(set(lengths)):
+        # Primary slice
+        cases.append({
+            "case_tag": f"perf_journal_{length // 1024}k",
+            "prompt_file": str(_PRIMARY_FILE),
+            "target_length": length,
+        })
+        # Controls (only when the file is long enough for this target)
+        for ctrl_file, max_len in _CONTROL_FILES:
+            if length <= max_len and ctrl_file.exists():
+                short_name = ctrl_file.stem[:20]
+                cases.append({
+                    "case_tag": f"{short_name}_{length // 1024}k",
+                    "prompt_file": str(ctrl_file),
+                    "target_length": length,
+                })
+    return cases
+
+
 def _sum_by_layer(result: dict[str, Any], key: str) -> float:
-    return float(sum(float(v) for v in result.get(key, {}).values() if v is not None))
+    return float(sum(float(v) for v in result.get(key, {}).values()))
 
 
-def _has_cert_stop(result: dict[str, Any]) -> bool:
-    """Return True if any FA layer had a certified exit in the last decode step."""
-    return any(
-        v is not None and int(v) > 0
-        for v in result.get(
-            "persistent_full_attention_last_first_certified_stop_block_count_by_layer", {}
-        ).values()
-    )
+def _sum_by_layer_int(result: dict[str, Any], key: str) -> int:
+    return int(sum(int(v) for v in result.get(key, {}).values()))
 
 
-def _run_lane_at_context(
+def _run_one_case(
     *,
+    case: dict[str, Any],
     lane: dict[str, Any],
-    model,
-    tokenizer,
+    model: Any,
+    tokenizer: Any,
     adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
-    input_ids: Any,
-    attention_mask: Any,
+    dense_ids: list[int],
     decode_steps: int,
-    dense_reference_ids: list[int] | None,
 ) -> dict[str, Any]:
-    """Run one lane at one context length; return per-step timing + cert_stop_rate."""
     serving_config = _build_serving_config(lane)
-
-    # Track cert_stop_rate by running one step at a time.
-    # Re-use the same prefill by calling the harness with decode_steps=1 in a loop.
-    # Each call re-runs prefill — expensive, but ensures accurate cert_stop tracking.
-    # For the context-scaling benchmark the timing signal of interest is per-step
-    # decode latency, which we measure from the multi-step run below.
-    #
-    # Two-pass approach:
-    #   Pass 1 — N single-step calls to count certified exits (cert_stop_rate)
-    #   Pass 2 — one N-step call for accurate avg ms/step (amortises CUDA synchronisation)
-
-    cert_stop_count = 0
-    for _ in range(decode_steps):
-        single = run_qwen35_attention_subset_persistent_serving_harness(
-            model,
-            adapter,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            decode_steps=1,
-            persistent_serving_config=serving_config,
-        )
-        if _has_cert_stop(single):
-            cert_stop_count += 1
-
-    # Multi-step run for ms/step
+    device = next(model.parameters()).device
+    input_ids, attention_mask = _build_prompt_text_inputs(
+        tokenizer,
+        device=device,
+        prompt_text=Path(case["prompt_file"]).read_text(encoding="utf-8"),
+        prompt_length=int(case["target_length"]),
+    )
     result = run_qwen35_attention_subset_persistent_serving_harness(
         model,
         adapter,
@@ -227,45 +201,95 @@ def _run_lane_at_context(
         decode_steps=decode_steps,
         persistent_serving_config=serving_config,
     )
-
-    decode_ms_per_step = float(result.get("persistent_decode_ms_per_step", 0.0))
-    score_ms_per_step = (
-        _sum_by_layer(result, "persistent_full_attention_score_ms_total_by_layer") / max(decode_steps, 1)
-    )
-    cert_stop_rate = float(cert_stop_count) / max(decode_steps, 1)
-
+    decode_ms = float(result.get("persistent_decode_ms_per_step", 0.0))
     generated_ids = [int(t) for t in result.get("persistent_generated_ids", [])]
-    exact_match: bool | None = None
-    if dense_reference_ids is not None:
-        dense_cmp = dense_reference_ids[:decode_steps]
-        exact_match = bool(generated_ids == dense_cmp and len(generated_ids) >= decode_steps)
+    if not dense_ids:
+        exact_match = None  # dense reference skipped (context too long for MPS dense prefill)
+    else:
+        exact_match = bool(generated_ids == dense_ids[:decode_steps] and len(generated_ids) >= decode_steps)
 
-    return {
+    # Block counts: executed and cert-stop
+    executed_m0 = _sum_by_layer_int(result, "persistent_full_attention_executed_m0_block_count_total_by_layer")
+    executed_m3 = _sum_by_layer_int(result, "persistent_full_attention_executed_m3_block_count_total_by_layer")
+    cert_stop   = _sum_by_layer_int(result, "persistent_full_attention_last_first_certified_stop_block_count_by_layer")
+    checkpoints = _sum_by_layer_int(result, "persistent_full_attention_last_checkpoint_count_by_layer")
+
+    # Bound winner counts
+    sph_count  = _sum_by_layer_int(result, "persistent_full_attention_bound_spherical_active_count_by_layer")
+    int_count  = _sum_by_layer_int(result, "persistent_full_attention_bound_interval_active_count_by_layer")
+    ellip_count = _sum_by_layer_int(result, "persistent_full_attention_bound_ellipsoidal_active_count_by_layer")
+    total_count = sph_count + int_count + ellip_count
+
+    # cert_stop_block_rate: blocks processed at first certified stop / total blocks executed
+    # (lower = earlier exit = more efficient)
+    total_executed = executed_m0 + executed_m3
+    cert_stop_rate = float(cert_stop) / float(total_executed) if total_executed > 0 else 1.0
+
+    # Actual token count in this case (input_ids includes BOS)
+    actual_tokens = int(input_ids.shape[-1])
+    # Blocks per layer = ceil(actual_tokens / block_size) with block_size=16
+    blocks_per_layer = (actual_tokens + 15) // 16
+
+    record = {
+        "case_tag": str(case["case_tag"]),
+        "target_length": int(case["target_length"]),
+        "actual_tokens": actual_tokens,
+        "blocks_per_layer": blocks_per_layer,
         "lane": str(lane["name"]),
-        "decode_ms_per_step": float(decode_ms_per_step),
-        "score_ms_per_step": float(score_ms_per_step),
+        "decode_ms_per_step": float(decode_ms),
+        "exact_match_vs_dense": exact_match,  # None when dense reference was skipped
+        "executed_m0_blocks": int(executed_m0),
+        "executed_m3_blocks": int(executed_m3),
+        "cert_stop_blocks": int(cert_stop),
         "cert_stop_rate": float(cert_stop_rate),
-        "cert_stop_count": int(cert_stop_count),
-        "decode_steps": int(decode_steps),
-        "exact_match_vs_dense": exact_match,
+        "checkpoints": int(checkpoints),
+        "bound_spherical_count": int(sph_count),
+        "bound_interval_count": int(int_count),
+        "bound_ellipsoidal_count": int(ellip_count),
+        "bound_total_count": int(total_count),
+        "bound_spherical_frac": float(sph_count) / float(total_count) if total_count > 0 else 0.0,
+        "bound_interval_frac": float(int_count) / float(total_count) if total_count > 0 else 0.0,
+        "bound_ellipsoidal_frac": float(ellip_count) / float(total_count) if total_count > 0 else 0.0,
     }
 
+    bound_str = ""
+    if total_count > 0:
+        bound_str = (
+            f"  bound: sph={record['bound_spherical_frac']:.0%}"
+            f" int={record['bound_interval_frac']:.0%}"
+        )
+    print(
+        f"  [{lane['name']}] {case['case_tag']}"
+        f" ({actual_tokens} tok, {blocks_per_layer} blk/layer):"
+        f" {decode_ms:.1f} ms/step, exact={exact_match if exact_match is not None else 'skipped'},"
+        f" cert_stop_rate={cert_stop_rate:.1%}{bound_str}"
+    )
+    return record
 
-def _summarize_context(lane_results: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Compute relative deltas vs spherical_only at this context length."""
-    spherical = lane_results.get("spherical_only", {})
-    sph_ms = float(spherical.get("decode_ms_per_step", 0.0))
-    out: dict[str, Any] = {}
-    for lane_name, r in lane_results.items():
-        ms = float(r.get("decode_ms_per_step", 0.0))
-        delta_pct = (ms - sph_ms) / sph_ms * 100.0 if sph_ms > 0 else 0.0
-        out[lane_name] = {
-            "decode_ms_per_step": ms,
-            "score_ms_per_step": float(r.get("score_ms_per_step", 0.0)),
-            "cert_stop_rate": float(r.get("cert_stop_rate", 0.0)),
-            "cert_stop_count": int(r.get("cert_stop_count", 0)),
-            "delta_vs_spherical_pct": float(delta_pct),
-            "exact_match_vs_dense": r.get("exact_match_vs_dense"),
+
+def _summarise_by_length(records: list[dict[str, Any]], lane_name: str) -> dict[int, dict[str, Any]]:
+    """Group records by target_length for a given lane, compute mean metrics."""
+    from collections import defaultdict
+    groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for r in records:
+        if r["lane"] == lane_name:
+            groups[r["target_length"]].append(r)
+    out: dict[int, dict[str, Any]] = {}
+    for length, recs in sorted(groups.items()):
+        n = len(recs)
+        total_bound = sum(r["bound_total_count"] for r in recs)
+        out[length] = {
+            "case_count": n,
+            "avg_ms_per_step": sum(r["decode_ms_per_step"] for r in recs) / n,
+            "exact_match": (
+            sum(int(r["exact_match_vs_dense"]) for r in recs if r["exact_match_vs_dense"] is not None)
+            / max(sum(1 for r in recs if r["exact_match_vs_dense"] is not None), 1)
+        ),
+            "avg_cert_stop_rate": sum(r["cert_stop_rate"] for r in recs) / n,
+            "avg_blocks_per_layer": sum(r["blocks_per_layer"] for r in recs) / n,
+            "bound_spherical_frac": sum(r["bound_spherical_count"] for r in recs) / total_bound if total_bound > 0 else 0.0,
+            "bound_interval_frac": sum(r["bound_interval_count"] for r in recs) / total_bound if total_bound > 0 else 0.0,
+            "bound_ellipsoidal_frac": sum(r["bound_ellipsoidal_count"] for r in recs) / total_bound if total_bound > 0 else 0.0,
         }
     return out
 
@@ -274,15 +298,14 @@ def _render_markdown(
     *,
     payload: dict[str, Any],
     active_lanes: list[dict[str, Any]],
+    lengths: list[int],
 ) -> str:
-    context_lengths = [int(c) for c in payload.get("context_lengths", [])]
-    summaries_by_ctx = payload.get("summaries_by_context", {})
-
+    records = payload.get("records", [])
     lines = [
-        "# Qwen3.5 Bound Mode Context-Length Scaling",
+        "# Qwen3.5 Bound Mode — Context-Length Scaling",
         "",
-        "Sweeps context lengths [1K–32K] for certified upper-bound modes on CUDA.",
-        "16K and 32K are included (excluded from MPS due to dense-SDPA OOM at prefill).",
+        "Measures how interval-bound win rate, certified-exit efficiency, and ms/step",
+        "scale with context length on Mac Mini MPS.",
         "",
         "## Lane definitions",
         "",
@@ -294,88 +317,84 @@ def _render_markdown(
             f"| `{lane['name']}` | {lane['enable_interval_bound']} | {lane['enable_ellipsoidal_bound']} |"
         )
 
-    # ms/step table
-    lines += [
-        "",
-        "## ms/step by context length",
-        "",
-        "| context | " + " | ".join(f"`{l['name']}`" for l in active_lanes) + " |",
-        "|---" * (1 + len(active_lanes)) + "|",
-    ]
-    for ctx in context_lengths:
-        ctx_key = str(ctx)
-        ctx_data = summaries_by_ctx.get(ctx_key, {})
-        row = f"| {ctx:,} |"
-        for lane in active_lanes:
-            ms = float(ctx_data.get(lane["name"], {}).get("decode_ms_per_step", 0.0))
-            row += f" {ms:.2f} |"
-        lines.append(row)
+    # Per-length scaling table for each lane
+    for lane in active_lanes:
+        by_length = _summarise_by_length(records, lane["name"])
+        if not by_length:
+            continue
+        lines += [
+            "",
+            f"## `{lane['name']}` — scaling table",
+            "",
+            "| tokens | blocks/layer | ms/step | exact | cert_stop_rate"
+            + (" | sph_win | int_win |" if lane["enable_interval_bound"] else " |"),
+            "|---|---|---|---|---" + ("|----|------|" if lane["enable_interval_bound"] else "|"),
+        ]
+        for length in sorted(by_length):
+            s = by_length[length]
+            row = (
+                f"| {length:,} "
+                f"| {s['avg_blocks_per_layer']:.0f} "
+                f"| {s['avg_ms_per_step']:.1f} "
+                f"| {s['exact_match']:.3f} "
+                f"| {s['avg_cert_stop_rate']:.1%} "
+            )
+            if lane["enable_interval_bound"]:
+                row += f"| {s['bound_spherical_frac']:.1%} | {s['bound_interval_frac']:.1%} |"
+            else:
+                row += "|"
+            lines.append(row)
 
-    # Speedup/delta table
-    lines += [
-        "",
-        "## Δ ms/step vs spherical_only (negative = faster)",
-        "",
-        "| context | " + " | ".join(f"`{l['name']}`" for l in active_lanes if l["name"] != "spherical_only") + " |",
-        "|---" * (1 + sum(1 for l in active_lanes if l["name"] != "spherical_only")) + "|",
-    ]
-    for ctx in context_lengths:
-        ctx_key = str(ctx)
-        ctx_data = summaries_by_ctx.get(ctx_key, {})
-        row = f"| {ctx:,} |"
-        for lane in active_lanes:
-            if lane["name"] == "spherical_only":
+    # Speedup table: interval vs spherical at each length
+    sph_by_len  = _summarise_by_length(records, "spherical_only")
+    int_by_len  = _summarise_by_length(records, "interval")
+    if sph_by_len and int_by_len:
+        lines += [
+            "",
+            "## Interval speedup vs spherical by context length",
+            "",
+            "| tokens | spherical ms/step | interval ms/step | speedup | int_win_frac |",
+            "|---|---|---|---|---|",
+        ]
+        for length in sorted(sph_by_len):
+            if length not in int_by_len:
                 continue
-            delta = float(ctx_data.get(lane["name"], {}).get("delta_vs_spherical_pct", 0.0))
-            row += f" {delta:+.1f}% |"
-        lines.append(row)
+            s_ms = sph_by_len[length]["avg_ms_per_step"]
+            i_ms = int_by_len[length]["avg_ms_per_step"]
+            speedup = (s_ms - i_ms) / s_ms * 100.0
+            int_frac = int_by_len[length]["bound_interval_frac"]
+            lines.append(
+                f"| {length:,} "
+                f"| {s_ms:.1f} "
+                f"| {i_ms:.1f} "
+                f"| {speedup:+.1f}% "
+                f"| {int_frac:.1%} |"
+            )
 
-    # cert_stop_rate table
-    lines += [
-        "",
-        "## cert_stop_rate by context length",
-        "",
-        "| context | " + " | ".join(f"`{l['name']}`" for l in active_lanes) + " |",
-        "|---" * (1 + len(active_lanes)) + "|",
-    ]
-    for ctx in context_lengths:
-        ctx_key = str(ctx)
-        ctx_data = summaries_by_ctx.get(ctx_key, {})
-        row = f"| {ctx:,} |"
-        for lane in active_lanes:
-            rate = float(ctx_data.get(lane["name"], {}).get("cert_stop_rate", 0.0))
-            row += f" {rate:.3f} |"
-        lines.append(row)
-
-    lines += [
-        "",
-        "## score_ms/step by context length",
-        "",
-        "| context | " + " | ".join(f"`{l['name']}`" for l in active_lanes) + " |",
-        "|---" * (1 + len(active_lanes)) + "|",
-    ]
-    for ctx in context_lengths:
-        ctx_key = str(ctx)
-        ctx_data = summaries_by_ctx.get(ctx_key, {})
-        row = f"| {ctx:,} |"
-        for lane in active_lanes:
-            score_ms = float(ctx_data.get(lane["name"], {}).get("score_ms_per_step", 0.0))
-            row += f" {score_ms:.2f} |"
-        lines.append(row)
-
-    lines += [
-        "",
-        "## Notes",
-        "",
-        "- cert_stop_rate is measured by running single-step harness calls (N=decode_steps)",
-        "  and checking whether any FA layer issued a certified exit in each step.",
-        "- ms/step is from a separate N-step run to amortise CUDA sync overhead.",
-        "- Dense reference is skipped for contexts above --max-dense-length (default: none).",
-    ]
-    if int(payload.get("max_dense_length", 0)) > 0:
-        lines.append(
-            f"- Dense reference was skipped for contexts > {int(payload['max_dense_length']):,} tokens."
-        )
+    # Per-case detail
+    lines += ["", "## Per-case results", ""]
+    case_tags = sorted({r["case_tag"] for r in records})
+    for case_tag in case_tags:
+        case_recs = [r for r in records if r["case_tag"] == case_tag]
+        if not case_recs:
+            continue
+        lines.append(f"### {case_tag}")
+        lines.append("")
+        for r in sorted(case_recs, key=lambda x: x["lane"]):
+            bound_str = ""
+            if r["bound_total_count"] > 0:
+                bound_str = (
+                    f", bound: sph={r['bound_spherical_frac']:.0%}"
+                    f"/int={r['bound_interval_frac']:.0%}"
+                )
+            lines.append(
+                f"- `{r['lane']}` ({r['actual_tokens']} tok, {r['blocks_per_layer']} blk/layer):"
+                f" {r['decode_ms_per_step']:.1f} ms/step,"
+                f" exact={r['exact_match_vs_dense'] if r['exact_match_vs_dense'] is not None else 'skipped'},"
+                f" cert_stop_rate={r['cert_stop_rate']:.1%}"
+                f"{bound_str}"
+            )
+        lines.append("")
 
     return "\n".join(lines) + "\n"
 
@@ -383,39 +402,35 @@ def _render_markdown(
 def main() -> None:
     args = parse_args()
     if not transformers_available():
-        raise SystemExit(
-            "bench_qwen35_bound_context_scaling.py requires the optional transformers dependencies"
-        )
-
-    context_lengths = [int(c) for c in (args.contexts or _DEFAULT_CONTEXT_LENGTHS)]
-    max_dense_length = int(args.max_dense_length)
+        raise SystemExit("requires optional transformers dependencies")
 
     active_lanes = (
-        [lane for lane in _LANES if lane["name"] in args.lanes]
+        [l for l in _LANES if l["name"] in args.lanes]
         if args.lanes
         else list(_LANES)
     )
     if not active_lanes:
-        raise SystemExit(f"no valid lanes selected; choices: {[l['name'] for l in _LANES]}")
+        raise SystemExit(f"no valid lanes; choices: {[l['name'] for l in _LANES]}")
 
-    # Base text for padding
-    if args.prompt_file:
-        base_text = Path(args.prompt_file).read_text(encoding="utf-8")
-    else:
-        base_text = _FILLER_PARAGRAPH * 500  # ~50K chars — enough for 32K tokens
+    lengths = sorted(set(args.lengths))
+    cases = _build_cases(lengths)
+    if not cases:
+        raise SystemExit("no cases built — check that primary/control files exist")
 
+    print(f"Context-length scaling benchmark")
+    print(f"  Lengths : {lengths}")
+    print(f"  Cases   : {len(cases)} total ({[c['case_tag'] for c in cases]})")
+    print(f"  Lanes   : {[l['name'] for l in active_lanes]}")
+    print(f"  Decode  : {args.decode_steps} steps/case")
+    print()
+
+    max_dense_length = int(args.max_dense_length)
     print(f"Loading model {args.model_id} ...")
-    # Dense model for reference pass
     dense_model, dense_tokenizer = load_qwen35_text_only_from_pretrained(
-        args.model_id,
-        device=args.device,
-        torch_dtype=args.torch_dtype,
+        args.model_id, device=args.device, torch_dtype=args.torch_dtype,
     )
-    # Persistent model for bound lanes
     persistent_model, persistent_tokenizer = load_qwen35_text_only_from_pretrained(
-        args.model_id,
-        device=args.device,
-        torch_dtype=args.torch_dtype,
+        args.model_id, device=args.device, torch_dtype=args.torch_dtype,
     )
     dotcache_config = real_mixed_probe_dotcache_config()
     dense_adapter = Qwen35TextModelAdapter(model=dense_model)
@@ -426,146 +441,108 @@ def main() -> None:
         backend=str(args.backend),
     )
 
-    summaries_by_context: dict[str, Any] = {}
-    raw_by_context: dict[str, Any] = {}
-
-    for ctx in context_lengths:
-        print(f"\n{'='*60}")
-        print(f"Context length: {ctx:,} tokens")
-        print(f"{'='*60}")
-
-        device = next(persistent_model.parameters()).device
-        input_ids, attention_mask = _build_context_inputs(
-            persistent_tokenizer,
-            device=device,
-            base_text=base_text,
-            target_length=ctx,
+    # Dense reference pass — skipped for cases above max_dense_length.
+    # Full-attention dense prefill at 16K+ tokens OOMs on MPS (O(n²) attention matrix
+    # exhausts unified memory when two models are loaded simultaneously).
+    # The persistent path is fine: it uses block-selective attention and never
+    # materialises the full attention matrix.
+    dense_cases = [c for c in cases if int(c["target_length"]) <= max_dense_length]
+    skipped_dense = [c["case_tag"] for c in cases if int(c["target_length"]) > max_dense_length]
+    if skipped_dense:
+        print(
+            f"NOTE: skipping dense reference for {len(skipped_dense)} case(s) "
+            f"with target_length > {max_dense_length}: {skipped_dense}"
         )
-        actual_length = int(input_ids.shape[1])
-        print(f"  Actual prompt length: {actual_length:,} tokens")
 
-        # Dense reference pass (skip if over max_dense_length)
-        dense_reference_ids: list[int] | None = None
-        if max_dense_length <= 0 or actual_length <= max_dense_length:
-            print(f"  [dense] running reference pass ...")
-            dense_input_ids, dense_attention_mask = _build_context_inputs(
-                dense_tokenizer,
-                device=next(dense_model.parameters()).device,
-                base_text=base_text,
-                target_length=ctx,
-            )
-            dense_result = run_qwen35_text_generation_harness(
-                dense_model,
-                dense_adapter,
-                input_ids=dense_input_ids,
-                attention_mask=dense_attention_mask,
-                max_new_tokens=int(args.decode_steps) + 1,
-                tokenizer=dense_tokenizer,
-            )
-            all_dense_ids = [int(t) for t in dense_result.get("dense_generated_ids", [])]
-            dense_reference_ids = all_dense_ids[: int(args.decode_steps)]
-            print(f"  [dense] generated {len(all_dense_ids)} reference tokens")
-        else:
-            print(
-                f"  [dense] SKIPPED (context {actual_length:,} > max_dense_length {max_dense_length:,})"
-            )
+    print("--- Dense reference pass ---")
+    dense_ids_by_case: dict[str, list[int]] = {}
+    for case in dense_cases:
+        if case["case_tag"] in dense_ids_by_case:
+            continue
+        device = next(dense_model.parameters()).device
+        input_ids, attention_mask = _build_prompt_text_inputs(
+            dense_tokenizer,
+            device=device,
+            prompt_text=Path(case["prompt_file"]).read_text(encoding="utf-8"),
+            prompt_length=int(case["target_length"]),
+        )
+        dense_result = run_qwen35_text_generation_harness(
+            dense_model,
+            dense_adapter,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=int(args.decode_steps) + 1,
+            tokenizer=dense_tokenizer,
+        )
+        all_ids = [int(t) for t in dense_result.get("dense_generated_ids", [])]
+        dense_ids_by_case[case["case_tag"]] = all_ids[:int(args.decode_steps)]
+        print(f"  [dense] {case['case_tag']} ({case['target_length']} tok): {len(all_ids)} tokens generated")
 
-        # Run all lanes
-        lane_results: dict[str, dict[str, Any]] = {}
-        for lane in active_lanes:
-            print(f"  [{lane['name']}] running {args.decode_steps} steps ...")
-            r = _run_lane_at_context(
+    # Free dense model memory before persistent runs at long contexts.
+    del dense_model, dense_adapter
+    if args.device == "mps":
+        try:
+            torch.mps.empty_cache()
+        except Exception:
+            pass
+
+    # Per-lane serving runs
+    all_records: list[dict[str, Any]] = []
+    for lane in active_lanes:
+        print(f"\n--- Lane: {lane['label']} ---")
+        for case in cases:
+            rec = _run_one_case(
+                case=case,
                 lane=lane,
                 model=persistent_model,
                 tokenizer=persistent_tokenizer,
                 adapter=persistent_adapter,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
+                dense_ids=dense_ids_by_case.get(case["case_tag"], []),
                 decode_steps=int(args.decode_steps),
-                dense_reference_ids=dense_reference_ids,
             )
-            lane_results[lane["name"]] = r
-            print(
-                f"  [{lane['name']}] {r['decode_ms_per_step']:.2f} ms/step, "
-                f"cert_stop_rate={r['cert_stop_rate']:.3f} "
-                f"({r['cert_stop_count']}/{r['decode_steps']}), "
-                f"score={r['score_ms_per_step']:.2f} ms/step"
-                + (
-                    f", exact={r['exact_match_vs_dense']}"
-                    if r["exact_match_vs_dense"] is not None
-                    else ""
-                )
-            )
+            all_records.append(rec)
 
-        ctx_summary = _summarize_context(lane_results)
-        summaries_by_context[str(ctx)] = ctx_summary
-        raw_by_context[str(ctx)] = lane_results
-
-        # Print relative deltas
-        spherical_ms = float(ctx_summary.get("spherical_only", {}).get("decode_ms_per_step", 0.0))
-        if spherical_ms > 0:
-            for lane in active_lanes:
-                if lane["name"] == "spherical_only":
-                    continue
-                delta = float(ctx_summary[lane["name"]]["delta_vs_spherical_pct"])
-                lane_ms = float(ctx_summary[lane["name"]]["decode_ms_per_step"])
-                print(
-                    f"  delta {lane['name']:20s} vs spherical: {delta:+.1f}% "
-                    f"({lane_ms:.2f} vs {spherical_ms:.2f} ms/step)"
-                )
-
-    # Final summary table
-    print(f"\n{'='*60}")
-    print("FINAL SUMMARY — ms/step by context")
-    print(f"{'='*60}")
-    header = f"{'ctx':>8}" + "".join(f"  {l['name']:>16}" for l in active_lanes)
-    print(header)
-    for ctx in context_lengths:
-        ctx_key = str(ctx)
-        ctx_data = summaries_by_context.get(ctx_key, {})
-        row = f"{ctx:>8}"
-        for lane in active_lanes:
-            ms = float(ctx_data.get(lane["name"], {}).get("decode_ms_per_step", 0.0))
-            row += f"  {ms:>16.2f}"
-        print(row)
-
-    print(f"\nFINAL SUMMARY — cert_stop_rate by context")
-    print(header)
-    for ctx in context_lengths:
-        ctx_key = str(ctx)
-        ctx_data = summaries_by_context.get(ctx_key, {})
-        row = f"{ctx:>8}"
-        for lane in active_lanes:
-            rate = float(ctx_data.get(lane["name"], {}).get("cert_stop_rate", 0.0))
-            row += f"  {rate:>16.3f}"
-        print(row)
+    # Summary tables
+    print("\n=== Interval win rate and speedup by context length ===")
+    sph_by_len = _summarise_by_length(all_records, "spherical_only")
+    int_by_len = _summarise_by_length(all_records, "interval")
+    for length in lengths:
+        sph = sph_by_len.get(length, {})
+        intv = int_by_len.get(length, {})
+        if not sph or not intv:
+            continue
+        speedup = (sph["avg_ms_per_step"] - intv["avg_ms_per_step"]) / sph["avg_ms_per_step"] * 100.0
+        print(
+            f"  {length:>6} tok: "
+            f"sph={sph['avg_ms_per_step']:.1f}ms  "
+            f"int={intv['avg_ms_per_step']:.1f}ms  "
+            f"speedup={speedup:+.1f}%  "
+            f"int_win={intv['bound_interval_frac']:.1%}  "
+            f"cert_stop_rate={intv['avg_cert_stop_rate']:.1%}"
+        )
 
     payload: dict[str, Any] = {
-        "context_lengths": context_lengths,
-        "active_lanes": [lane["name"] for lane in active_lanes],
+        "records": all_records,
+        "active_lanes": [l["name"] for l in active_lanes],
+        "lengths": lengths,
         "decode_steps": int(args.decode_steps),
-        "max_dense_length": int(max_dense_length),
         "model_id": str(args.model_id),
-        "device": str(args.device),
-        "backend": str(args.backend),
-        "summaries_by_context": summaries_by_context,
-        "raw_by_context": raw_by_context,
     }
 
     if args.output_json:
-        out_path = Path(args.output_json)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-        print(f"\nJSON -> {out_path}")
+        out = Path(args.output_json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        print(f"\nJSON -> {out}")
 
     if args.output_md:
-        out_path = Path(args.output_md)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(
-            _render_markdown(payload=payload, active_lanes=active_lanes),
+        out = Path(args.output_md)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            _render_markdown(payload=payload, active_lanes=active_lanes, lengths=lengths),
             encoding="utf-8",
         )
-        print(f"MD   -> {out_path}")
+        print(f"MD   -> {out}")
 
 
 if __name__ == "__main__":
