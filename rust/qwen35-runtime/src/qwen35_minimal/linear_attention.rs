@@ -84,6 +84,47 @@ struct LinearValueCache {
 }
 
 impl GatedDeltaNet {
+    /// Fill a DecodeLayerDesc with this layer's linear attention pointers.
+    #[cfg(feature = "qwen35-minimal-hip")]
+    pub(super) fn fill_persistent_desc(&self, d: &mut super::DecodeLayerDesc) -> Result<()> {
+        use candle::Storage;
+        use std::ffi::c_void;
+
+        fn ptr(t: &Tensor) -> Result<*const c_void> {
+            let t = t.contiguous()?;
+            let (s, l) = t.storage_and_layout();
+            let Storage::Hip(h) = &*s else { candle::bail!("not on HIP"); };
+            Ok(h.raw_device_ptr_with_offset(l.start_offset())? as *const c_void)
+        }
+
+        let qkv_w = self.in_proj_qkv.weight_tensor()?;
+        d.qkv_proj_w = ptr(&qkv_w)?;
+        d.qkv_out_dim = qkv_w.dim(0)? as i32;
+        d.z_proj_w = ptr(&self.in_proj_z.weight)?;
+        d.z_out_dim = self.in_proj_z.weight.dim(0)? as i32;
+        d.b_proj_w = ptr(&self.in_proj_b.weight)?;
+        d.a_proj_w = ptr(&self.in_proj_a.weight)?;
+        d.linear_out_proj_w = ptr(&self.out_proj.weight)?;
+        d.linear_value_dim = self.value_dim as i32;
+        d.linear_num_v_heads = self.num_v_heads as i32;
+        d.linear_head_k_dim = self.head_k_dim as i32;
+        d.linear_head_v_dim = self.head_v_dim as i32;
+        d.conv_kernel_size = self.conv_kernel_size as i32;
+
+        if let Some(ref cs) = self.conv_state {
+            d.conv_state = ptr(cs.tensor())? as *mut _;
+        }
+        if let Some(ref rs) = self.recurrent_state {
+            d.recurrent_state = ptr(rs.tensor())? as *mut _;
+        }
+        if let Some(ref cw) = self.conv1d_weight_squeezed {
+            d.conv1d_w = ptr(cw)?;
+        } else if let Some(ref cw) = self.conv1d_raw_weight {
+            d.conv1d_w = ptr(cw)?;
+        }
+        Ok(())
+    }
+
     /// Output projection using standalone matvec megakernel when available.
     fn out_proj_forward(&self, xs: &StateBuffer) -> Result<StateBuffer> {
         #[cfg(feature = "qwen35-minimal-hip")]

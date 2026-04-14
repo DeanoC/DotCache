@@ -856,6 +856,45 @@ impl FullAttention {
         Ok((output, profile))
     }
 
+    /// Fill a DecodeLayerDesc with this layer's full attention pointers.
+    #[cfg(feature = "qwen35-minimal-hip")]
+    pub(super) fn fill_persistent_desc(
+        &self,
+        d: &mut super::DecodeLayerDesc,
+        seqlen_offset: usize,
+    ) -> Result<()> {
+        use candle::Storage;
+        use std::ffi::c_void;
+
+        fn ptr(t: &Tensor) -> Result<*const c_void> {
+            let t = t.contiguous()?;
+            let (s, l) = t.storage_and_layout();
+            let Storage::Hip(h) = &*s else { candle::bail!("not on HIP"); };
+            Ok(h.raw_device_ptr_with_offset(l.start_offset())? as *const c_void)
+        }
+
+        d.q_proj_w = ptr(&self.q_proj.weight)?;
+        d.q_out_dim = self.q_proj.weight.dim(0)? as i32;
+        d.k_proj_w = ptr(&self.k_proj.weight)?;
+        d.k_out_dim = self.k_proj.weight.dim(0)? as i32;
+        d.v_proj_w = ptr(&self.v_proj.weight)?;
+        d.o_proj_w = ptr(&self.o_proj.weight)?;
+        d.attn_head_dim = self.head_dim as i32;
+        d.attn_num_heads = self.num_heads as i32;
+        d.attn_num_kv_heads = self.num_kv_heads as i32;
+        d.q_norm_w = ptr(self.q_norm.weight())?;
+        d.k_norm_w = ptr(self.k_norm.weight())?;
+        d.q_norm_eps = self.q_norm.eps() as f32;
+        d.k_norm_eps = self.k_norm.eps() as f32;
+        d.kv_len = seqlen_offset as i32;
+
+        if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
+            d.kv_cache_k = ptr(k_cache.tensor())? as *mut _;
+            d.kv_cache_v = ptr(v_cache.tensor())? as *mut _;
+        }
+        Ok(())
+    }
+
     /// Fused norm + Q/K/V projections using the megakernel.
     /// Returns (q_and_gate, k_proj, v_proj) or None if not available.
     pub(super) fn fused_norm_qkv_projections(

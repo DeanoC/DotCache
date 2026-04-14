@@ -23,6 +23,8 @@ use super::with_tracing::Linear;
 use crate::PreparedQwen35DirectMetadata;
 use candle::{DType, Device, DeviceLocation, Result, Tensor};
 use candle_core as candle;
+#[cfg(feature = "qwen35-minimal-hip")]
+use std::ffi::c_void;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -1188,6 +1190,65 @@ impl TextModel {
         Ok((self.norm.forward_buffer(&xs)?.clone_tensor(), profile))
     }
 
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn use_persistent_decode(&self, device: &Device, seq_len: usize) -> bool {
+        if seq_len != 1 { return false; }
+        if !matches!(device.location(), DeviceLocation::Hip { .. }) { return false; }
+        matches!(
+            std::env::var("CANDLE_QWEN35_PERSISTENT_DECODE").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        )
+    }
+
+    /// Extract a raw HIP device pointer from a contiguous tensor.
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn tensor_device_ptr(t: &Tensor) -> Result<*const c_void> {
+        use candle::Storage;
+        let t = t.contiguous()?;
+        let (storage, layout) = t.storage_and_layout();
+        let Storage::Hip(hip_s) = &*storage else {
+            candle::bail!("tensor_device_ptr: not on HIP");
+        };
+        Ok(hip_s.raw_device_ptr_with_offset(layout.start_offset())? as *const c_void)
+    }
+
+    /// Build DecodeLayerDesc array from model layers (called once per forward pass).
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn build_layer_descs(&self, seqlen_offset: usize) -> Result<Vec<super::DecodeLayerDesc>> {
+        use std::ptr;
+
+        let mut descs = Vec::with_capacity(self.layers.len());
+        for layer in &self.layers {
+            let mut d = super::DecodeLayerDesc::default();
+
+            // Common fields
+            d.input_norm_eps = layer.input_layernorm.eps() as f32;
+            d.post_attn_norm_eps = layer.post_attention_layernorm.eps() as f32;
+            d.input_norm_w = Self::tensor_device_ptr(layer.input_layernorm.weight())? as *const _;
+            d.post_attn_norm_w = Self::tensor_device_ptr(layer.post_attention_layernorm.weight())? as *const _;
+
+            // MLP
+            let (gate_w, up_w, down_w) = layer.mlp.weight_tensors()?;
+            d.gate_proj_w = Self::tensor_device_ptr(&gate_w)?;
+            d.up_proj_w = Self::tensor_device_ptr(&up_w)?;
+            d.down_proj_w = Self::tensor_device_ptr(&down_w)?;
+            d.intermediate_size = gate_w.dim(0)? as i32;
+
+            match &layer.token_mixer {
+                LayerKind::Linear(la) => {
+                    d.layer_type = 0;
+                    la.fill_persistent_desc(&mut d)?;
+                }
+                LayerKind::Full(fa) => {
+                    d.layer_type = 1;
+                    fa.fill_persistent_desc(&mut d, seqlen_offset)?;
+                }
+            }
+            descs.push(d);
+        }
+        Ok(descs)
+    }
+
     pub fn forward_profiled(
         &mut self,
         input_ids: &Tensor,
@@ -1196,6 +1257,18 @@ impl TextModel {
         let device = input_ids.device();
         let (b_size, seq_len) = input_ids.dims2()?;
         let mut profile = RuntimeProfile::default();
+
+        // Try persistent decode kernel for single-token decode
+        #[cfg(feature = "qwen35-minimal-hip")]
+        if self.use_persistent_decode(device, seq_len) {
+            let xs = self.hidden_states_from_input_ids(input_ids)?;
+            if let Ok(result) = self.persistent_decode_forward(&xs, seqlen_offset) {
+                let normed = self.norm.forward_buffer(&result)?;
+                return Ok((normed.clone_tensor(), profile));
+            }
+            // Fall through to standard path on failure
+        }
+
         let scheduler_start = profile_start(device)?;
         let attention_mask = if seq_len > 1 {
             Some(self.prepare_causal_attention_mask(b_size, seq_len, seqlen_offset)?)
@@ -1215,6 +1288,95 @@ impl TextModel {
             xs = next_xs;
         }
         Ok((self.norm.forward_buffer(&xs)?.clone_tensor(), profile))
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn persistent_decode_forward(
+        &self,
+        hidden: &StateBuffer,
+        seqlen_offset: usize,
+    ) -> Result<StateBuffer> {
+        let hidden = hidden.contiguous()?;
+        let (_, _, hidden_dim) = hidden.dims3()?;
+        let ordinal = match hidden.device().location() {
+            DeviceLocation::Hip { gpu_id } => gpu_id,
+            _ => candle::bail!("persistent decode requires HIP"),
+        };
+        let dtype_code = super::hip::dtype_code(hidden.tensor().dtype())
+            .map_err(|e| candle::Error::Msg(format!("{e}")))?;
+
+        let num_layers = self.layers.len();
+        let intermediate_size = self.layers[0].mlp.weight_tensors()?.0.dim(0)?;
+
+        // Build and upload layer descriptors
+        let descs = self.build_layer_descs(seqlen_offset)?;
+        let desc_bytes = descs.len() * std::mem::size_of::<super::DecodeLayerDesc>();
+        let desc_ptr = super::hip::alloc_device_bytes(ordinal, desc_bytes)?;
+        super::hip::copy_host_to_device(
+            ordinal, desc_ptr, descs.as_ptr() as *const c_void, desc_bytes,
+        )?;
+
+        // Allocate workspace (F32 scratch)
+        // hidden_f32[1024] + normed[1024] + gate_up[3584*2] + mlp_out[1024] + token_out[1024] + proj_buf[8224] + attn_scratch[2048]
+        let workspace_floats = hidden_dim + hidden_dim + intermediate_size * 2 + hidden_dim + hidden_dim + 8224 + 2048;
+        let workspace_bytes = workspace_floats * std::mem::size_of::<f32>();
+        let workspace_ptr = super::hip::alloc_device_bytes(ordinal, workspace_bytes)?;
+
+        // Counters and barriers
+        let counters_ptr = super::hip::alloc_device_bytes(ordinal, 4 * std::mem::size_of::<u32>())?;
+        let barrier_counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
+        let barrier_flag_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
+
+        // Create output tensor (kernel writes BF16 in-place)
+        let output = Tensor::zeros((1, 1, hidden_dim), hidden.tensor().dtype(), hidden.device())?;
+
+        // Copy input hidden to output (kernel reads/writes same buffer)
+        {
+            use candle::Storage;
+            let (h_s, h_l) = hidden.tensor().storage_and_layout();
+            let (o_s, o_l) = output.storage_and_layout();
+            let (Storage::Hip(h_hip), Storage::Hip(o_hip)) = (&*h_s, &*o_s) else {
+                candle::bail!("persistent decode: tensors not on HIP");
+            };
+            let bytes = hidden_dim * hidden.tensor().dtype().size_in_bytes();
+            super::hip::copy_device_to_device(
+                ordinal,
+                o_hip.raw_device_ptr_with_offset(o_l.start_offset())? as *mut c_void,
+                h_hip.raw_device_ptr_with_offset(h_l.start_offset())? as *const c_void,
+                bytes,
+            )?;
+            let hidden_io_ptr = o_hip.raw_device_ptr_with_offset(o_l.start_offset())? as *mut c_void;
+            drop(h_s); drop(o_s);
+
+            let status = unsafe {
+                super::hip::ffi::dotcache_qwen35_hip_persistent_decode(
+                    dtype_code,
+                    ordinal,
+                    num_layers,
+                    hidden_dim,
+                    intermediate_size,
+                    seqlen_offset,
+                    desc_ptr as *const c_void,
+                    hidden_io_ptr,
+                    workspace_ptr as *mut c_void,
+                    counters_ptr as *mut c_void,
+                    barrier_counter_ptr as *mut c_void,
+                    barrier_flag_ptr as *mut c_void,
+                )
+            };
+
+            super::hip::free_device_bytes(ordinal, desc_ptr);
+            super::hip::free_device_bytes(ordinal, workspace_ptr);
+            super::hip::free_device_bytes(ordinal, counters_ptr);
+            super::hip::free_device_bytes(ordinal, barrier_counter_ptr);
+            super::hip::free_device_bytes(ordinal, barrier_flag_ptr);
+
+            if status != 0 {
+                candle::bail!("persistent decode kernel failed with status {status}");
+            }
+        }
+
+        StateBuffer::from_tensor(output)
     }
 
     pub fn forward_hidden_states_profiled(
