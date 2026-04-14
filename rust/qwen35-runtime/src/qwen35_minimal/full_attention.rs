@@ -70,6 +70,68 @@ impl FullAttention {
         self.kv_cache = state.kv_cache.clone();
     }
 
+    /// Output projection using the work-stealing megakernel when available,
+    /// falling back to rocBLAS otherwise.
+    fn o_proj_forward(&self, xs: &StateBuffer) -> Result<StateBuffer> {
+        #[cfg(feature = "qwen35-minimal-hip")]
+        if let Ok((1, 1, _)) = xs.dims3() {
+            if matches!(xs.device().location(), DeviceLocation::Hip { gpu_id: _ }) {
+                if let Ok(result) = self.o_proj_megakernel(xs) {
+                    return Ok(result);
+                }
+            }
+        }
+        self.o_proj.forward_buffer(xs)
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn o_proj_megakernel(&self, xs: &StateBuffer) -> Result<StateBuffer> {
+        use candle::Storage;
+        use std::ffi::c_void;
+
+        let xs = xs.contiguous()?;
+        let ordinal = match xs.device().location() {
+            DeviceLocation::Hip { gpu_id } => gpu_id,
+            _ => candle::bail!("o_proj_megakernel: requires HIP"),
+        };
+        let dtype_code = super::hip::dtype_code(xs.tensor().dtype())
+            .map_err(|e| candle::Error::Msg(format!("{e}")))?;
+
+        let in_dim = xs.tensor().dim(2)?;
+        let weight = self.o_proj.weight.contiguous()?;
+        let out_dim = weight.dim(0)?;
+
+        let out_tensor = Tensor::zeros((1, 1, out_dim), xs.tensor().dtype(), xs.device())?;
+
+        let (xs_s, xs_l) = xs.tensor().storage_and_layout();
+        let (w_s, w_l) = weight.storage_and_layout();
+        let (o_s, o_l) = out_tensor.storage_and_layout();
+        let (Storage::Hip(xs_hip), Storage::Hip(w_hip), Storage::Hip(o_hip)) =
+            (&*xs_s, &*w_s, &*o_s)
+        else {
+            candle::bail!("o_proj_megakernel: tensors not on HIP");
+        };
+
+        let counter_ptr = super::decoder::megakernel_scratch::get_counter(ordinal)?;
+        let status = unsafe {
+            super::hip::ffi::dotcache_qwen35_hip_standalone_matvec(
+                dtype_code, ordinal, in_dim, out_dim,
+                xs_hip.raw_device_ptr_with_offset(xs_l.start_offset())? as *const c_void,
+                w_hip.raw_device_ptr_with_offset(w_l.start_offset())? as *const c_void,
+                o_hip.raw_device_ptr_with_offset(o_l.start_offset())? as *mut c_void,
+                counter_ptr as *mut c_void,
+            )
+        };
+
+        drop(xs_s); drop(w_s); drop(o_s);
+
+        if status != 0 {
+            candle::bail!("o_proj_megakernel: kernel failed with status {status}");
+        }
+
+        StateBuffer::from_tensor(out_tensor)
+    }
+
     fn causal_block_mask(
         device: &Device,
         q_start: usize,
@@ -788,7 +850,7 @@ impl FullAttention {
         let gate_start = profile_start(device)?;
         profile.full_attention_gate_millis += profile_elapsed(gate_start, device)?;
         let output_start = profile_start(device)?;
-        let output = self.o_proj.forward_buffer(&attn_output)?.clone_tensor_as(xs.dtype())?;
+        let output = self.o_proj_forward(&attn_output)?.clone_tensor_as(xs.dtype())?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))
@@ -1151,7 +1213,7 @@ impl FullAttention {
         let gate_start = profile_start(device)?;
         profile.full_attention_gate_millis += profile_elapsed(gate_start, device)?;
         let output_start = profile_start(device)?;
-        let output = self.o_proj.forward_buffer(&attn_output)?;
+        let output = self.o_proj_forward(&attn_output)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))
@@ -1275,7 +1337,7 @@ impl FullAttention {
             self.kv_cache = appended_kv;
         }
         let output_start = profile_start(device)?;
-        let output = self.o_proj.forward_buffer(&prepared_attn_output)?;
+        let output = self.o_proj_forward(&prepared_attn_output)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((output, profile))
@@ -1478,7 +1540,7 @@ impl FullAttention {
 
         self.kv_cache = Some(appended_kv);
         let output_start = profile_start(device)?;
-        let output = self.o_proj.forward_buffer(&prepared_attn_output)?;
+        let output = self.o_proj_forward(&prepared_attn_output)?;
         profile.output_projection_millis += profile_elapsed(output_start, device)?;
         profile.full_attention_millis += profile_elapsed(full_start, device)?;
         Ok((

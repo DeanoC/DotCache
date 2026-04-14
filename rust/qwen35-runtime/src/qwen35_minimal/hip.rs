@@ -556,6 +556,17 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_standalone_matvec(
+            dtype: c_int,
+            device_ordinal: usize,
+            in_dim: usize,
+            out_dim: usize,
+            input: *const c_void,       // [in_dim] BF16
+            weight: *const c_void,      // [out_dim, in_dim] BF16
+            output: *mut c_void,        // [out_dim] BF16
+            row_counter: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_norm_multi_proj(
             dtype: c_int,
             device_ordinal: usize,

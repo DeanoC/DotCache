@@ -84,6 +84,59 @@ struct LinearValueCache {
 }
 
 impl GatedDeltaNet {
+    /// Output projection using standalone matvec megakernel when available.
+    fn out_proj_forward(&self, xs: &StateBuffer) -> Result<StateBuffer> {
+        #[cfg(feature = "qwen35-minimal-hip")]
+        if let Ok((1, 1, _)) = xs.dims3() {
+            if matches!(xs.device().location(), DeviceLocation::Hip { gpu_id: _ }) {
+                use candle::Storage;
+                use std::ffi::c_void;
+
+                let xs = xs.contiguous()?;
+                let ordinal = match xs.device().location() {
+                    DeviceLocation::Hip { gpu_id } => gpu_id,
+                    _ => return self.out_proj.forward_buffer(&xs),
+                };
+                let Ok(dtype_code) = super::hip::dtype_code(xs.tensor().dtype()) else {
+                    return self.out_proj.forward_buffer(&xs);
+                };
+
+                let weight = self.out_proj.weight.contiguous()?;
+                let in_dim = xs.tensor().dim(2)?;
+                let out_dim = weight.dim(0)?;
+
+                let out_tensor = Tensor::zeros((1, 1, out_dim), xs.tensor().dtype(), xs.device())?;
+                let (xs_s, xs_l) = xs.tensor().storage_and_layout();
+                let (w_s, w_l) = weight.storage_and_layout();
+                let (o_s, o_l) = out_tensor.storage_and_layout();
+                let (Storage::Hip(xs_h), Storage::Hip(w_h), Storage::Hip(o_h)) =
+                    (&*xs_s, &*w_s, &*o_s)
+                else {
+                    drop(xs_s); drop(w_s); drop(o_s);
+                    return self.out_proj.forward_buffer(&xs);
+                };
+
+                let counter_ptr = super::decoder::megakernel_scratch::get_counter(ordinal)?;
+                let status = unsafe {
+                    super::hip::ffi::dotcache_qwen35_hip_standalone_matvec(
+                        dtype_code, ordinal, in_dim, out_dim,
+                        xs_h.raw_device_ptr_with_offset(xs_l.start_offset())? as *const c_void,
+                        w_h.raw_device_ptr_with_offset(w_l.start_offset())? as *const c_void,
+                        o_h.raw_device_ptr_with_offset(o_l.start_offset())? as *mut c_void,
+                        counter_ptr as *mut c_void,
+                    )
+                };
+                drop(xs_s); drop(w_s); drop(o_s);
+
+                if status == 0 {
+                    return StateBuffer::from_tensor(out_tensor);
+                }
+                // Fall through to rocBLAS on failure
+            }
+        }
+        self.out_proj.forward_buffer(xs)
+    }
+
     fn chunk_gated_delta_rule_trace_label(
         &self,
         device: &Device,
@@ -192,7 +245,7 @@ impl GatedDeltaNet {
         } else {
             core_attn_out.to_dtype(hidden_dtype)?
         };
-        self.out_proj.forward_buffer(&backend.reshape_tensor_to_buffer(
+        self.out_proj_forward(&backend.reshape_tensor_to_buffer(
             &core_attn_out,
             &[batch_size, seq_len, self.value_dim],
         )?)

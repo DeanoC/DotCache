@@ -2899,6 +2899,64 @@ __global__ void dotcache_qwen35_mlp_down_proj_kernel(
 }
 
 // =============================================================================
+// Standalone work-stealing matvec kernel for decode
+// Computes: out[out_dim] = W[out_dim, in_dim] × input[in_dim]
+// Input is typed T (BF16), weight is typed T (BF16), output is typed T (BF16)
+// All accumulation in F32 with block-level reduction.
+// =============================================================================
+template <typename T>
+__global__ void dotcache_qwen35_standalone_matvec_kernel(
+    int out_dim,
+    int in_dim,
+    const T* __restrict__ weight,      // [out_dim, in_dim]
+    const T* __restrict__ input,       // [in_dim]
+    T* __restrict__ output,            // [out_dim]
+    unsigned int* __restrict__ row_counter
+) {
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+    extern __shared__ float shared_scratch[];
+
+    // Load input into shared memory as F32
+    __shared__ float shared_input[4096];  // max in_dim we support
+    for (int col = tid; col < in_dim; col += block_size) {
+        shared_input[col] = dotcache_qwen35_to_float(input[col]);
+    }
+    __syncthreads();
+
+    for (;;) {
+        __shared__ unsigned int shared_row;
+        if (tid == 0) {
+            shared_row = atomicAdd(row_counter, 1u);
+        }
+        __syncthreads();
+        const unsigned int my_row = shared_row;
+        if (my_row >= static_cast<unsigned int>(out_dim)) break;
+
+        const T* w_row = weight + static_cast<size_t>(my_row) * in_dim;
+
+        float partial = 0.0f;
+        for (int col = tid; col < in_dim; col += block_size) {
+            partial += dotcache_qwen35_to_float(w_row[col]) * shared_input[col];
+        }
+        shared_scratch[tid] = partial;
+        __syncthreads();
+
+        for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                shared_scratch[tid] += shared_scratch[tid + stride];
+            }
+            __syncthreads();
+        }
+
+        if (tid == 0) {
+            output[my_row] = dotcache_qwen35_from_float<T>(shared_scratch[0]);
+        }
+        __syncthreads();
+    }
+}
+
+// =============================================================================
 // General-purpose RMSNorm + multi-projection kernel for decode
 //
 // Computes RMSNorm on hidden[hidden_dim], then performs N separate matvec

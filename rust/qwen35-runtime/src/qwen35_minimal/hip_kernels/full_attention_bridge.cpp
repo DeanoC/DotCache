@@ -4320,3 +4320,69 @@ extern "C" int dotcache_qwen35_hip_norm_multi_proj(
         return 225;
     }
 }
+
+// Standalone work-stealing matvec: out[out_dim] = W[out_dim, in_dim] × input[in_dim]
+// Reuses the down_proj kernel pattern for arbitrary matvec.
+template <typename T>
+int standalone_matvec_device(
+    int device_ordinal,
+    int in_dim,
+    int out_dim,
+    const void* input,       // [in_dim] F32
+    const void* weight,      // [out_dim, in_dim] BF16
+    void* output,            // [out_dim] BF16
+    unsigned int* row_counter
+) {
+    ScopedHipDevice scoped(device_ordinal);
+
+    hipDeviceProp_t props;
+    if (hipGetDeviceProperties(&props, device_ordinal) != hipSuccess) return 230;
+
+    const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
+    constexpr int block_size = 256;
+
+    unsigned int zero = 0;
+    if (hipMemcpy(row_counter, &zero, sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess)
+        return 231;
+    if (hipDeviceSynchronize() != hipSuccess) return 232;
+
+    const size_t shared_bytes = block_size * sizeof(float);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_standalone_matvec_kernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        shared_bytes,
+        0,
+        out_dim,
+        in_dim,
+        static_cast<const T*>(weight),
+        static_cast<const T*>(input),
+        static_cast<T*>(output),
+        row_counter);
+    if (hipGetLastError() != hipSuccess) return 233;
+    if (hipDeviceSynchronize() != hipSuccess) return 234;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_standalone_matvec(
+    int dtype,
+    size_t device_ordinal,
+    size_t in_dim,
+    size_t out_dim,
+    const void* input,
+    const void* weight,
+    void* output,
+    unsigned int* row_counter) {
+    switch (dtype) {
+    case 0:
+        return standalone_matvec_device<half>(
+            static_cast<int>(device_ordinal), static_cast<int>(in_dim),
+            static_cast<int>(out_dim), input, weight, output, row_counter);
+    case 2:
+        return standalone_matvec_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal), static_cast<int>(in_dim),
+            static_cast<int>(out_dim), input, weight, output, row_counter);
+    default:
+        return 235;
+    }
+}
