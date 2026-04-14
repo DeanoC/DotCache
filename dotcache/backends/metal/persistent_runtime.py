@@ -620,6 +620,15 @@ def _copy_full_attention_block_metadata_prefix(
     state.block_v_neg_sum[prefix].copy_(previous["block_v_neg_sum"][prefix])
     state.block_prev_attention_ema[prefix].copy_(previous["block_prev_attention_ema"][prefix])
     state.block_k_comp_error[prefix].copy_(previous["block_k_comp_error"][prefix])
+    state.block_k_min[prefix].copy_(previous["block_k_min"][prefix])
+    state.block_k_max[prefix].copy_(previous["block_k_max"][prefix])
+    state.block_k_comp_error_dim[prefix].copy_(previous["block_k_comp_error_dim"][prefix])
+    if state.block_k_pc1 is not None and previous.get("block_k_pc1") is not None:
+        state.block_k_pc1[prefix].copy_(previous["block_k_pc1"][prefix])
+    if state.block_k_r_along is not None and previous.get("block_k_r_along") is not None:
+        state.block_k_r_along[prefix].copy_(previous["block_k_r_along"][prefix])
+    if state.block_k_r_perp is not None and previous.get("block_k_r_perp") is not None:
+        state.block_k_r_perp[prefix].copy_(previous["block_k_r_perp"][prefix])
     state.block_k_mode[prefix] = previous["block_k_mode"][prefix]
     state.block_v_mode[prefix] = previous["block_v_mode"][prefix]
     state.block_compression_metadata_valid[prefix] = previous["block_compression_metadata_valid"][prefix]
@@ -661,6 +670,51 @@ def _estimate_m0_key_comp_error(
     if residual.size <= 0:
         return 0.0
     return float(np.max(np.linalg.norm(residual, axis=1)))
+
+
+def _estimate_m0_key_comp_error_with_dim(
+    *,
+    key_slice: Any,
+    dotcache_config: Any | None,
+) -> tuple[float, Any] | None:
+    """Return (scalar_comp_error, per_dim_comp_error[head_dim]) for an M0 block.
+
+    The per-dimension error is max(|original - reconstructed|, axis=0) across
+    all tokens in the block, giving a tight per-coordinate envelope for the
+    interval bound.  Returns None when quantisation parameters are unavailable.
+    """
+    if dotcache_config is None:
+        return None
+    group_size = int(getattr(dotcache_config, "group_size", 0))
+    bits_k = int(getattr(dotcache_config, "bits_k", 0))
+    quant_scheme_k = str(getattr(dotcache_config, "quant_scheme_k", "affine")).strip().lower()
+    if group_size <= 0 or bits_k <= 0 or quant_scheme_k not in {"affine", "symmetric"}:
+        return None
+    values = np.asarray(key_slice.detach().cpu().numpy(), dtype=np.float32)
+    if values.ndim != 2 or values.shape[0] <= 0:
+        return (0.0, np.zeros(values.shape[1], dtype=np.float32))
+    try:
+        codes, scales, bias, _padded_head_dim = quantize_tensor(
+            values,
+            group_size=group_size,
+            bits=bits_k,
+            scheme=quant_scheme_k,
+        )
+        reconstructed = dequantize_groups(
+            codes,
+            scales=scales,
+            bias=bias,
+            bits=bits_k,
+            scheme=quant_scheme_k,
+        ).reshape(values.shape[0], -1)[:, : values.shape[1]]
+    except Exception:
+        return None
+    residual = values - np.asarray(reconstructed, dtype=np.float32)
+    if residual.size <= 0:
+        return (0.0, np.zeros(values.shape[1], dtype=np.float32))
+    scalar_error = float(np.max(np.linalg.norm(residual, axis=1)))
+    dim_error = np.max(np.abs(residual), axis=0).astype(np.float32)
+    return (scalar_error, dim_error)
 
 
 def _sequence_value_or_none(container: Any, index: int) -> Any | None:
@@ -954,6 +1008,9 @@ def _allocate_full_attention_block_metadata(
     block_v_neg_sum = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
     block_prev_attention_ema = torch.zeros((num_blocks,), dtype=torch.float32, device=device)
     block_k_comp_error = torch.zeros((num_blocks, kv_heads), dtype=torch.float32, device=device)
+    block_k_min = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
+    block_k_max = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
+    block_k_comp_error_dim = torch.zeros((num_blocks, kv_heads, head_dim), dtype=torch.float32, device=device)
     block_compression_metadata_valid = np.ones((num_blocks, kv_heads), dtype=np.float32)
     return (
         block_k_center,
@@ -971,6 +1028,9 @@ def _allocate_full_attention_block_metadata(
         block_v_neg_sum,
         block_prev_attention_ema,
         block_k_comp_error,
+        block_k_min,
+        block_k_max,
+        block_k_comp_error_dim,
         block_compression_metadata_valid,
     )
 
@@ -1042,6 +1102,15 @@ def _recompute_full_attention_block_metadata(
             state.block_v_pos_sum[block_idx].zero_()
             state.block_v_neg_sum[block_idx].zero_()
             state.block_k_comp_error[block_idx].zero_()
+            state.block_k_min[block_idx].zero_()
+            state.block_k_max[block_idx].zero_()
+            state.block_k_comp_error_dim[block_idx].zero_()
+            if state.block_k_pc1 is not None:
+                state.block_k_pc1[block_idx].zero_()
+            if state.block_k_r_along is not None:
+                state.block_k_r_along[block_idx].zero_()
+            if state.block_k_r_perp is not None:
+                state.block_k_r_perp[block_idx].zero_()
             state.block_compression_metadata_valid[block_idx] = 0.0
             continue
         key_slice = state.key_cache[:, token_start : token_start + token_count, :].to(dtype=torch.float32)
@@ -1079,6 +1148,9 @@ def _recompute_full_attention_block_metadata(
         value_neg_sum = value_slice.clamp_max(0.0).sum(dim=1)
         state.block_k_center[block_idx].copy_(center)
         state.block_k_radius[block_idx].copy_(distances.max(dim=1).values)
+        # --- Interval bound metadata (K_min, K_max) ---
+        state.block_k_min[block_idx].copy_(key_slice.min(dim=1).values)
+        state.block_k_max[block_idx].copy_(key_slice.max(dim=1).values)
         state.block_v_center[block_idx].copy_(value_center)
         state.block_v_radius[block_idx].copy_(value_distances.max(dim=1).values)
         state.block_v_subcenters[block_idx].copy_(value_center[:, None, :].expand_as(state.block_v_subcenters[block_idx]))
@@ -1121,24 +1193,67 @@ def _recompute_full_attention_block_metadata(
         state.block_v_pos_sum[block_idx].copy_(value_pos_sum)
         state.block_v_neg_sum[block_idx].copy_(value_neg_sum)
         state.block_k_comp_error[block_idx].zero_()
+        state.block_k_comp_error_dim[block_idx].zero_()
         for kv_head_idx in range(int(key_slice.shape[0])):
             key_mode = _normalize_stage8_mode_name(state.block_k_mode[block_idx, kv_head_idx])
             value_mode = _normalize_stage8_mode_name(state.block_v_mode[block_idx, kv_head_idx])
             compression_valid = float(state.block_compression_metadata_valid[block_idx, int(kv_head_idx)])
             if key_mode == "M0":
-                estimated_comp_error = _estimate_m0_key_comp_error(
+                # Per-dim compression error for interval bound
+                dim_result = _estimate_m0_key_comp_error_with_dim(
                     key_slice=key_slice[int(kv_head_idx)],
                     dotcache_config=dotcache_config,
                 )
-                if estimated_comp_error is None:
+                if dim_result is None:
                     compression_valid = 0.0
-                    estimated_comp_error = 0.0
-                state.block_k_comp_error[block_idx, int(kv_head_idx)] = float(estimated_comp_error)
+                    state.block_k_comp_error[block_idx, int(kv_head_idx)] = 0.0
+                    state.block_k_comp_error_dim[block_idx, int(kv_head_idx)].zero_()
+                else:
+                    scalar_err, dim_err = dim_result
+                    state.block_k_comp_error[block_idx, int(kv_head_idx)] = float(scalar_err)
+                    state.block_k_comp_error_dim[block_idx, int(kv_head_idx)].copy_(
+                        torch.as_tensor(dim_err, dtype=torch.float32, device=state.block_k_comp_error_dim.device)
+                    )
             else:
                 state.block_k_comp_error[block_idx, int(kv_head_idx)] = 0.0
+                state.block_k_comp_error_dim[block_idx, int(kv_head_idx)].zero_()
             if key_mode not in {"M0", "M3"} or value_mode not in {"M0", "M3"}:
                 compression_valid = 0.0
             state.block_compression_metadata_valid[block_idx, int(kv_head_idx)] = float(compression_valid)
+        # --- Ellipsoidal bound metadata (when enabled) ---
+        if state.block_k_pc1 is not None and state.block_k_r_along is not None and state.block_k_r_perp is not None:
+            centered = key_slice - center[:, None, :]  # [kv_heads, tokens, head_dim]
+            for kv_head_idx in range(int(key_slice.shape[0])):
+                c = centered[kv_head_idx]  # [tokens, head_dim]
+                if int(c.shape[0]) <= 1:
+                    # Degenerate: single token or empty — zero ellipsoidal params
+                    state.block_k_pc1[block_idx, kv_head_idx].zero_()
+                    state.block_k_r_along[block_idx, kv_head_idx] = 0.0
+                    state.block_k_r_perp[block_idx, kv_head_idx] = 0.0
+                    continue
+                # Power iteration: 5 iterations to find top eigenvector of C^T C
+                v = c[0].clone()
+                v_norm = torch.linalg.vector_norm(v)
+                if float(v_norm.item()) < 1e-12:
+                    v = torch.randn_like(v)
+                    v_norm = torch.linalg.vector_norm(v)
+                v = v / v_norm.clamp_min(1e-12)
+                for _ in range(5):
+                    v = torch.matmul(c.T, torch.matmul(c, v))
+                    v_norm = torch.linalg.vector_norm(v)
+                    if float(v_norm.item()) < 1e-12:
+                        break
+                    v = v / v_norm.clamp_min(1e-12)
+                # v is the top principal component direction
+                projections = torch.matmul(c, v)  # [tokens]
+                r_along = float(projections.abs().max().item())
+                # Perpendicular residuals
+                perp = c - projections[:, None] * v[None, :]
+                perp_norms = torch.linalg.vector_norm(perp, dim=-1)
+                r_perp = float(perp_norms.max().item())
+                state.block_k_pc1[block_idx, kv_head_idx].copy_(v)
+                state.block_k_r_along[block_idx, kv_head_idx] = r_along
+                state.block_k_r_perp[block_idx, kv_head_idx] = r_perp
         state.metadata_valid[block_idx] = 1.0
     cache_refresh_ms = 0.0
     if bool(getattr(config, "enable_full_attention_mixed_mode_execution", False)):
@@ -1931,6 +2046,84 @@ class _StreamingResidualUpperTracker:
         return residual_mass, residual_value
 
 
+def _compute_interval_upper_bound(
+    *,
+    query_vec: Any,
+    k_min: Any,
+    k_max: Any,
+    comp_error_dim: Any,
+    query_scale: float,
+) -> Any:
+    """Interval bound: U_I(Q) = query_scale × Σ_j s_j(Q,b).
+
+    For each dimension j:
+        s_j = Q[j] × K_max'[j]  if Q[j] >= 0
+        s_j = Q[j] × K_min'[j]  if Q[j] < 0
+
+    where K_max' = K_max + comp_error_dim, K_min' = K_min - comp_error_dim.
+
+    Args:
+        query_vec: [head_dim] — single query head vector
+        k_min: [num_blocks, head_dim] — per-block per-dimension key minimums
+        k_max: [num_blocks, head_dim] — per-block per-dimension key maximums
+        comp_error_dim: [num_blocks, head_dim] — per-block per-dimension compression error
+        query_scale: scalar attention scale
+
+    Returns:
+        [num_blocks] — upper bound on max(Q·K) for each block
+    """
+    torch = _load_torch()
+    k_max_prime = k_max + comp_error_dim
+    k_min_prime = k_min - comp_error_dim
+    # query_vec: [head_dim], broadcast over [num_blocks, head_dim]
+    q = query_vec.unsqueeze(0)  # [1, head_dim]
+    s = torch.where(q >= 0, q * k_max_prime, q * k_min_prime)
+    return s.sum(dim=-1) * float(query_scale)
+
+
+def _compute_ellipsoidal_upper_bound(
+    *,
+    query_vec: Any,
+    query_norm: float,
+    center: Any,
+    pc1: Any,
+    r_along: Any,
+    r_perp: Any,
+    comp_error: Any,
+    query_scale: float,
+) -> Any:
+    """Ellipsoidal bound: U_E = center_sim + anisotropic_radius_term.
+
+    U_E = <Q, center> × query_scale
+        + (|<Q, v1>| × r_along + ||Q_perp|| × r_perp + ||Q|| × comp_error) × |query_scale|
+
+    where Q_perp = Q - <Q, v1> × v1 is the query component perpendicular to v1.
+
+    Args:
+        query_vec: [head_dim] — single query head vector
+        query_norm: scalar — ||Q||
+        center: [num_blocks, head_dim] — block key centroids
+        pc1: [num_blocks, head_dim] — first principal component per block
+        r_along: [num_blocks] — max |projection| along pc1
+        r_perp: [num_blocks] — max perpendicular norm
+        comp_error: [num_blocks] — scalar compression error per block
+        query_scale: scalar attention scale
+
+    Returns:
+        [num_blocks] — upper bound on max(Q·K) for each block
+    """
+    torch = _load_torch()
+    center_sim = torch.matmul(center, query_vec) * float(query_scale)
+    # <Q, v1> for each block
+    q_dot_v1 = torch.matmul(pc1, query_vec)  # [num_blocks]
+    q_dot_v1_abs = q_dot_v1.abs()
+    # ||Q_perp||^2 = ||Q||^2 - <Q,v1>^2
+    q_perp_sq = max(float(query_norm) ** 2, 0.0) - q_dot_v1 ** 2
+    q_perp_norm = torch.sqrt(q_perp_sq.clamp_min(0.0))
+    aniso_term = q_dot_v1_abs * r_along + q_perp_norm * r_perp + float(query_norm) * comp_error
+    return center_sim + aniso_term * abs(float(query_scale))
+
+
 def _resolve_block_score_inputs(
     *,
     state: PersistentFullAttentionLayerState,
@@ -1983,6 +2176,43 @@ def _resolve_block_score_inputs(
                 float(query_scale)
             )
             upper = torch.minimum(upper, sub_upper.max(dim=1).values)
+        # --- Interval bound (tighter than spherical, same O(d) cost) ---
+        if config is not None and bool(getattr(config, "enable_interval_bound", True)):
+            k_min_head = state.block_k_min[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
+            k_max_head = state.block_k_max[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
+            comp_error_dim_head = state.block_k_comp_error_dim[:, kv_head_idx, :].to(
+                device=query_tensor.device, dtype=torch.float32
+            )
+            upper_I = _compute_interval_upper_bound(
+                query_vec=query_tensor[q_head_idx],
+                k_min=k_min_head,
+                k_max=k_max_head,
+                comp_error_dim=comp_error_dim_head,
+                query_scale=float(query_scale),
+            )
+            upper = torch.minimum(upper, upper_I)
+        # --- Ellipsoidal bound (optional, anisotropic) ---
+        if (
+            config is not None
+            and bool(getattr(config, "enable_ellipsoidal_bound", False))
+            and state.block_k_pc1 is not None
+            and state.block_k_r_along is not None
+            and state.block_k_r_perp is not None
+        ):
+            pc1_head = state.block_k_pc1[:, kv_head_idx, :].to(device=query_tensor.device, dtype=torch.float32)
+            r_along_head = state.block_k_r_along[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+            r_perp_head = state.block_k_r_perp[:, kv_head_idx].to(device=query_tensor.device, dtype=torch.float32)
+            upper_E = _compute_ellipsoidal_upper_bound(
+                query_vec=query_tensor[q_head_idx],
+                query_norm=float(query_norm[q_head_idx].item()),
+                center=center,
+                pc1=pc1_head,
+                r_along=r_along_head,
+                r_perp=r_perp_head,
+                comp_error=comp_error,
+                query_scale=float(query_scale),
+            )
+            upper = torch.minimum(upper, upper_E)
         normalized_value_norm = value_norm / value_norm.max().clamp_min(1e-6)
         priority = center_sim
         priority = priority + prev_weight * state.block_prev_attention_ema.to(device=query_tensor.device, dtype=torch.float32)
@@ -4872,6 +5102,9 @@ class PersistentFullAttentionState:
                 block_v_neg_sum,
                 block_prev_attention_ema,
                 block_k_comp_error,
+                block_k_min,
+                block_k_max,
+                block_k_comp_error_dim,
                 block_compression_metadata_valid,
             ) = (
                 _allocate_full_attention_block_metadata(
@@ -5166,8 +5399,29 @@ class PersistentFullAttentionState:
                 block_k_mode=block_k_mode,
                 block_v_mode=block_v_mode,
                 block_k_comp_error=block_k_comp_error,
+                block_k_min=block_k_min,
+                block_k_max=block_k_max,
+                block_k_comp_error_dim=block_k_comp_error_dim,
                 block_compression_metadata_valid=block_compression_metadata_valid,
                 metadata_valid=metadata_valid,
+                block_k_pc1=(
+                    torch.zeros((num_blocks, int(kv_keys.shape[0]), int(kv_keys.shape[-1])),
+                                dtype=torch.float32, device=resolved_device)
+                    if bool(getattr(config, "enable_ellipsoidal_bound", False))
+                    else None
+                ),
+                block_k_r_along=(
+                    torch.zeros((num_blocks, int(kv_keys.shape[0])),
+                                dtype=torch.float32, device=resolved_device)
+                    if bool(getattr(config, "enable_ellipsoidal_bound", False))
+                    else None
+                ),
+                block_k_r_perp=(
+                    torch.zeros((num_blocks, int(kv_keys.shape[0])),
+                                dtype=torch.float32, device=resolved_device)
+                    if bool(getattr(config, "enable_ellipsoidal_bound", False))
+                    else None
+                ),
             )
             _refresh_cuda_block_selection_caches(layers[int(layer_id)])
             cache_refresh_ms = _recompute_full_attention_block_metadata(
@@ -5548,6 +5802,12 @@ class PersistentFullAttentionState:
                 "block_v_neg_sum": state.block_v_neg_sum.clone(),
                 "block_prev_attention_ema": state.block_prev_attention_ema.clone(),
                 "block_k_comp_error": state.block_k_comp_error.clone(),
+                "block_k_min": state.block_k_min.clone(),
+                "block_k_max": state.block_k_max.clone(),
+                "block_k_comp_error_dim": state.block_k_comp_error_dim.clone(),
+                "block_k_pc1": state.block_k_pc1.clone() if state.block_k_pc1 is not None else None,
+                "block_k_r_along": state.block_k_r_along.clone() if state.block_k_r_along is not None else None,
+                "block_k_r_perp": state.block_k_r_perp.clone() if state.block_k_r_perp is not None else None,
                 "block_region_ids": np.asarray(state.block_region_ids, dtype=np.int32).copy(),
                 "block_k_mode": np.asarray(state.block_k_mode, dtype="<U2").copy(),
                 "block_v_mode": np.asarray(state.block_v_mode, dtype="<U2").copy(),
@@ -5578,6 +5838,9 @@ class PersistentFullAttentionState:
                 state.block_v_neg_sum,
                 state.block_prev_attention_ema,
                 state.block_k_comp_error,
+                state.block_k_min,
+                state.block_k_max,
+                state.block_k_comp_error_dim,
                 state.block_compression_metadata_valid,
             ) = _allocate_full_attention_block_metadata(
                 key_cache=state.key_cache,
@@ -5592,6 +5855,19 @@ class PersistentFullAttentionState:
                 dtype=torch.float32,
                 device=self.device,
             )
+            # Re-allocate ellipsoidal tensors if they were previously allocated
+            if state.block_k_pc1 is not None:
+                kv_heads = int(state.key_cache.shape[0])
+                head_dim = int(state.key_cache.shape[-1])
+                state.block_k_pc1 = torch.zeros(
+                    (new_num_blocks, kv_heads, head_dim), dtype=torch.float32, device=self.device
+                )
+                state.block_k_r_along = torch.zeros(
+                    (new_num_blocks, kv_heads), dtype=torch.float32, device=self.device
+                )
+                state.block_k_r_perp = torch.zeros(
+                    (new_num_blocks, kv_heads), dtype=torch.float32, device=self.device
+                )
             state.block_region_ids = _build_block_region_ids(num_blocks=new_num_blocks)
             (
                 resolved_block_k_mode,

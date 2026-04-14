@@ -83,6 +83,9 @@ class PersistentServingConfig:
     full_attention_priority_recency_weight: float = 0.05
     full_attention_priority_recency_decay_blocks: float = 32.0
     full_attention_priority_value_norm_weight: float = 0.05
+    enable_interval_bound: bool = True
+    enable_ellipsoidal_bound: bool = False
+    enable_per_dim_comp_error: bool = True
 
 
 @dataclass(slots=True)
@@ -194,8 +197,14 @@ class PersistentFullAttentionLayerState:
     block_k_mode: Any
     block_v_mode: Any
     block_k_comp_error: Any
+    block_k_min: Any
+    block_k_max: Any
+    block_k_comp_error_dim: Any
     block_compression_metadata_valid: Any
     metadata_valid: Any
+    block_k_pc1: Any | None = None
+    block_k_r_along: Any | None = None
+    block_k_r_perp: Any | None = None
     last_residual_certificate: dict[str, Any] | None = None
     last_first_certified_stop: dict[str, Any] | None = None
     last_checkpoint_count: int = 0
