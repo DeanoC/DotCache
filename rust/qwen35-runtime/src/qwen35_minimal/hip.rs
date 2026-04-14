@@ -556,6 +556,20 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_norm_multi_proj(
+            dtype: c_int,
+            device_ordinal: usize,
+            hidden_dim: usize,
+            total_rows: usize,
+            norm_eps: f32,
+            hidden_in: *const c_void,
+            norm_weight: *const c_void,
+            proj_table: *const c_void,       // Qwen35ProjectionDesc* on device
+            num_projections: usize,
+            output: *mut c_void,             // F32 output [total_rows]
+            row_counter: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_mlp_decode_megakernel(
             dtype: c_int,
             device_ordinal: usize,

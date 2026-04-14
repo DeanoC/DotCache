@@ -4242,3 +4242,81 @@ extern "C" int dotcache_qwen35_hip_mlp_decode_megakernel(
         return 205;
     }
 }
+
+template <typename T>
+int norm_multi_proj_device(
+    int device_ordinal,
+    int hidden_dim,
+    int total_rows,
+    float norm_eps,
+    const void* hidden_in,
+    const void* norm_weight,
+    const Qwen35ProjectionDesc* proj_table,
+    int num_projections,
+    float* output,
+    unsigned int* row_counter
+) {
+    ScopedHipDevice scoped(device_ordinal);
+
+    hipDeviceProp_t props;
+    if (hipGetDeviceProperties(&props, device_ordinal) != hipSuccess) return 220;
+
+    const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
+    constexpr int block_size = 256;
+    const size_t shared_bytes =
+        static_cast<size_t>(hidden_dim) * sizeof(float) * 2 + block_size * sizeof(float);
+
+    unsigned int zero = 0;
+    if (hipMemcpy(row_counter, &zero, sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess)
+        return 221;
+    if (hipDeviceSynchronize() != hipSuccess) return 222;
+
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_norm_multi_proj_kernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        shared_bytes,
+        0,
+        hidden_dim,
+        total_rows,
+        norm_eps,
+        static_cast<const T*>(hidden_in),
+        static_cast<const T*>(norm_weight),
+        proj_table,
+        num_projections,
+        output,
+        row_counter);
+    if (hipGetLastError() != hipSuccess) return 223;
+    if (hipDeviceSynchronize() != hipSuccess) return 224;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_norm_multi_proj(
+    int dtype,
+    size_t device_ordinal,
+    size_t hidden_dim,
+    size_t total_rows,
+    float norm_eps,
+    const void* hidden_in,
+    const void* norm_weight,
+    const void* proj_table,       // Qwen35ProjectionDesc* on device
+    size_t num_projections,
+    float* output,
+    unsigned int* row_counter) {
+    switch (dtype) {
+    case 0:
+        return norm_multi_proj_device<half>(
+            static_cast<int>(device_ordinal), static_cast<int>(hidden_dim),
+            static_cast<int>(total_rows), norm_eps, hidden_in, norm_weight,
+            static_cast<const Qwen35ProjectionDesc*>(proj_table),
+            static_cast<int>(num_projections), output, row_counter);
+    case 2:
+        return norm_multi_proj_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal), static_cast<int>(hidden_dim),
+            static_cast<int>(total_rows), norm_eps, hidden_in, norm_weight,
+            static_cast<const Qwen35ProjectionDesc*>(proj_table),
+            static_cast<int>(num_projections), output, row_counter);
+    default:
+        return 225;
+    }
+}

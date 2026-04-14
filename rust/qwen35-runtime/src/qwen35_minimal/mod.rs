@@ -88,6 +88,19 @@ pub struct DecodeLayerDesc {
     pub kv_len: c_int,
 }
 
+/// Rust mirror of `Qwen35ProjectionDesc` in full_attention.hip.
+/// Describes one projection matrix for the fused norm+multi-proj kernel.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectionDesc {
+    pub weight: *const c_void,    // [out_dim, hidden_dim] on device
+    pub out_dim: c_int,
+    pub output_offset: c_int,     // offset in the packed output buffer
+}
+
+unsafe impl Send for ProjectionDesc {}
+unsafe impl Sync for ProjectionDesc {}
+
 // Safety: The raw pointers in DecodeLayerDesc point to GPU device memory
 // that is managed by the model's lifetime. Send/Sync is safe because
 // access is serialized through the forward pass.

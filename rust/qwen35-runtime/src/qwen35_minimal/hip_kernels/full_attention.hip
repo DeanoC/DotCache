@@ -2897,3 +2897,112 @@ __global__ void dotcache_qwen35_mlp_down_proj_kernel(
         __syncthreads();
     }
 }
+
+// =============================================================================
+// General-purpose RMSNorm + multi-projection kernel for decode
+//
+// Computes RMSNorm on hidden[hidden_dim], then performs N separate matvec
+// projections from the normed vector, writing results to a packed output buffer.
+//
+// Projections are described by a table of (weight_ptr, out_dim) pairs.
+// Output is packed: proj0[out_dim0] || proj1[out_dim1] || ...
+//
+// This generalizes the MLP gate/up pattern to arbitrary projection counts
+// (e.g., Q/K/V for attention, or gate/up for MLP).
+// =============================================================================
+
+struct Qwen35ProjectionDesc {
+    const void* weight;    // [out_dim, hidden_dim] BF16
+    int out_dim;           // number of output rows
+    int output_offset;     // offset in the output buffer
+};
+
+template <typename T>
+__global__ void dotcache_qwen35_norm_multi_proj_kernel(
+    int hidden_dim,
+    int total_rows,                           // sum of all out_dims
+    float norm_eps,
+    const T* __restrict__ hidden_in,          // [hidden_dim]
+    const T* __restrict__ norm_weight,        // [hidden_dim]
+    const Qwen35ProjectionDesc* __restrict__ proj_table,  // device ptr
+    int num_projections,
+    float* __restrict__ output,               // [total_rows] F32
+    unsigned int* __restrict__ row_counter
+) {
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+
+    extern __shared__ float lds[];
+    float* shared_hidden = lds;
+    float* shared_normed = lds + hidden_dim;
+    float* shared_scratch = lds + hidden_dim * 2;
+
+    // Step 1: Load hidden + RMSNorm
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        shared_hidden[col] = dotcache_qwen35_to_float(hidden_in[col]);
+    }
+    __syncthreads();
+
+    float partial_sq = 0.0f;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        partial_sq += shared_hidden[col] * shared_hidden[col];
+    }
+    shared_scratch[tid] = partial_sq;
+    __syncthreads();
+    for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) shared_scratch[tid] += shared_scratch[tid + stride];
+        __syncthreads();
+    }
+    __shared__ float shared_inv_rms;
+    if (tid == 0) {
+        shared_inv_rms = rsqrtf(shared_scratch[0] / static_cast<float>(hidden_dim) + norm_eps);
+    }
+    __syncthreads();
+
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        const float w = dotcache_qwen35_to_float(norm_weight[col]) + 1.0f;
+        shared_normed[col] = shared_hidden[col] * shared_inv_rms * w;
+    }
+    __syncthreads();
+
+    // Step 2: Work-stealing matvec across all projection rows
+    for (;;) {
+        __shared__ unsigned int shared_row;
+        if (tid == 0) {
+            shared_row = atomicAdd(row_counter, 1u);
+        }
+        __syncthreads();
+        const unsigned int my_row = shared_row;
+        if (my_row >= static_cast<unsigned int>(total_rows)) break;
+
+        // Find which projection this row belongs to
+        int proj_idx = 0;
+        int row_in_proj = static_cast<int>(my_row);
+        for (int p = 0; p < num_projections; ++p) {
+            if (row_in_proj < proj_table[p].out_dim) {
+                proj_idx = p;
+                break;
+            }
+            row_in_proj -= proj_table[p].out_dim;
+        }
+
+        const T* w_row = static_cast<const T*>(proj_table[proj_idx].weight)
+            + static_cast<size_t>(row_in_proj) * hidden_dim;
+
+        float partial = 0.0f;
+        for (int col = tid; col < hidden_dim; col += block_size) {
+            partial += dotcache_qwen35_to_float(w_row[col]) * shared_normed[col];
+        }
+        shared_scratch[tid] = partial;
+        __syncthreads();
+        for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) shared_scratch[tid] += shared_scratch[tid + stride];
+            __syncthreads();
+        }
+
+        if (tid == 0) {
+            output[proj_table[proj_idx].output_offset + row_in_proj] = shared_scratch[0];
+        }
+        __syncthreads();
+    }
+}
