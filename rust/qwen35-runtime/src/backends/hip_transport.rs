@@ -5893,10 +5893,36 @@ pub(crate) fn unpack_chunk_fused(
     ))
 }
 
+/// Check if the matmul should use F32 precision to avoid BF16 GEMM rounding.
+/// Applied only for single-token decode steps (memory-bound, so F32 is free).
+/// This eliminates measurable BF16 rocBLAS vs hipblasLt rounding differences
+/// that otherwise accumulate across decoder layers.
+fn should_use_f32_matmul(x: &Tensor) -> bool {
+    let total_tokens = match *x.dims() {
+        [b1, b2, m, _] => b1 * b2 * m,
+        [bsize, m, _] => bsize * m,
+        _ => return false,
+    };
+    total_tokens == 1
+}
+
 fn linear_forward_matmul(
     x: &Tensor,
     weight: &Tensor,
 ) -> Result<Tensor> {
+    // For single-token decode, upcast to F32 to avoid BF16 GEMM rounding differences.
+    // This is essentially free for decode (memory-bound, not compute-bound).
+    let (x, weight, need_downcast) =
+        if should_use_f32_matmul(x) && x.dtype() != candle_core::DType::F32 {
+            let original_dtype = x.dtype();
+            (
+                x.to_dtype(candle_core::DType::F32)?,
+                weight.to_dtype(candle_core::DType::F32)?,
+                Some(original_dtype),
+            )
+        } else {
+            (x.clone(), weight.clone(), None)
+        };
     let projected = match *x.dims() {
         [b1, b2, m, k] => {
             if x.is_contiguous() {
@@ -5925,7 +5951,10 @@ fn linear_forward_matmul(
             x.matmul(&w)?
         }
     };
-    Ok(projected)
+    match need_downcast {
+        Some(dtype) => projected.to_dtype(dtype),
+        None => Ok(projected),
+    }
 }
 
 fn linear_forward_hip(

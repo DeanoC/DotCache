@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-ids", required=True)
     parser.add_argument("--max-new-tokens", type=int, required=True)
     parser.add_argument("--dtype", choices=["fp32", "bf16"], default="fp32")
+    parser.add_argument("--device", default="cpu", help="device to run on (cpu, cuda:0, etc.)")
     return parser.parse_args()
 
 
@@ -25,16 +26,19 @@ def main() -> None:
     if not prompt_ids:
         raise SystemExit("prompt ids must not be empty")
 
+    target_device = args.device
     load_started = time.perf_counter()
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_id,
+    load_kwargs: dict[str, Any] = dict(
         torch_dtype=torch.float32 if args.dtype == "fp32" else torch.bfloat16,
         trust_remote_code=True,
     )
+    if target_device != "cpu":
+        load_kwargs["device_map"] = target_device
+    model = AutoModelForCausalLM.from_pretrained(args.model_id, **load_kwargs)
     model.eval()
     load_elapsed_ms = (time.perf_counter() - load_started) * 1000.0
 
-    input_ids = torch.tensor([prompt_ids], dtype=torch.long)
+    input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=target_device)
     prefill_started = time.perf_counter()
     with torch.no_grad():
         outputs = model(input_ids=input_ids, use_cache=True)
@@ -155,6 +159,9 @@ def main() -> None:
     layer4_post_attention_layernorm_output = None
     layer4_mlp_output = None
     layer4_output = None
+
+    # Dictionary-based capture for middle decode layers (15-18)
+    mid_layer_captures: dict[str, Any] = {}
 
     def embed_hook(_module, _inputs, output):
         nonlocal embedding_output
@@ -838,6 +845,69 @@ def main() -> None:
             tensor = output[0] if isinstance(output, tuple) else output
             decode_layer23_output = tensor.detach().to(dtype=torch.float32).cpu()
 
+    def make_mid_layer_decode_hooks(layer_idx):
+        """Create decode-only coarse hooks for a given layer, storing into mid_layer_captures."""
+        layer = model.model.layers[layer_idx]
+        prefix = f"decode_layer{layer_idx}"
+        handles = []
+
+        def input_layernorm_pre_hook(_module, inputs):
+            if capture_phase != "decode":
+                return
+            eps = getattr(_module, "variance_epsilon", getattr(_module, "eps"))
+            hidden = capture_tensor(inputs[0])
+            hidden_f32 = inputs[0].detach().to(dtype=torch.float32)
+            mean_square = hidden_f32.pow(2).mean(dim=-1, keepdim=True)
+            rsqrt_val = torch.rsqrt(mean_square + eps)
+            weight = (1.0 + _module.weight.detach().to(dtype=torch.float32)).view(1, 1, -1)
+            weighted_hidden = (hidden_f32 * rsqrt_val) * weight
+            mid_layer_captures[f"{prefix}_input_layernorm_input"] = hidden
+            mid_layer_captures[f"{prefix}_input_layernorm_mean_square"] = mean_square.cpu()
+            mid_layer_captures[f"{prefix}_input_layernorm_rsqrt"] = rsqrt_val.cpu()
+            mid_layer_captures[f"{prefix}_input_layernorm_weighted_hidden"] = weighted_hidden.cpu()
+
+        def input_layernorm_hook(_module, _inputs, output):
+            if capture_phase != "decode":
+                return
+            mid_layer_captures[f"{prefix}_input_layernorm_output"] = capture_tensor(output)
+
+        def token_mixer_hook(_module, _inputs, output):
+            if capture_phase != "decode":
+                return
+            mid_layer_captures[f"{prefix}_token_mixer_output"] = capture_tensor(output)
+
+        def post_attention_layernorm_hook(_module, _inputs, output):
+            if capture_phase != "decode":
+                return
+            mid_layer_captures[f"{prefix}_post_attention_layernorm_output"] = capture_tensor(output)
+
+        def mlp_hook(_module, _inputs, output):
+            if capture_phase != "decode":
+                return
+            mid_layer_captures[f"{prefix}_mlp_output"] = capture_tensor(output)
+
+        def layer_hook(_module, _inputs, output):
+            if capture_phase != "decode":
+                return
+            tensor = output[0] if isinstance(output, tuple) else output
+            mid_layer_captures[f"{prefix}_output"] = tensor.detach().to(dtype=torch.float32).cpu()
+
+        handles.append(layer.input_layernorm.register_forward_pre_hook(input_layernorm_pre_hook))
+        handles.append(layer.input_layernorm.register_forward_hook(input_layernorm_hook))
+        token_mixer_module = (
+            layer.linear_attn if hasattr(layer, "linear_attn") else layer.self_attn
+        )
+        handles.append(token_mixer_module.register_forward_hook(token_mixer_hook))
+        handles.append(layer.post_attention_layernorm.register_forward_hook(post_attention_layernorm_hook))
+        handles.append(layer.mlp.register_forward_hook(mlp_hook))
+        handles.append(layer.register_forward_hook(layer_hook))
+        return handles
+
+    mid_layer_ids = [15, 16, 17, 18]
+    mid_layer_handles: list[Any] = []
+    for _mid_lid in mid_layer_ids:
+        mid_layer_handles.extend(make_mid_layer_decode_hooks(_mid_lid))
+
     decoder_layer_outputs = [None] * len(model.model.layers)
     decode_decoder_layer_outputs = [None] * len(model.model.layers)
 
@@ -972,7 +1042,7 @@ def main() -> None:
             next_token = int(torch.argmax(outputs.logits[:, -1, :], dim=-1).item())
             if args.max_new_tokens > 0:
                 capture_phase = "decode"
-                decode_input_ids = torch.tensor([[next_token]], dtype=torch.long)
+                decode_input_ids = torch.tensor([[next_token]], dtype=torch.long, device=target_device)
                 decode_first_layer_conv_state_before = (
                     past_key_values.layers[0].conv_states.detach().to(dtype=torch.float32).clone()
                 )
@@ -1038,6 +1108,8 @@ def main() -> None:
         layer23_mlp_down_proj_handle.remove()
         layer23_mlp_handle.remove()
         layer23_handle.remove()
+        for handle in mid_layer_handles:
+            handle.remove()
         for handle in decoder_layer_handles:
             handle.remove()
 
@@ -1196,6 +1268,16 @@ def main() -> None:
             "decode_layer23_mlp_output": decode_layer23_mlp_output,
             "decode_layer23_output": decode_layer23_output,
         }
+        mid_layer_suffixes = [
+            "input_layernorm_input", "input_layernorm_output",
+            "input_layernorm_mean_square", "input_layernorm_rsqrt",
+            "input_layernorm_weighted_hidden", "token_mixer_output",
+            "post_attention_layernorm_output", "mlp_output", "output",
+        ]
+        for lid in mid_layer_ids:
+            for suffix in mid_layer_suffixes:
+                key = f"decode_layer{lid}_{suffix}"
+                required_decode[key] = mid_layer_captures.get(key)
         missing.extend(name for name, value in required_decode.items() if value is None)
     if missing:
         raise RuntimeError(
@@ -1344,11 +1426,23 @@ def main() -> None:
         "decode_layer23_mlp_down_proj_output": decode_layer23_mlp_down_proj_output.tolist() if decode_layer23_mlp_down_proj_output is not None else None,
         "decode_layer23_mlp_output": decode_layer23_mlp_output.tolist() if decode_layer23_mlp_output is not None else None,
         "decode_layer23_output": decode_layer23_output.tolist() if decode_layer23_output is not None else None,
+    }
+    for lid in mid_layer_ids:
+        for suffix in [
+            "input_layernorm_input", "input_layernorm_output",
+            "input_layernorm_mean_square", "input_layernorm_rsqrt",
+            "input_layernorm_weighted_hidden", "token_mixer_output",
+            "post_attention_layernorm_output", "mlp_output", "output",
+        ]:
+            key = f"decode_layer{lid}_{suffix}"
+            val = mid_layer_captures.get(key)
+            payload[key] = val.tolist() if val is not None else None
+    payload.update({
         "prefill_last_token_logits": prefill_last_token_logits,
         "first_decode_step_last_token_logits": first_decode_step_logits,
         "decode_last_token_logits": decode_logits,
         "generated_token_ids": generated_token_ids,
-    }
+    })
     print(json.dumps(payload))
 
 

@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use dotcache_paged_runtime::{
         MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
     };
-    use dotcache_qwen35_runtime::MinimalQwen35StateBuffer as StateBuffer;
+    use dotcache_qwen35_runtime::{MinimalQwen35MlpTrace, MinimalQwen35StateBuffer as StateBuffer};
     use serde::{Deserialize, Serialize};
     use tokenizers::Tokenizer;
 
@@ -162,6 +162,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None,
         Pytorch,
         PytorchBf16,
+        PytorchGpu,
+        PytorchGpuBf16,
     }
 
     impl OracleMode {
@@ -183,10 +185,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "none" => Ok(Self::None),
                 "pytorch" => Ok(Self::Pytorch),
                 "pytorch-bf16" | "pytorch_bf16" | "bf16-pytorch" => Ok(Self::PytorchBf16),
+                "pytorch-gpu" | "pytorch_gpu" => Ok(Self::PytorchGpu),
+                "pytorch-gpu-bf16" | "pytorch_gpu_bf16" => Ok(Self::PytorchGpuBf16),
                 other => Err(RuntimeError::External {
                     context: "oracle",
                     message: format!(
-                        "unsupported oracle `{other}`, expected cpu, native-device, none, pytorch, or pytorch-bf16"
+                        "unsupported oracle `{other}`, expected cpu, native-device, none, pytorch, pytorch-bf16, pytorch-gpu, or pytorch-gpu-bf16"
                     ),
                 }),
             }
@@ -201,6 +205,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Self::None => f.write_str("none"),
                 Self::Pytorch => f.write_str("pytorch"),
                 Self::PytorchBf16 => f.write_str("pytorch-bf16"),
+                Self::PytorchGpu => f.write_str("pytorch-gpu"),
+                Self::PytorchGpuBf16 => f.write_str("pytorch-gpu-bf16"),
             }
         }
     }
@@ -390,6 +396,44 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_layer23_mlp_down_proj_max_delta: Option<f32>,
         pytorch_decode_layer23_mlp_max_delta: Option<f32>,
         pytorch_decode_layer23_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer15_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer15_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer15_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer15_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer16_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer16_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer16_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer16_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer17_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer17_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer17_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer17_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer18_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer18_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer18_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer18_max_delta: Option<f32>,
+        pytorch_decode_layer15_mlp_from_oracle_input_max_delta: Option<f32>,
+        pytorch_decode_layer23_mlp_from_oracle_input_max_delta: Option<f32>,
         pytorch_decode_decoder_layer_input_max_deltas: Option<Vec<f32>>,
         pytorch_decode_decoder_layer_residual_growths: Option<Vec<f32>>,
         decode_max_delta: f32,
@@ -522,6 +566,42 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         decode_layer23_mlp_down_proj_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer23_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
         decode_layer23_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_output: Option<Vec<Vec<Vec<f32>>>>,
         prefill_last_token_logits: Vec<f32>,
         first_decode_step_last_token_logits: Option<Vec<f32>>,
         decode_last_token_logits: Vec<Vec<f32>>,
@@ -1059,28 +1139,34 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(index as u32)
     }
 
-    fn run_pytorch_oracle(
+    fn run_pytorch_oracle_with_device(
         model_id: &str,
         prompt_ids: &[u32],
         max_new_tokens: usize,
         dtype: &str,
+        device: Option<&str>,
     ) -> Result<PytorchOracleRecord> {
         let prompt_ids = prompt_ids
             .iter()
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let output = Command::new("python3")
-            .arg("benchmarks/qwen35_pytorch_oracle.py")
+        let mut cmd = Command::new("python3");
+        cmd.arg("benchmarks/qwen35_pytorch_oracle.py")
             .arg("--model-id")
             .arg(model_id)
             .arg("--prompt-ids")
-            .arg(prompt_ids)
+            .arg(&prompt_ids)
             .arg("--max-new-tokens")
             .arg(max_new_tokens.to_string())
             .arg("--dtype")
-            .arg(dtype)
-            .output()
+            .arg(dtype);
+        if let Some(device) = device {
+            cmd.arg("--device").arg(device);
+            // ROCm PyTorch may need architecture override for iGPUs
+            cmd.env("HSA_OVERRIDE_GFX_VERSION", "11.0.0");
+        }
+        let output = cmd.output()
             .map_err(|err| RuntimeError::External {
                 context: "pytorch oracle",
                 message: format!("failed to launch Python oracle: {err}"),
@@ -1277,10 +1363,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Some(MinimalQwen35LoadMode::NativeStore),
         ),
         OracleMode::None => (cpu_device.clone(), None),
-        OracleMode::Pytorch | OracleMode::PytorchBf16 => (cpu_device.clone(), None),
+        OracleMode::Pytorch | OracleMode::PytorchBf16 | OracleMode::PytorchGpu | OracleMode::PytorchGpuBf16 => (cpu_device.clone(), None),
     };
     let (mut oracle_runner, oracle_load_elapsed) = if device_only
-        || matches!(oracle_mode, OracleMode::None | OracleMode::Pytorch | OracleMode::PytorchBf16)
+        || matches!(oracle_mode, OracleMode::None | OracleMode::Pytorch | OracleMode::PytorchBf16 | OracleMode::PytorchGpu | OracleMode::PytorchGpuBf16)
     {
         (None, std::time::Duration::ZERO)
     } else {
@@ -1304,16 +1390,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Err(RuntimeError::EmptyInput { context: "prompt" }.into());
     }
     let pytorch_oracle = if device_only
-        || !matches!(oracle_mode, OracleMode::Pytorch | OracleMode::PytorchBf16)
+        || !matches!(oracle_mode, OracleMode::Pytorch | OracleMode::PytorchBf16 | OracleMode::PytorchGpu | OracleMode::PytorchGpuBf16)
     {
         None
     } else {
         let dtype = match oracle_mode {
-            OracleMode::Pytorch => "fp32",
-            OracleMode::PytorchBf16 => "bf16",
+            OracleMode::Pytorch | OracleMode::PytorchGpu => "fp32",
+            OracleMode::PytorchBf16 | OracleMode::PytorchGpuBf16 => "bf16",
             _ => unreachable!(),
         };
-        Some(run_pytorch_oracle(&model_id, &prompt_ids, max_new_tokens, dtype)?)
+        let device = match oracle_mode {
+            OracleMode::PytorchGpu | OracleMode::PytorchGpuBf16 => Some("cuda:0"),
+            _ => None,
+        };
+        Some(run_pytorch_oracle_with_device(&model_id, &prompt_ids, max_new_tokens, dtype, device)?)
     };
 
     let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
@@ -2161,6 +2251,44 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_layer23_mlp_down_proj_max_delta,
         pytorch_decode_layer23_mlp_max_delta,
         pytorch_decode_layer23_max_delta,
+        pytorch_decode_layer15_input_layernorm_max_delta,
+        pytorch_decode_layer15_input_layernorm_input_max_delta,
+        pytorch_decode_layer15_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer15_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer15_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer15_token_mixer_max_delta,
+        pytorch_decode_layer15_post_attention_layernorm_max_delta,
+        pytorch_decode_layer15_mlp_max_delta,
+        pytorch_decode_layer15_max_delta,
+        pytorch_decode_layer16_input_layernorm_max_delta,
+        pytorch_decode_layer16_input_layernorm_input_max_delta,
+        pytorch_decode_layer16_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer16_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer16_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer16_token_mixer_max_delta,
+        pytorch_decode_layer16_post_attention_layernorm_max_delta,
+        pytorch_decode_layer16_mlp_max_delta,
+        pytorch_decode_layer16_max_delta,
+        pytorch_decode_layer17_input_layernorm_max_delta,
+        pytorch_decode_layer17_input_layernorm_input_max_delta,
+        pytorch_decode_layer17_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer17_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer17_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer17_token_mixer_max_delta,
+        pytorch_decode_layer17_post_attention_layernorm_max_delta,
+        pytorch_decode_layer17_mlp_max_delta,
+        pytorch_decode_layer17_max_delta,
+        pytorch_decode_layer18_input_layernorm_max_delta,
+        pytorch_decode_layer18_input_layernorm_input_max_delta,
+        pytorch_decode_layer18_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer18_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer18_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer18_token_mixer_max_delta,
+        pytorch_decode_layer18_post_attention_layernorm_max_delta,
+        pytorch_decode_layer18_mlp_max_delta,
+        pytorch_decode_layer18_max_delta,
+        pytorch_decode_layer15_mlp_from_oracle_input_max_delta,
+        pytorch_decode_layer23_mlp_from_oracle_input_max_delta,
     ) = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
         if !pytorch_oracle.decode_decoder_layer_outputs.is_empty() {
             let decode_input_token = *pytorch_oracle.generated_token_ids.first().ok_or_else(|| {
@@ -2245,6 +2373,47 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .ok_or_else(|| RuntimeError::External {
                     context: "pytorch oracle",
                     message: "decode layer 23 mlp trace missing".to_string(),
+                })?;
+            // Middle accumulation layers 15-18
+            let layer15_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input, 15, prompt_ids.len(), &device_cache,
+            )?;
+            let layer15_input_norm_trace = layer15_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 15 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer16_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input, 16, prompt_ids.len(), &device_cache,
+            )?;
+            let layer16_input_norm_trace = layer16_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 16 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer17_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input, 17, prompt_ids.len(), &device_cache,
+            )?;
+            let layer17_input_norm_trace = layer17_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 17 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer18_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input, 18, prompt_ids.len(), &device_cache,
+            )?;
+            let layer18_input_norm_trace = layer18_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 18 input rmsnorm trace missing".to_string(),
                 })?;
             let runtime_decode_final_hidden = device_runner.trace_decode_final_hidden_with_cache(
                 &decode_input_hidden,
@@ -3287,6 +3456,109 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .as_ref()
                     .map(|oracle| max_tensor_delta_vec3(layer23_trace.layer_output.tensor(), oracle))
                     .transpose()?,
+                // Layer 15
+                pytorch_oracle.decode_layer15_input_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.input_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_input_layernorm_input.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_input_norm_trace.input_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_input_layernorm_mean_square.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_input_norm_trace.mean_square.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_input_layernorm_rsqrt.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_input_norm_trace.rsqrt.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_input_layernorm_weighted_hidden.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_input_norm_trace.weighted_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_token_mixer_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.token_mixer_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_post_attention_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.post_attention_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_mlp_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.mlp_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.layer_output.tensor(), oracle)).transpose()?,
+                // Layer 16
+                pytorch_oracle.decode_layer16_input_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.input_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_input_layernorm_input.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_input_norm_trace.input_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_input_layernorm_mean_square.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_input_norm_trace.mean_square.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_input_layernorm_rsqrt.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_input_norm_trace.rsqrt.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_input_layernorm_weighted_hidden.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_input_norm_trace.weighted_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_token_mixer_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.token_mixer_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_post_attention_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.post_attention_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_mlp_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.mlp_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.layer_output.tensor(), oracle)).transpose()?,
+                // Layer 17
+                pytorch_oracle.decode_layer17_input_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.input_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_input_layernorm_input.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_input_norm_trace.input_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_input_layernorm_mean_square.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_input_norm_trace.mean_square.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_input_layernorm_rsqrt.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_input_norm_trace.rsqrt.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_input_layernorm_weighted_hidden.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_input_norm_trace.weighted_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_token_mixer_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.token_mixer_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_post_attention_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.post_attention_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_mlp_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.mlp_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.layer_output.tensor(), oracle)).transpose()?,
+                // Layer 18
+                pytorch_oracle.decode_layer18_input_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.input_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_input_layernorm_input.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_input_norm_trace.input_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_input_layernorm_mean_square.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_input_norm_trace.mean_square.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_input_layernorm_rsqrt.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_input_norm_trace.rsqrt.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_input_layernorm_weighted_hidden.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_input_norm_trace.weighted_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_token_mixer_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.token_mixer_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_post_attention_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.post_attention_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_mlp_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.mlp_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.layer_output.tensor(), oracle)).transpose()?,
+                // Oracle-fed MLP test: feed PyTorch post-attn norm output into runtime MLP
+                pytorch_oracle.decode_layer15_post_attention_layernorm_output.as_ref()
+                    .and_then(|oracle_input| {
+                        pytorch_oracle.decode_layer15_mlp_output.as_ref().map(|oracle_mlp| {
+                            let flat: Vec<f32> = oracle_input.iter()
+                                .flat_map(|o| o.iter().flat_map(|i| i.iter().copied()))
+                                .collect();
+                            let shape = (oracle_input.len(), oracle_input[0].len(), oracle_input[0][0].len());
+                            let input_tensor = Tensor::from_vec(flat, shape, &target_device)
+                                .and_then(|t| t.to_dtype(DType::BF16))?;
+                            let mlp_trace = device_runner.trace_layer_mlp_from_external_input(15, &input_tensor)?;
+                            max_tensor_delta_vec3(mlp_trace.down_proj_output.tensor(), oracle_mlp)
+                        })
+                    }).transpose()?,
+                pytorch_oracle.decode_layer23_post_attention_layernorm_output.as_ref()
+                    .and_then(|oracle_input| {
+                        pytorch_oracle.decode_layer23_mlp_output.as_ref().map(|oracle_mlp| {
+                            let flat: Vec<f32> = oracle_input.iter()
+                                .flat_map(|o| o.iter().flat_map(|i| i.iter().copied()))
+                                .collect();
+                            let shape = (oracle_input.len(), oracle_input[0].len(), oracle_input[0][0].len());
+                            let input_tensor = Tensor::from_vec(flat, shape, &target_device)
+                                .and_then(|t| t.to_dtype(DType::BF16))?;
+                            let mlp_trace = device_runner.trace_layer_mlp_from_external_input(23, &input_tensor)?;
+                            max_tensor_delta_vec3(mlp_trace.down_proj_output.tensor(), oracle_mlp)
+                        })
+                    }).transpose()?,
             )
         } else {
             (
@@ -3295,7 +3567,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None,
             )
         }
     } else {
@@ -3305,7 +3580,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None,
         )
     };
     if let Some(oracle_cache) = oracle_cache.as_ref() {
@@ -3732,6 +4010,44 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pytorch_decode_layer23_mlp_down_proj_max_delta,
         pytorch_decode_layer23_mlp_max_delta,
         pytorch_decode_layer23_max_delta,
+        pytorch_decode_layer15_input_layernorm_max_delta,
+        pytorch_decode_layer15_input_layernorm_input_max_delta,
+        pytorch_decode_layer15_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer15_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer15_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer15_token_mixer_max_delta,
+        pytorch_decode_layer15_post_attention_layernorm_max_delta,
+        pytorch_decode_layer15_mlp_max_delta,
+        pytorch_decode_layer15_max_delta,
+        pytorch_decode_layer16_input_layernorm_max_delta,
+        pytorch_decode_layer16_input_layernorm_input_max_delta,
+        pytorch_decode_layer16_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer16_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer16_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer16_token_mixer_max_delta,
+        pytorch_decode_layer16_post_attention_layernorm_max_delta,
+        pytorch_decode_layer16_mlp_max_delta,
+        pytorch_decode_layer16_max_delta,
+        pytorch_decode_layer17_input_layernorm_max_delta,
+        pytorch_decode_layer17_input_layernorm_input_max_delta,
+        pytorch_decode_layer17_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer17_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer17_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer17_token_mixer_max_delta,
+        pytorch_decode_layer17_post_attention_layernorm_max_delta,
+        pytorch_decode_layer17_mlp_max_delta,
+        pytorch_decode_layer17_max_delta,
+        pytorch_decode_layer18_input_layernorm_max_delta,
+        pytorch_decode_layer18_input_layernorm_input_max_delta,
+        pytorch_decode_layer18_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer18_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer18_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer18_token_mixer_max_delta,
+        pytorch_decode_layer18_post_attention_layernorm_max_delta,
+        pytorch_decode_layer18_mlp_max_delta,
+        pytorch_decode_layer18_max_delta,
+        pytorch_decode_layer15_mlp_from_oracle_input_max_delta,
+        pytorch_decode_layer23_mlp_from_oracle_input_max_delta,
         pytorch_decode_decoder_layer_input_max_deltas,
         pytorch_decode_decoder_layer_residual_growths,
         decode_max_delta: max_decode_delta,

@@ -14,7 +14,7 @@ use super::linear_attention::GatedDeltaNet;
 use super::prepared::PreparedTensorSource;
 use super::types::{
     CacheState, Config, ExternalFullAttention, LayerCacheState, LinearAttentionBenchResult,
-    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionTrace, RmsNormTrace,
+    DecoderLayerTrace, LinearAttentionLayerSpec, LinearAttentionTrace, MlpTrace, RmsNormTrace,
     RuntimeProfile, StateBuffer, TextConfig,
 };
 #[cfg(any(feature = "hf", test))]
@@ -114,6 +114,25 @@ impl DecoderLayer {
         })
     }
 
+    /// Perform residual addition in F32 to avoid BF16 rounding accumulation.
+    /// Upcasts both operands to F32, adds, then casts back to the hidden dtype.
+    fn f32_residual_add(
+        residual: &StateBuffer,
+        xs: &StateBuffer,
+        hidden_dtype: DType,
+    ) -> Result<StateBuffer> {
+        if hidden_dtype == DType::F32 {
+            let backend = backend_buffer_api::for_device(residual.device());
+            return backend.add(residual, xs);
+        }
+        let sum = residual
+            .tensor()
+            .to_dtype(DType::F32)?
+            .broadcast_add(&xs.tensor().to_dtype(DType::F32)?)?
+            .to_dtype(hidden_dtype)?;
+        StateBuffer::from_tensor(sum)
+    }
+
     fn forward_profiled_with_external(
         &mut self,
         layer_id: usize,
@@ -123,6 +142,7 @@ impl DecoderLayer {
         external_full_attention: &mut Option<&mut dyn ExternalFullAttention>,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
         let device = xs.device();
+        let hidden_dtype = xs.tensor().dtype();
         let mut profile = RuntimeProfile::default();
         let residual = xs.clone();
         let xs_norm = self.input_layernorm.forward_buffer(xs)?;
@@ -145,14 +165,13 @@ impl DecoderLayer {
                 xs
             }
         };
-        let backend = backend_buffer_api::for_device(device);
-        let xs = backend.add(&residual, &xs)?;
+        let xs = Self::f32_residual_add(&residual, &xs, hidden_dtype)?;
         let residual = xs.clone();
         let xs = self.post_attention_layernorm.forward_buffer(&xs)?;
         let mlp_start = profile_start(device)?;
         let xs = self.mlp.forward_buffer(&xs)?;
         profile.mlp_millis += profile_elapsed(mlp_start, device)?;
-        Ok((backend.add(&residual, &xs)?, profile))
+        Ok((Self::f32_residual_add(&residual, &xs, hidden_dtype)?, profile))
     }
 
     pub(super) fn forward_profiled(
@@ -993,6 +1012,21 @@ impl TextModel {
         self.norm.trace_buffer(&xs)
     }
 
+    pub fn trace_layer_mlp_from_buffer(
+        &self,
+        layer_id: usize,
+        input: &StateBuffer,
+    ) -> Result<super::types::MlpTrace> {
+        let layer = self.layers.get(layer_id).ok_or_else(|| {
+            candle_core::Error::Msg(format!(
+                "trace_layer_mlp_from_buffer: layer {} out of range for {} layers",
+                layer_id,
+                self.layers.len()
+            ))
+        })?;
+        layer.mlp.trace_buffer(input)
+    }
+
     pub(crate) fn forward_hidden_states_profiled_direct_hip_v1(
         &mut self,
         metadata: &PreparedQwen35DirectMetadata,
@@ -1380,5 +1414,13 @@ impl ModelForCausalLM {
 
     pub fn restore_cache_state(&mut self, state: &CacheState) -> Result<()> {
         self.language_model.restore_cache_state(state)
+    }
+
+    pub fn trace_layer_mlp_from_buffer(
+        &self,
+        layer_id: usize,
+        input: &StateBuffer,
+    ) -> Result<MlpTrace> {
+        self.language_model.trace_layer_mlp_from_buffer(layer_id, input)
     }
 }

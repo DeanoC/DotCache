@@ -29,6 +29,7 @@ pub use types::{
     NativeFullAttentionCacheState as MinimalQwen35NativeFullAttentionCacheState,
     NativeLayerCacheState as MinimalQwen35NativeLayerCacheState,
     NativeLinearAttentionCacheState as MinimalQwen35NativeLinearAttentionCacheState,
+    MlpTrace as MinimalQwen35MlpTrace,
     RmsNormTrace as MinimalQwen35RmsNormTrace,
     RuntimeProfile as MinimalQwen35RuntimeProfile,
     StateBuffer as MinimalQwen35StateBuffer, TextConfig as MinimalQwen35TextConfig,
@@ -1197,6 +1198,23 @@ impl MinimalQwen35Runner {
 
     pub fn restore_cache_state(&mut self, state: &MinimalQwen35KvCache) -> Result<()> {
         Ok(self.model.restore_cache_state(state)?)
+    }
+
+    /// Feed an external tensor through a specific layer's MLP and return the trace.
+    /// This is used to test whether the MLP itself introduces drift when given the
+    /// PyTorch oracle's post-attention-norm output as input.
+    pub fn trace_layer_mlp_from_external_input(
+        &self,
+        layer_id: usize,
+        external_input: &Tensor,
+    ) -> Result<MinimalQwen35MlpTrace> {
+        let external_input = if external_input.device().same_device(&self.device) {
+            external_input.clone()
+        } else {
+            external_input.to_device(&self.device)?
+        };
+        let buf = MinimalQwen35StateBuffer::from_tensor(external_input)?;
+        Ok(self.model.trace_layer_mlp_from_buffer(layer_id, &buf)?)
     }
 }
 
