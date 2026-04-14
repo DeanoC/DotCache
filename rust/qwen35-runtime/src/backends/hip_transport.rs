@@ -118,9 +118,6 @@ pub(crate) enum HipNativeExpr {
     Exp {
         source: Arc<HipNativeBuffer>,
     },
-    Log {
-        source: Arc<HipNativeBuffer>,
-    },
     BroadcastAdd {
         lhs: Arc<HipNativeBuffer>,
         rhs: Arc<HipNativeBuffer>,
@@ -157,9 +154,6 @@ pub(crate) enum HipNativeExpr {
         value: f64,
     },
     Recip {
-        source: Arc<HipNativeBuffer>,
-    },
-    Sqrt {
         source: Arc<HipNativeBuffer>,
     },
     L2Norm {
@@ -3532,10 +3526,6 @@ impl HipNativeBuffer {
                 .try_materialize_device_buffer()?
                 .map(|buffer| buffer.exp())
                 .transpose(),
-            HipNativeExpr::Log { source } => source
-                .try_materialize_device_buffer()?
-                .map(|buffer| buffer.log())
-                .transpose(),
             HipNativeExpr::BroadcastAdd { lhs, rhs } => {
                 let (Some(lhs), Some(rhs)) = (
                     lhs.try_materialize_device_buffer()?,
@@ -3596,10 +3586,6 @@ impl HipNativeBuffer {
                 .try_materialize_device_buffer()?
                 .map(|buffer| buffer.recip())
                 .transpose(),
-            HipNativeExpr::Sqrt { source } => source
-                .try_materialize_device_buffer()?
-                .map(|buffer| buffer.sqrt())
-                .transpose(),
             HipNativeExpr::L2Norm { source, eps } => source
                 .try_materialize_device_buffer()?
                 .map(|buffer| buffer.l2norm(*eps))
@@ -3619,14 +3605,12 @@ impl HipNativeBuffer {
             | HipNativeExpr::Transpose { source, .. }
             | HipNativeExpr::Cast { source, .. }
             | HipNativeExpr::Exp { source }
-            | HipNativeExpr::Log { source }
             | HipNativeExpr::MaxKeepdim { source, .. }
             | HipNativeExpr::SumKeepdim { source, .. }
             | HipNativeExpr::Neg { source }
             | HipNativeExpr::AddScalar { source, .. }
             | HipNativeExpr::MulScalar { source, .. }
             | HipNativeExpr::Recip { source }
-            | HipNativeExpr::Sqrt { source }
             | HipNativeExpr::L2Norm { source, .. } => source.is_host_graph(),
             HipNativeExpr::Concat { sources, .. } => sources.iter().all(|s| s.is_host_graph()),
             HipNativeExpr::BroadcastAdd { lhs, rhs }
@@ -4385,17 +4369,6 @@ impl HipNativeBuffer {
         }
     }
 
-    pub(crate) fn log(source: Arc<HipNativeBuffer>) -> Self {
-        Self {
-            expr: HipNativeExpr::Log {
-                source: source.clone(),
-            },
-            shape: source.shape.clone(),
-            dtype: source.dtype,
-            device: source.device.clone(),
-        }
-    }
-
     fn broadcast_shape(lhs: &[usize], rhs: &[usize], op: &'static str) -> Result<Vec<usize>> {
         Ok(Shape::from(lhs.to_vec())
             .broadcast_shape_binary_op(&Shape::from(rhs.to_vec()), op)?
@@ -4516,17 +4489,6 @@ impl HipNativeBuffer {
     pub(crate) fn recip(source: Arc<HipNativeBuffer>) -> Self {
         Self {
             expr: HipNativeExpr::Recip {
-                source: source.clone(),
-            },
-            shape: source.shape.clone(),
-            dtype: source.dtype,
-            device: source.device.clone(),
-        }
-    }
-
-    pub(crate) fn sqrt(source: Arc<HipNativeBuffer>) -> Self {
-        Self {
-            expr: HipNativeExpr::Sqrt {
                 source: source.clone(),
             },
             shape: source.shape.clone(),
@@ -4657,13 +4619,6 @@ impl HipNativeBuffer {
                     source.materialize()?.exp()
                 }
             }
-            HipNativeExpr::Log { source } => {
-                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
-                    Ok(buffer.log()?.into_tensor())
-                } else {
-                    source.materialize()?.log()
-                }
-            }
             HipNativeExpr::BroadcastAdd { lhs, rhs } => {
                 if let (HipNativeExpr::DeviceBuffer(lhs), HipNativeExpr::DeviceBuffer(rhs)) =
                     (&lhs.expr, &rhs.expr)
@@ -4734,13 +4689,6 @@ impl HipNativeBuffer {
                     Ok(buffer.recip()?.into_tensor())
                 } else {
                     source.materialize()?.recip()
-                }
-            }
-            HipNativeExpr::Sqrt { source } => {
-                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
-                    Ok(buffer.sqrt()?.into_tensor())
-                } else {
-                    source.materialize()?.sqrt()
                 }
             }
             HipNativeExpr::L2Norm { source, eps } => {
@@ -4981,15 +4929,6 @@ impl HipStorage {
         ))))
     }
 
-    pub(crate) fn log(&self) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
-            return Ok(Self::from_device_buffer(buffer.log()?));
-        }
-        Ok(Self::from_native_buffer(HipNativeBuffer::log(Arc::new(
-            self.0.clone(),
-        ))))
-    }
-
     pub(crate) fn max_keepdim(&self, dim: candle_core::D) -> Result<Self> {
         let dim_index = dim.to_index(&Shape::from(self.shape()), "hip-native-max-keepdim")?;
         if let Some(buffer) = self.0.direct_materialized_device_buffer() {
@@ -5043,15 +4982,6 @@ impl HipStorage {
             return Ok(Self::from_device_buffer(buffer.recip()?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::recip(Arc::new(
-            self.0.clone(),
-        ))))
-    }
-
-    pub(crate) fn sqrt(&self) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
-            return Ok(Self::from_device_buffer(buffer.sqrt()?));
-        }
-        Ok(Self::from_native_buffer(HipNativeBuffer::sqrt(Arc::new(
             self.0.clone(),
         ))))
     }
@@ -5140,15 +5070,6 @@ impl HipStorage {
 pub(crate) struct HipTensor(pub(crate) HipStorage);
 
 impl HipTensor {
-    pub(crate) fn from_host_buffer(buffer: HipHostBuffer) -> Self {
-        Self(HipStorage::from_native_buffer(HipNativeBuffer {
-            expr: HipNativeExpr::HostBytes { bytes: buffer.bytes },
-            shape: buffer.shape,
-            dtype: buffer.dtype,
-            device: buffer.device,
-        }))
-    }
-
     pub(crate) fn from_device_buffer(buffer: HipDeviceBuffer) -> Self {
         Self(HipStorage::from_device_buffer(buffer))
     }
@@ -5244,10 +5165,6 @@ impl HipTensor {
         Ok(Self(self.0.exp()?))
     }
 
-    pub(crate) fn log(&self) -> Result<Self> {
-        Ok(Self(self.0.log()?))
-    }
-
     pub(crate) fn max_keepdim(&self, dim: candle_core::D) -> Result<Self> {
         Ok(Self(self.0.max_keepdim(dim)?))
     }
@@ -5267,10 +5184,6 @@ impl HipTensor {
     #[cfg(test)]
     pub(crate) fn recip(&self) -> Result<Self> {
         Ok(Self(self.0.recip()?))
-    }
-
-    pub(crate) fn sqrt(&self) -> Result<Self> {
-        Ok(Self(self.0.sqrt()?))
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
@@ -13556,38 +13469,6 @@ pub(crate) fn prepare_linear_attention_inputs(
     ))
 }
 
-fn wrap_kv_cache_hip(
-    key_states: Tensor,
-    value_states: Tensor,
-) -> Result<(HipTensor, HipTensor)> {
-    let key_states = HipTensor::from_scaffold_tensor(key_states);
-    let value_states = HipTensor::from_scaffold_tensor(value_states);
-    if let (Some(key_device), Some(value_device)) = (
-        key_states.0 .0.direct_device_buffer(),
-        value_states.0 .0.direct_device_buffer(),
-    ) {
-        return Ok((
-            HipTensor::from_device_buffer(key_device.clone()),
-            HipTensor::from_device_buffer(value_device.clone()),
-        ));
-    }
-    Ok((
-        key_states,
-        value_states,
-    ))
-}
-
-pub(crate) fn wrap_kv_cache(
-    key_states: Tensor,
-    value_states: Tensor,
-) -> Result<(StateBuffer, StateBuffer)> {
-    let (key_states, value_states) = wrap_kv_cache_hip(key_states, value_states)?;
-    Ok((
-        key_states.into_state_buffer()?,
-        value_states.into_state_buffer()?,
-    ))
-}
-
 fn prepare_full_attention_output_hip(
     attn_output_hip: &HipTensor,
     gate_hip: &HipTensor,
@@ -16916,10 +16797,6 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
     let y1 = x0.broadcast_mul(&sin)?.broadcast_add(&x1.broadcast_mul(&cos)?)?;
     HipTensor::cat(&[&y0, &y1], y0.rank() - 1)?
         .reshape((b_sz, n_head, seq_len, n_embd))
-}
-
-pub(crate) fn rope(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
-    rope_hip(&HipTensor::from_scaffold_tensor(xs.clone()), cos, sin).map(|t| t.into_tensor())
 }
 
 pub(crate) fn linear_prefill_conv(

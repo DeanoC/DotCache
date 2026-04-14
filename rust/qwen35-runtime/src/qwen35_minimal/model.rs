@@ -1,37 +1,11 @@
 #![allow(unexpected_cfgs)]
 
-use super::backend_buffer_api;
-use super::backend_buffer_api::Qwen35BackendBufferApi;
-#[cfg(any(feature = "hf", test))]
-use super::builder::WeightBuilder;
-pub(crate) use super::decoder::{ModelForCausalLM, TextModel};
-use super::frontend::{
-    build_prepared_embedding_source, debug_full_prefill_kernel_compare_enabled,
-    immutable_embedding_enabled, immutable_linear_enabled, max_abs_delta, prepared_linear_b,
-    prepared_linear_no_bias, profile_elapsed, profile_start, EmbeddingSource, Mlp,
-    OutputProjectionSource, Qwen35RmsNorm, RotaryEmbedding,
-};
-use super::full_attention::FullAttention;
-#[cfg(any(feature = "hf", test))]
-use super::frontend::embedding;
 #[cfg(feature = "qwen35-minimal-hip")]
 use super::hip;
-use super::ops;
-use super::prepared::PreparedTensorSource;
-use super::linear_attention::GatedDeltaNet;
-pub use super::types::{
-    CacheState, Config, ExternalFullAttention, FullAttentionCacheState, LayerCacheState,
-    LinearAttentionBenchResult, LinearAttentionLayerSpec, LinearAttentionTrace, RuntimeProfile,
-    StateBuffer, TextConfig,
-};
-#[cfg(any(feature = "hf", test))]
-use super::with_tracing::{linear_b, linear_no_bias};
-use super::with_tracing::Linear;
-use candle::{DType, Device, DeviceLocation, Module, Result, Tensor, D};
+pub use super::types::StateBuffer;
+use candle::{DType, Device, DeviceLocation, Result, Tensor};
 use candle_core as candle;
-use crate::PreparedQwen35DirectMetadata;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 
 pub(crate) use super::frontend::{
@@ -144,28 +118,6 @@ pub(super) fn repeat_kv(xs: Tensor, repeats: usize) -> Result<Tensor> {
 #[cfg(test)]
 fn l2norm(xs: &Tensor, eps: f64) -> Result<Tensor> {
     backend_ops::l2norm(xs, eps)
-}
-
-fn delta_chunk_step_2d_enabled() -> bool {
-    match std::env::var("CANDLE_QWEN35_DELTA_CHUNK_STEP_2D_KERNEL") {
-        Ok(value)
-            if matches!(
-                value.as_str(),
-                "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
-            ) =>
-        {
-            false
-        }
-        Ok(_) => true,
-        Err(_) => true,
-    }
-}
-
-fn delta_chunk_step_windowed_2d_enabled() -> bool {
-    matches!(
-        std::env::var("CANDLE_QWEN35_DELTA_CHUNK_WINDOWED_2D_KERNEL").as_deref(),
-        Ok("1" | "true" | "TRUE" | "yes" | "YES")
-    )
 }
 
 pub(super) fn use_delta_chunk_windowed_kernel(
@@ -614,7 +566,7 @@ impl candle::CustomOp2 for LinearPrefillConvPack {
         weights: &candle::HipStorage,
         weights_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous() && weights_layout.is_contiguous()) {
@@ -833,7 +785,7 @@ impl candle::CustomOp3 for LinearStatefulConv {
         weights: &candle::HipStorage,
         weights_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous()
@@ -1108,7 +1060,7 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecay {
         a_log_exp: &candle::HipStorage,
         a_log_exp_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous()
@@ -1271,7 +1223,7 @@ impl candle::CustomOp6 for LinearStatefulConvValueDecayWithState {
         a_log_exp: &candle::HipStorage,
         a_log_exp_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous()
@@ -1854,7 +1806,7 @@ impl candle::CustomOp6 for LinearDecodePrepare {
         a_log_exp: &candle::HipStorage,
         a_log_exp_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(mixed_qkv_layout.is_contiguous()
@@ -1943,7 +1895,7 @@ impl candle::CustomOp2 for LinearDecodeApply {
         initial_state: &candle::HipStorage,
         initial_state_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(packed_layout.is_contiguous() && initial_state_layout.is_contiguous()) {
@@ -2504,7 +2456,7 @@ impl candle::CustomOp3 for FullAttentionPrefillMegakernel {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -3142,7 +3094,7 @@ impl candle::CustomOp3 for DeltaStateScan {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -3517,7 +3469,7 @@ impl candle::CustomOp3 for DeltaChunkFused {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(prev_layout.is_contiguous()
@@ -6370,7 +6322,7 @@ impl candle::CustomOp6 for DeltaChunkScanRaw {
         g: &candle::HipStorage,
         g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -6980,7 +6932,7 @@ impl candle::CustomOp7 for DeltaFullScan {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()
@@ -7332,7 +7284,7 @@ impl candle::CustomOp3 for DeltaLocalAttnScan {
         exp_g_scan: &candle::HipStorage,
         exp_g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -7540,7 +7492,7 @@ impl candle::CustomOp3 for DeltaBaseAttnScan {
         exp_g_scan: &candle::HipStorage,
         exp_g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(k_beta_layout.is_contiguous()
@@ -7742,7 +7694,7 @@ impl candle::CustomOp1 for DeltaAttnSolveScan {
         base_attn_scan: &candle::HipStorage,
         base_attn_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !base_attn_layout.is_contiguous() {
@@ -7897,7 +7849,7 @@ impl candle::CustomOp3 for DeltaAttnSolveFromInputs {
         exp_g_scan: &candle::HipStorage,
         exp_g_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !k_beta_layout.is_contiguous() || !key_layout.is_contiguous() || !exp_g_layout.is_contiguous() {
@@ -8111,7 +8063,7 @@ impl candle::CustomOp4 for DeltaFullScanPack {
         k_cumdecay_scan: &candle::HipStorage,
         k_cumdecay_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(query_layout.is_contiguous()
@@ -8366,7 +8318,7 @@ impl candle::CustomOp4 for DeltaFullScanPacked {
         value: &candle::HipStorage,
         value_layout: &candle::Layout,
     ) -> Result<(candle::HipStorage, candle::Shape)> {
-        use candle::backend::{BackendDevice, BackendStorage};
+        use candle::backend::BackendStorage;
         use std::ffi::c_void;
 
         if !(initial_layout.is_contiguous()

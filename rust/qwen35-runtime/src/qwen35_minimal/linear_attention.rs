@@ -2618,31 +2618,6 @@ impl GatedDeltaNet {
         Ok((output, recurrent_state, profile))
     }
 
-    pub(super) fn project_direct_decode_inputs(
-        &self,
-        hidden_states: &StateBuffer,
-    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer, RuntimeProfile)> {
-        let device = hidden_states.device();
-        let backend = backend_buffer_api::for_device(device);
-        let mut profile = RuntimeProfile::default();
-        let (batch_size, seq_len, _) = hidden_states.dims3()?;
-        let qkv_start = profile_start(device)?;
-        let mixed_qkv = backend.tensor_to_buffer(
-            self.in_proj_qkv
-                .forward_buffer(hidden_states)?
-                .tensor()
-                .transpose(1, 2)?,
-        )?;
-        let z = backend.reshape_tensor_to_buffer(
-            self.in_proj_z.forward_buffer(hidden_states)?.tensor(),
-            &[batch_size, seq_len, self.num_v_heads, self.head_v_dim],
-        )?;
-        let beta_raw = self.in_proj_b.forward_buffer(hidden_states)?;
-        let a = self.in_proj_a.forward_buffer(hidden_states)?;
-        profile.qkv_projection_millis += profile_elapsed(qkv_start, device)?;
-        Ok((mixed_qkv, z, beta_raw, a, profile))
-    }
-
     pub(super) fn trace_projection_components_buffer(
         &self,
         hidden_states: &StateBuffer,
@@ -3304,44 +3279,6 @@ impl GatedDeltaNet {
             self.forward_profiled_with_state_buffer(hidden_states, attention_mask)?;
         self.recurrent_state = Some(recurrent_state);
         Ok((output, profile))
-    }
-
-    pub(super) fn forward_profiled_direct_decode_v1(
-        &mut self,
-        hidden_states: &StateBuffer,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        let device = hidden_states.device();
-        let (_, seq_len, _) = hidden_states.dims3()?;
-        if seq_len != 1 {
-            candle::bail!(
-                "direct-hip-v1 linear decode expects single-token hidden state, got seq_len={seq_len}"
-            );
-        }
-        let total_start = profile_start(device)?;
-        let mut profile = RuntimeProfile::default();
-        let (mixed_qkv, z, beta_raw, a, projection_profile) =
-            self.project_direct_decode_inputs(hidden_states)?;
-        profile.add_assign(&projection_profile);
-        let (output, recurrent_state, linear_profile) = self.run_direct_decode_core(
-            hidden_states.tensor().dtype(),
-            hidden_states,
-            &mixed_qkv,
-            &z,
-            &beta_raw,
-            &a,
-        )?;
-        profile.add_assign(&linear_profile);
-        profile.linear_attention_millis += profile_elapsed(total_start, device)?;
-        self.commit_direct_decode_recurrent_state(recurrent_state);
-        Ok((output, profile))
-    }
-
-    fn trace_profiled(
-        &mut self,
-        hidden_states: &Tensor,
-        attention_mask: Option<&Tensor>,
-    ) -> Result<(Tensor, Tensor, RuntimeProfile)> {
-        self.forward_profiled_with_state(hidden_states, attention_mask)
     }
 
     pub(super) fn trace_profiled_buffer(

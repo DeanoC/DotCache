@@ -276,24 +276,6 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
-        pub fn dotcache_qwen35_hip_linear_stateful_conv_value_decay(
-            dtype: c_int,
-            device_ordinal: usize,
-            batch_size: usize,
-            conv_dim: usize,
-            seq_len: usize,
-            state_len: usize,
-            kernel_size: usize,
-            num_heads: usize,
-            mixed_qkv: *const c_void,
-            prev_state: *const c_void,
-            weights: *const c_void,
-            a: *const c_void,
-            dt_bias: *const c_void,
-            a_log_exp: *const c_void,
-            out: *mut c_void,
-        ) -> c_int;
-
         pub fn dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
             dtype: c_int,
             device_ordinal: usize,

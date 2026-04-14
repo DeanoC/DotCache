@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use dotcache_paged_runtime::{
         MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
     };
-    use dotcache_qwen35_runtime::{MinimalQwen35MlpTrace, MinimalQwen35StateBuffer as StateBuffer};
+    use dotcache_qwen35_runtime::MinimalQwen35StateBuffer as StateBuffer;
     use serde::{Deserialize, Serialize};
     use tokenizers::Tokenizer;
 
@@ -860,48 +860,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             });
         }
         Ok(flat[start..end].to_vec())
-    }
-
-    fn hidden_vec3_stats(
-        hidden: &[Vec<Vec<f32>>],
-        num_heads: usize,
-        head_dim: usize,
-        eps: f32,
-    ) -> Result<(Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>)> {
-        if hidden.is_empty() || hidden[0].is_empty() {
-            return Err(RuntimeError::External {
-                context: "hidden vec3 stats",
-                message: "empty hidden tensor".to_string(),
-            });
-        }
-        let hidden_size = hidden[0][0].len();
-        if hidden_size != num_heads * head_dim {
-            return Err(RuntimeError::DimensionMismatch {
-                context: "hidden vec3 stats",
-                expected: num_heads * head_dim,
-                got: hidden_size,
-            });
-        }
-        let mut mean_square = vec![vec![vec![0.0f32; num_heads]; hidden[0].len()]; hidden.len()];
-        let mut rsqrt = vec![vec![vec![0.0f32; num_heads]; hidden[0].len()]; hidden.len()];
-        let mut normalized = vec![vec![vec![0.0f32; hidden_size]; hidden[0].len()]; hidden.len()];
-        for (batch_idx, batch) in hidden.iter().enumerate() {
-            for (seq_idx, row) in batch.iter().enumerate() {
-                for head_idx in 0..num_heads {
-                    let start = head_idx * head_dim;
-                    let end = start + head_dim;
-                    let slice = &row[start..end];
-                    let ms = slice.iter().map(|value| value * value).sum::<f32>() / head_dim as f32;
-                    let inv = 1.0f32 / (ms + eps).sqrt();
-                    mean_square[batch_idx][seq_idx][head_idx] = ms;
-                    rsqrt[batch_idx][seq_idx][head_idx] = inv;
-                    for (dim_idx, value) in slice.iter().enumerate() {
-                        normalized[batch_idx][seq_idx][start + dim_idx] = *value * inv;
-                    }
-                }
-            }
-        }
-        Ok((mean_square, rsqrt, normalized))
     }
 
     fn hidden_vec3_stats_flattened_decode(

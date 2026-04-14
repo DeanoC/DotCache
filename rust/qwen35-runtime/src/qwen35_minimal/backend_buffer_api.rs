@@ -105,11 +105,6 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         embedding: &ImmutableEmbedding,
         input_ids: &Tensor,
     ) -> Result<Tensor>;
-    fn output_projection_tensor(
-        &self,
-        embedding: &ImmutableEmbedding,
-        hidden_states: &Tensor,
-    ) -> Result<Tensor>;
     fn output_projection(
         &self,
         embedding: &ImmutableEmbedding,
@@ -238,11 +233,6 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         scale: f32,
         seqlen_offset: usize,
     ) -> Result<StateBuffer>;
-    fn wrap_kv_cache(
-        &self,
-        key_states: Tensor,
-        value_states: Tensor,
-    ) -> Result<(StateBuffer, StateBuffer)>;
     #[allow(clippy::too_many_arguments)]
     fn prepare_full_attention_output(
         &self,
@@ -754,13 +744,6 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
     ) -> Result<Tensor> {
         backend_ops::immutable_embedding_lookup(embedding, input_ids)
     }
-    fn output_projection_tensor(
-        &self,
-        embedding: &ImmutableEmbedding,
-        hidden_states: &Tensor,
-    ) -> Result<Tensor> {
-        backend_ops::output_projection(embedding, hidden_states)
-    }
     fn output_projection(
         &self,
         embedding: &ImmutableEmbedding,
@@ -1053,13 +1036,6 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             scale,
             seqlen_offset,
         )
-    }
-    fn wrap_kv_cache(
-        &self,
-        key_states: Tensor,
-        value_states: Tensor,
-    ) -> Result<(StateBuffer, StateBuffer)> {
-        Ok((StateBuffer::from_tensor(key_states)?, StateBuffer::from_tensor(value_states)?))
     }
     fn prepare_full_attention_output(
         &self,
@@ -1639,13 +1615,6 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
     ) -> Result<Tensor> {
         backends::hip::immutable_embedding_lookup(embedding, input_ids)
     }
-    fn output_projection_tensor(
-        &self,
-        embedding: &ImmutableEmbedding,
-        hidden_states: &Tensor,
-    ) -> Result<Tensor> {
-        backends::hip::output_projection_tensor(embedding, hidden_states)
-    }
     fn output_projection(
         &self,
         embedding: &ImmutableEmbedding,
@@ -1864,13 +1833,6 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
             scale,
             seqlen_offset,
         )
-    }
-    fn wrap_kv_cache(
-        &self,
-        key_states: Tensor,
-        value_states: Tensor,
-    ) -> Result<(StateBuffer, StateBuffer)> {
-        backends::hip::wrap_kv_cache(key_states, value_states)
     }
     fn prepare_full_attention_output(
         &self,

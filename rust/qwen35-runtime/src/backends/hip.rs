@@ -145,13 +145,6 @@ pub(crate) fn immutable_embedding_lookup(
     transport::immutable_embedding_lookup(embedding, input_ids).map(|t| t.into_tensor())
 }
 
-pub(crate) fn output_projection_tensor(
-    embedding: &ImmutableEmbedding,
-    hidden_states: &Tensor,
-) -> Result<Tensor> {
-    transport::output_projection(embedding, hidden_states).map(|t| t.into_tensor())
-}
-
 pub(crate) fn output_projection(
     embedding: &ImmutableEmbedding,
     hidden_states: &StateBuffer,
@@ -345,10 +338,6 @@ pub(crate) fn value_decay(
     transport::value_decay_buffer(a, dt_bias, a_log_exp)
 }
 
-pub(crate) fn rope(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
-    transport::rope(xs, cos, sin)
-}
-
 pub(crate) fn full_attention_prefill(
     query: &Tensor,
     key: &Tensor,
@@ -369,13 +358,6 @@ pub(crate) fn full_attention_decode(
     seqlen_offset: usize,
 ) -> Result<StateBuffer> {
     transport::full_attention_decode_buffer(query, key, value, num_kv_groups, scale, seqlen_offset)
-}
-
-pub(crate) fn wrap_kv_cache(
-    key_states: Tensor,
-    value_states: Tensor,
-) -> Result<(StateBuffer, StateBuffer)> {
-    transport::wrap_kv_cache(key_states, value_states)
 }
 
 pub(crate) fn prepare_full_attention_output(

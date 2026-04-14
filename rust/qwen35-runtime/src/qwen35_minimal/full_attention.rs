@@ -1269,22 +1269,6 @@ impl FullAttention {
         )
     }
 
-    fn forward_profiled_buffer(
-        &mut self,
-        xs: &StateBuffer,
-        attention_mask: Option<&Tensor>,
-        seqlen_offset: usize,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        let mut no_external = None;
-        self.forward_profiled_with_external_buffer(
-            xs,
-            attention_mask,
-            seqlen_offset,
-            usize::MAX,
-            &mut no_external,
-        )
-    }
-
     fn full_attention_decode_projected(
         &self,
         output_dtype: DType,
@@ -1426,91 +1410,6 @@ impl FullAttention {
         })
     }
 
-    pub(super) fn forward_profiled_direct_decode_v1(
-        &mut self,
-        xs: &StateBuffer,
-        seqlen_offset: usize,
-        gate_workspace: &StateBuffer,
-        query_workspace: &StateBuffer,
-        key_workspace: &StateBuffer,
-        value_workspace: &StateBuffer,
-        _layer_id: usize,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        let device = xs.device();
-        let context = self.direct_decode_context(
-            xs,
-            seqlen_offset,
-            gate_workspace,
-            query_workspace,
-            key_workspace,
-            value_workspace,
-        )?;
-        if context.q_len != 1 {
-            candle::bail!(
-                "direct-hip-v1 full-attention decode expects single-token hidden state, got seq_len={}",
-                context.q_len
-            );
-        }
-        let full_start = profile_start(device)?;
-        let mut profile = RuntimeProfile::default();
-        let (
-            query_states,
-            key_states,
-            value_states,
-            gate,
-            appended_k,
-            appended_v,
-            input_profile,
-        ) = self.project_direct_decode_inputs_with_context(xs, &context)?;
-        profile.add_assign(&input_profile);
-
-        let kernel_start = profile_start(device)?;
-        let attn_output = self.run_direct_decode_core_with_context(
-            &context,
-            &query_states,
-            &key_states,
-            &value_states,
-            &gate,
-        )?;
-        profile.full_attention_kernel_execute_millis += profile_elapsed(kernel_start, device)?;
-        drop(context);
-        self.commit_direct_decode_kv_cache(appended_k, appended_v);
-
-        let output_start = profile_start(device)?;
-        let output = self.o_proj.forward_buffer(&attn_output)?;
-        profile.output_projection_millis += profile_elapsed(output_start, device)?;
-        profile.full_attention_millis += profile_elapsed(full_start, device)?;
-        Ok((output, profile))
-    }
-
-    pub(super) fn project_direct_decode_inputs(
-        &self,
-        xs: &StateBuffer,
-        seqlen_offset: usize,
-        gate_workspace: &StateBuffer,
-        query_workspace: &StateBuffer,
-        key_workspace: &StateBuffer,
-        value_workspace: &StateBuffer,
-    ) -> Result<(
-        StateBuffer,
-        StateBuffer,
-        StateBuffer,
-        StateBuffer,
-        StateBuffer,
-        StateBuffer,
-        RuntimeProfile,
-    )> {
-        let context = self.direct_decode_context(
-            xs,
-            seqlen_offset,
-            gate_workspace,
-            query_workspace,
-            key_workspace,
-            value_workspace,
-        )?;
-        self.project_direct_decode_inputs_with_context(xs, &context)
-    }
-
     pub(super) fn project_direct_decode_inputs_with_context(
         &self,
         xs: &StateBuffer,
@@ -1598,29 +1497,6 @@ impl FullAttention {
             appended_kv.1,
             profile,
         ))
-    }
-
-    pub(super) fn run_direct_decode_core(
-        &self,
-        output_dtype: DType,
-        b_sz: usize,
-        q_len: usize,
-        query_states: &StateBuffer,
-        key_states: &StateBuffer,
-        value_states: &StateBuffer,
-        gate: &StateBuffer,
-        seqlen_offset: usize,
-    ) -> Result<StateBuffer> {
-        self.full_attention_decode_projected_buffer(
-            output_dtype,
-            b_sz,
-            q_len,
-            query_states,
-            key_states,
-            value_states,
-            gate,
-            seqlen_offset,
-        )
     }
 
     pub(super) fn run_direct_decode_core_with_context(

@@ -167,22 +167,6 @@ impl MinimalQwen35DirectRuntime {
         &self.decode_logits
     }
 
-    pub(crate) fn full_attention_gate(&self) -> &MinimalQwen35StateBuffer {
-        &self.full_attention_gate
-    }
-
-    pub(crate) fn full_attention_qkv(&self) -> &MinimalQwen35StateBuffer {
-        &self.full_attention_qkv
-    }
-
-    pub(crate) fn full_attention_key(&self) -> &MinimalQwen35StateBuffer {
-        &self.full_attention_key
-    }
-
-    pub(crate) fn full_attention_value(&self) -> &MinimalQwen35StateBuffer {
-        &self.full_attention_value
-    }
-
     pub fn last_prefill_sequence_length(&self) -> usize {
         self.last_prefill_sequence_length
     }

@@ -1,12 +1,8 @@
 use super::metal_transport as transport;
-use crate::{Qwen35Backend, Qwen35BackendDescriptor};
+use crate::Qwen35Backend;
 use crate::qwen35_minimal_impl::model::StateBuffer;
 use dotcache_runtime_core::TargetSpec;
 use transport::{DType, Device, Result, Tensor};
-
-pub fn descriptor(target: TargetSpec) -> Qwen35BackendDescriptor {
-    transport::descriptor(target)
-}
 
 pub fn backend(target: TargetSpec) -> Qwen35Backend {
     transport::backend(target)

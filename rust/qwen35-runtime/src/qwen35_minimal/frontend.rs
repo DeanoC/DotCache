@@ -374,22 +374,6 @@ impl ImmutableEmbedding {
         }
     }
 
-    pub(super) fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
-        #[cfg(feature = "qwen35-minimal-hip")]
-        if self.meta.device.is_hip() && input_ids.device().is_hip() {
-            match backend_buffer_api::for_device(input_ids.device())
-                .immutable_embedding_lookup(self, input_ids)
-            {
-                Ok(output) => return Ok(output),
-                Err(_) => {
-                    let fallback = self.ensure_fallback_embedding()?;
-                    return immutable_embedding_forward_fallback(&fallback, input_ids);
-                }
-            }
-        }
-        let fallback = self.ensure_fallback_embedding()?;
-        immutable_embedding_forward_fallback(&fallback, input_ids)
-    }
 }
 
 fn immutable_embedding_forward_fallback(
@@ -422,13 +406,6 @@ impl EmbeddingSource {
         }
     }
 
-    pub(super) fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
-        match self {
-            Self::Materialized(embedding) => immutable_embedding_forward_fallback(embedding, input_ids),
-            Self::Immutable(embedding) => embedding.forward(input_ids),
-        }
-    }
-
     pub(super) fn forward_buffer(&self, input_ids: &Tensor) -> Result<StateBuffer> {
         match self {
             Self::Materialized(embedding) => embedding.forward_buffer(input_ids),
@@ -454,14 +431,6 @@ pub(super) enum OutputProjectionSource {
 }
 
 impl OutputProjectionSource {
-    pub(super) fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
-        match self {
-            Self::Materialized(linear) => linear.forward(hidden_states),
-            Self::TiedImmutable(embedding) => backend_buffer_api::for_device(hidden_states.device())
-                .output_projection_tensor(embedding, hidden_states),
-        }
-    }
-
     pub(super) fn forward_buffer(&self, hidden_states: &StateBuffer) -> Result<StateBuffer> {
         match self {
             Self::Materialized(linear) => linear.forward_buffer(hidden_states),
@@ -546,19 +515,6 @@ impl LinearSource {
         }
     }
 
-    pub(super) fn forward_buffer_into_scratch(
-        &self,
-        xs: &StateBuffer,
-        scratch: &StateBuffer,
-    ) -> Result<StateBuffer> {
-        match self {
-            Self::Materialized(linear) => linear.forward_buffer_into_scratch(xs, scratch),
-            Self::Deferred(linear) => linear
-                .ensure_materialized()?
-                .forward_buffer_into_scratch(xs, scratch),
-        }
-    }
-
     pub(super) fn is_deferred(&self) -> bool {
         matches!(self, Self::Deferred(_))
     }
@@ -640,51 +596,6 @@ impl RotaryEmbedding {
             sin: freqs.sin()?.to_dtype(dtype)?,
             rotary_dim,
         })
-    }
-
-    pub(super) fn apply(
-        &self,
-        q: &Tensor,
-        k: &Tensor,
-        seqlen_offset: usize,
-    ) -> Result<(Tensor, Tensor)> {
-        let (_, _, seq_len, head_dim) = q.dims4()?;
-        if self.rotary_dim >= head_dim {
-            let cos = self.cos.narrow(0, seqlen_offset, seq_len)?;
-            let sin = self.sin.narrow(0, seqlen_offset, seq_len)?;
-            let q_embed = if q.device().is_hip() {
-                backends::hip::rope(q, &cos, &sin)?
-            } else {
-                rotary::rope(&q.contiguous()?, &cos, &sin)?
-            };
-            let k_embed = if k.device().is_hip() {
-                backends::hip::rope(k, &cos, &sin)?
-            } else {
-                rotary::rope(&k.contiguous()?, &cos, &sin)?
-            };
-            return Ok((q_embed, k_embed));
-        }
-
-        let q_rot = q.narrow(D::Minus1, 0, self.rotary_dim)?;
-        let q_pass = q.narrow(D::Minus1, self.rotary_dim, head_dim - self.rotary_dim)?;
-        let k_rot = k.narrow(D::Minus1, 0, self.rotary_dim)?;
-        let k_pass = k.narrow(D::Minus1, self.rotary_dim, head_dim - self.rotary_dim)?;
-        let cos = self.cos.narrow(0, seqlen_offset, seq_len)?;
-        let sin = self.sin.narrow(0, seqlen_offset, seq_len)?;
-        let q_rot = if q.device().is_hip() {
-            backends::hip::rope(&q_rot, &cos, &sin)?
-        } else {
-            rotary::rope(&q_rot.contiguous()?, &cos, &sin)?
-        };
-        let k_rot = if k.device().is_hip() {
-            backends::hip::rope(&k_rot, &cos, &sin)?
-        } else {
-            rotary::rope(&k_rot.contiguous()?, &cos, &sin)?
-        };
-        Ok((
-            Tensor::cat(&[&q_rot, &q_pass], D::Minus1)?,
-            Tensor::cat(&[&k_rot, &k_pass], D::Minus1)?,
-        ))
     }
 
     pub(super) fn apply_buffer(
@@ -1259,10 +1170,6 @@ impl Qwen35RmsNormGated {
             weight: source.get("weight")?,
             eps,
         })
-    }
-
-    pub(super) fn forward(&self, hidden_states: &Tensor, gate: &Tensor) -> Result<Tensor> {
-        backend_ops::rms_norm_gated(hidden_states, gate, &self.weight, self.eps)
     }
 
     pub(super) fn forward_buffer(

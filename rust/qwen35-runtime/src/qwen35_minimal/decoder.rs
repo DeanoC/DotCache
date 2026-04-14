@@ -1027,39 +1027,6 @@ impl TextModel {
         layer.mlp.trace_buffer(input)
     }
 
-    pub(crate) fn forward_hidden_states_profiled_direct_hip_v1(
-        &mut self,
-        metadata: &PreparedQwen35DirectMetadata,
-        hidden_states: &StateBuffer,
-        seqlen_offset: usize,
-    ) -> Result<(StateBuffer, RuntimeProfile)> {
-        direct_decoder::text_model_forward_hidden_states_profiled_direct_hip_v1(
-            self,
-            metadata,
-            hidden_states,
-            seqlen_offset,
-        )
-    }
-
-    pub(crate) fn validate_direct_hip_metadata(
-        &self,
-        metadata: &PreparedQwen35DirectMetadata,
-    ) -> Result<()> {
-        direct_decoder::validate_text_model_direct_hip_metadata(self, metadata)
-    }
-
-    pub(crate) fn finalize_direct_decode_hidden_hip_v1(
-        &mut self,
-        xs: &StateBuffer,
-    ) -> Result<StateBuffer> {
-        direct_decoder::text_model_finalize_direct_decode_hidden_hip_v1(self, xs)
-    }
-
-    pub fn forward(&mut self, input_ids: &Tensor, seqlen_offset: usize) -> Result<Tensor> {
-        self.forward_profiled(input_ids, seqlen_offset)
-            .map(|(output, _)| output)
-    }
-
     pub fn clear_kv_cache(&mut self) {
         for layer in self.layers.iter_mut() {
             layer.clear_kv_cache();
