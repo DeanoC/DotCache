@@ -1412,6 +1412,31 @@ impl TextModel {
             self.persistent_decode_cache.as_mut().unwrap()
         };
 
+        // Validate descriptors: check for null weight pointers
+        for (i, d) in descs.iter().enumerate() {
+            if d.input_norm_w.is_null() || d.gate_proj_w.is_null() || d.down_proj_w.is_null() {
+                candle::bail!("persistent decode: layer {i} has null common weight pointers");
+            }
+            if d.layer_type == 0 {
+                // Linear attention
+                if d.qkv_proj_w.is_null() || d.conv1d_w.is_null() || d.linear_out_proj_w.is_null() {
+                    candle::bail!("persistent decode: linear layer {i} has null projection weights");
+                }
+                if d.conv_state.is_null() || d.recurrent_state.is_null() {
+                    candle::bail!("persistent decode: linear layer {i} has null state (conv={} rec={})",
+                        !d.conv_state.is_null(), !d.recurrent_state.is_null());
+                }
+            } else {
+                // Full attention
+                if d.q_proj_w.is_null() || d.o_proj_w.is_null() {
+                    candle::bail!("persistent decode: full attn layer {i} has null projection weights");
+                }
+                if d.kv_cache_k.is_null() || d.kv_cache_v.is_null() {
+                    candle::bail!("persistent decode: full attn layer {i} has null KV cache");
+                }
+            }
+        }
+
         // Re-upload descriptors (kv_len changes every token)
         if desc_bytes > cache.desc_capacity {
             super::hip::free_device_bytes(cache.ordinal, cache.desc_ptr);
@@ -1441,6 +1466,20 @@ impl TextModel {
                 bytes,
             )?;
             let hidden_io_ptr = o_hip.raw_device_ptr_with_offset(o_l.start_offset())? as *mut c_void;
+
+            // Verify input copy worked: read back first 4 BF16 values
+            {
+                let mut check = [0u16; 4];
+                super::hip::copy_device_to_host(
+                    ordinal,
+                    check.as_mut_ptr() as *mut c_void,
+                    hidden_io_ptr as *const c_void,
+                    8,
+                )?;
+                let vals: Vec<f32> = check.iter().map(|&v| half::bf16::from_bits(v).to_f32()).collect();
+                eprintln!("[persistent] pre-kernel hidden_io[0..4] = {vals:?}");
+            }
+
             drop(h_s); drop(o_s);
 
             let t0 = std::time::Instant::now();
