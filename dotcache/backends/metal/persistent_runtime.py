@@ -5438,8 +5438,22 @@ class PersistentFullAttentionState:
             if cache_refresh_ms > 0.0:
                 telemetry.require_layer(int(layer_id)).mixed_execution_cache_refresh_ms_total += float(cache_refresh_ms)
             if initial_comp_error is not None:
-                layers[int(layer_id)].block_k_comp_error.copy_(
-                    torch.as_tensor(initial_comp_error, dtype=torch.float32, device=resolved_device)
+                initial_comp_error_tensor = torch.as_tensor(
+                    initial_comp_error, dtype=torch.float32, device=resolved_device
+                )
+                layers[int(layer_id)].block_k_comp_error.copy_(initial_comp_error_tensor)
+                # Widen block_k_comp_error_dim to be consistent with the scalar override.
+                # If the prefill-derived scalar error > locally-recomputed per-dim error for
+                # any dimension, inflate that dimension to the scalar.  This is always sound:
+                # ||residual||_2 >= |residual_j| for every j, so scalar is a valid per-dim
+                # upper bound.  Without this, the interval bound could use a per-dim envelope
+                # that is tighter than the certified scalar, breaking pruning safety for
+                # metadata-driven M0 blocks.
+                scalar_expanded = initial_comp_error_tensor.unsqueeze(-1).expand_as(
+                    layers[int(layer_id)].block_k_comp_error_dim
+                )
+                layers[int(layer_id)].block_k_comp_error_dim.copy_(
+                    torch.maximum(layers[int(layer_id)].block_k_comp_error_dim, scalar_expanded)
                 )
                 layers[int(layer_id)].block_compression_metadata_valid[...] = initial_compression_valid
                 _refresh_cuda_block_selection_caches(layers[int(layer_id)])
