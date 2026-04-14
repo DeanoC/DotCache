@@ -359,6 +359,28 @@ So the current best cheap recommendation is surprisingly simple:
 - instead, keep the frontier and lower layer `15` to `0.20`
 - that beats both the current baseline and the prompt-length split heuristics on the checked-in portable studies
 
+### 5. Round-2 residual tie boundary (post-fix interpretation)
+
+After the fixed `state_cache_roadmap` handoff handling, the substantial divergence family is gone:
+
+- `state_cache_roadmap` now matches dense in the fixed-tree round-2 suites
+- `submission_execution_plan` is no longer part of the core two-case suspect pair, and is now resolved on both MPS and CUDA fixed-tree reruns
+
+The remaining `performance_journal` residue is now a late tied-token boundary rather than a Stage 9 mixed regression:
+
+- CUDA fixed-tree dense / non-`M0` / conservative generate:
+  - `[198, 220, 471, 1510, 77518, 28, 15, 7561]`
+- CUDA fixed-tree real mixed generates:
+  - `[198, 220, 471, 1510, 77518, 28, 16, 7561]`
+- at the disputed step:
+  - dense token `15` = `20.625`, token `16` = `20.625`
+  - non-`M0` token `15` = `20.625`, token `16` = `20.625`
+  - real mixed token `15` = `20.625`, token `16` = `20.640625`
+- the first real-mixed vs non-`M0` drift appears upstream at full-attention layer `3`
+- forced capture shows direct-`M0` / `final_mix` matches a float32 recompute on the same inputs to within about `5.7e-06`
+
+That behavior is best treated as tiny upstream mixed-path numeric drift before argmax, not a `final_mix` helper bug and not a priority serving-path blocker.
+
 That is not the final policy yet, but it is the strongest current small-policy candidate to test in the live runtime.
 
 ### 5. Hard-case explanation
@@ -378,7 +400,17 @@ The current state is good enough to say:
 - real mixed key-side `M0` execution is real
 - the best real mixed `bias` path is now the measured serving winner on the main MPS benchmarks
 
-The remaining work is mainly about confidence, portability, and understanding the residual hard frontier, not about proving basic viability anymore.
+The remaining work is mainly about portability and performance headroom, not about proving correctness or basic viability anymore.
+
+On CUDA specifically, that performance story is now beginning to harden into a real default baseline rather than one-off experiments:
+
+- native CUDA `final_mix` is now the default supported mixed-mode path
+- fused query-first combined-cache `direct_m0_score` is now the default fast-score path when the combined cache is available
+- native CUDA generic mixed stream-stats `final_mix` is now the default supported path when shape limits fit
+- together those kept changes improved the checked fixed-tree CUDA probes without changing exact-match vs hand
+- the strongest recent gain is from the generic mixed stream-stats `final_mix` kernel, which cuts that bucket by about `48%` on both checked probes
+
+That means the next CUDA work is not about deciding whether mixed should be enabled. It is about widening the remaining headroom from the new baseline, with the next likely limiter now shifting toward `direct_m0_score` plus `gather`.
 
 ## CUDA read so far
 
@@ -427,3 +459,25 @@ So the current thesis should now be stated precisely:
 - but the gap is now much narrower and more localized than before
 
 That is a strong research result, not a failure. It means the method transfers, while the best runtime realization still depends on backend-specific systems work.
+
+## Current spec read
+
+Relative to the original Stage 9 thesis/spec shape in this note, the current repo status now looks like this:
+
+- demonstrated:
+  - block metadata, ordering signals, and fallback structure
+  - certified streaming in the actual serving loop
+  - conservative certified execution
+  - mixed key-side `M0` execution in the actual serving loop
+  - cross-backend viability on MPS and CUDA
+  - real-mixed serving wins on the checked portable corpora for both backends
+- effectively closed for the public validation story:
+  - the earlier round-2 structural divergence family
+  - the remaining `performance_journal` residual as a correctness blocker
+- still outside the demonstrated scope:
+  - value-side `M0`
+  - learned ordering/scoring
+  - larger-model practical serving evidence on this MPS host
+  - broader shape-coverage accounting for the newest CUDA native stream-stats path
+
+So against the original spec, the core thesis now looks demonstrated. The remaining work is mostly systems optimization and boundary-mapping, not proof of principle.

@@ -29,6 +29,13 @@ torch::Tensor softmax_value_context_cuda_launcher(
     torch::Tensor values,
     double query_scale);
 
+std::vector<torch::Tensor> softmax_value_stream_stats_cuda_launcher(
+    torch::Tensor logits,
+    torch::Tensor token_block_ids,
+    torch::Tensor values,
+    int64_t block_count,
+    double query_scale);
+
 namespace {
 
 void check_cuda(const torch::Tensor& tensor, const char* name) {
@@ -209,8 +216,49 @@ torch::Tensor softmax_value_context_cuda(
         query_scale);
 }
 
+std::vector<torch::Tensor> softmax_value_stream_stats_cuda(
+    torch::Tensor logits,
+    torch::Tensor token_block_ids,
+    torch::Tensor values,
+    int64_t block_count,
+    double query_scale) {
+    check_cuda(logits, "logits");
+    check_cuda(token_block_ids, "token_block_ids");
+    check_cuda(values, "values");
+
+    auto logits_c = logits.contiguous();
+    auto token_block_ids_c = token_block_ids.contiguous();
+    auto values_c = values.contiguous();
+
+    TORCH_CHECK(logits_c.scalar_type() == torch::kFloat32, "logits must be float32");
+    TORCH_CHECK(
+        token_block_ids_c.scalar_type() == torch::kInt64
+            || token_block_ids_c.scalar_type() == torch::kInt32,
+        "token_block_ids must be int32/int64");
+    TORCH_CHECK(
+        values_c.scalar_type() == torch::kFloat32
+            || values_c.scalar_type() == torch::kFloat16,
+        "values must be float32/float16");
+    TORCH_CHECK(logits_c.dim() == 2, "logits must have shape [query_count, token_count]");
+    TORCH_CHECK(token_block_ids_c.dim() == 1, "token_block_ids must have shape [token_count]");
+    TORCH_CHECK(values_c.dim() == 2, "values must have shape [token_count, head_dim]");
+    TORCH_CHECK(logits_c.size(1) == token_block_ids_c.size(0), "logits/token_block_ids token dimension mismatch");
+    TORCH_CHECK(logits_c.size(1) == values_c.size(0), "logits/value token dimension mismatch");
+    TORCH_CHECK(values_c.size(1) <= 256, "values head_dim must be <= 256");
+    TORCH_CHECK(logits_c.size(1) <= 256, "logits token_count must be <= 256");
+    TORCH_CHECK(block_count > 0 && block_count <= 32, "block_count must be in [1, 32]");
+
+    return softmax_value_stream_stats_cuda_launcher(
+        logits_c,
+        token_block_ids_c,
+        values_c,
+        block_count,
+        query_scale);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("fused_selected_blocks_context_cuda", &fused_selected_blocks_context_cuda, "Fused selected-block direct-M0 CUDA");
     m.def("fused_selected_blocks_stream_stats_cuda", &fused_selected_blocks_stream_stats_cuda, "Fused selected-block direct-M0 CUDA stream stats");
     m.def("softmax_value_context_cuda", &softmax_value_context_cuda, "Fused softmax/value reduction CUDA");
+    m.def("softmax_value_stream_stats_cuda", &softmax_value_stream_stats_cuda, "Fused softmax/value/block-stats CUDA");
 }

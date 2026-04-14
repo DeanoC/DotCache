@@ -1,0 +1,44 @@
+{
+  "records": [
+    {
+      "case_tag": "performance_journal",
+      "prompt_file_path": "../../docs/performance_journal.md",
+      "prompt_length": 2048
+    },
+    {
+      "case_tag": "page_selection_standardized_eval",
+      "prompt_file_path": "../../docs/dotcache_page_selection_standardized_evaluation.md",
+      "prompt_length": 2048
+    },
+    {
+      "case_tag": "gemma4_apple_compatibility",
+      "prompt_file_path": "../../docs/gemma4_apple_compatibility.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "statecache_showcase",
+      "prompt_file_path": "../../docs/qwen35_statecache_showcase.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "state_cache_roadmap",
+      "prompt_file_path": "../../docs/state_cache_roadmap.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "bench_gguf_external_code",
+      "prompt_file_path": "../../benchmarks/bench_gguf_external.py",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "inspect_policy_prefill_code",
+      "prompt_file_path": "../../benchmarks/inspect_policy_prefill.py",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "real_mixed_probe_test_code",
+      "prompt_file_path": "../../tests/test_bench_qwen35_persistent_real_mixed_probe.py",
+      "prompt_length": 1536
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "records": [
+    {
+      "case_tag": "state_cache_roadmap",
+      "prompt_file_path": "../../docs/state_cache_roadmap.md",
+      "prompt_length": 1345
+    }
+  ]
+}

@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import tracemalloc
+import types
 from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Sequence
@@ -1068,17 +1069,24 @@ def _build_persistent_prefill_block_metadata(
 
 
 def _replace_attention_subset_cache_with_placeholders(cache: Any, layer_ids: list[int]) -> None:
+    logical_seq_length = 0
     for layer_id in layer_ids:
         layer_keys = _cache_component_value(cache, "key_cache", layer_id)
         layer_values = _cache_component_value(cache, "value_cache", layer_id)
         if layer_keys is None or layer_values is None:
             continue
+        logical_seq_length = max(logical_seq_length, int(layer_keys.shape[2]))
         key_placeholder = layer_keys[:, :, :0, :].contiguous()
         value_placeholder = layer_values[:, :, :0, :].contiguous()
         if not _set_cache_component_value(cache, "key_cache", layer_id, key_placeholder):
             raise ValueError(f"Qwen3.5 attention layer {layer_id} key cache is not mutable")
         if not _set_cache_component_value(cache, "value_cache", layer_id, value_placeholder):
             raise ValueError(f"Qwen3.5 attention layer {layer_id} value cache is not mutable")
+    _install_attention_subset_logical_seq_length(
+        cache,
+        seq_length=int(logical_seq_length),
+        layer_ids=[int(layer_id) for layer_id in layer_ids],
+    )
 
 
 def _advance_attention_subset_cache_placeholder(cache: Any, layer_id: int) -> None:
@@ -1087,10 +1095,12 @@ def _advance_attention_subset_cache_placeholder(cache: Any, layer_id: int) -> No
     if layer_keys is None or layer_values is None:
         return
     if layer_keys.shape[2] == 0 or layer_values.shape[2] == 0:
+        _advance_attention_subset_logical_seq_length(cache, layer_id=layer_id)
         return
     if not _set_cache_component_value(cache, "key_cache", layer_id, torch.cat([layer_keys, layer_keys[:, :, :1, :]], dim=2)):
         return
     _set_cache_component_value(cache, "value_cache", layer_id, torch.cat([layer_values, layer_values[:, :, :1, :]], dim=2))
+    _advance_attention_subset_logical_seq_length(cache, layer_id=layer_id)
 
 
 def _clone_qwen35_past_key_values(cache: Any) -> Any:
@@ -1315,6 +1325,47 @@ def _cache_component_layer_attr_names(attr_name: str) -> tuple[str, ...]:
     if attr_name == "recurrent_states":
         return ("recurrent_states", "recurrent_state")
     return (attr_name,)
+
+
+_QWEN35_ATTENTION_SUBSET_LOGICAL_SEQ_LENGTH_ATTR = "_dotcache_qwen35_attention_subset_logical_seq_length"
+_QWEN35_ATTENTION_SUBSET_LAYER_IDS_ATTR = "_dotcache_qwen35_attention_subset_layer_ids"
+_QWEN35_ATTENTION_SUBSET_ORIGINAL_GET_SEQ_LENGTH_ATTR = "_dotcache_qwen35_attention_subset_original_get_seq_length"
+
+
+def _install_attention_subset_logical_seq_length(cache: Any, *, seq_length: int, layer_ids: list[int]) -> None:
+    if not hasattr(cache, "get_seq_length"):
+        return
+    tracked_layer_ids = tuple(sorted(int(layer_id) for layer_id in layer_ids))
+    setattr(cache, _QWEN35_ATTENTION_SUBSET_LOGICAL_SEQ_LENGTH_ATTR, int(max(seq_length, 0)))
+    setattr(cache, _QWEN35_ATTENTION_SUBSET_LAYER_IDS_ATTR, tracked_layer_ids)
+    if hasattr(cache, _QWEN35_ATTENTION_SUBSET_ORIGINAL_GET_SEQ_LENGTH_ATTR):
+        return
+    original_get_seq_length = getattr(cache, "get_seq_length", None)
+    if not callable(original_get_seq_length):
+        return
+    setattr(cache, _QWEN35_ATTENTION_SUBSET_ORIGINAL_GET_SEQ_LENGTH_ATTR, original_get_seq_length)
+
+    def _logical_get_seq_length(self, layer_idx: int = 0) -> int:
+        logical_seq_length = getattr(self, _QWEN35_ATTENTION_SUBSET_LOGICAL_SEQ_LENGTH_ATTR, None)
+        tracked = tuple(getattr(self, _QWEN35_ATTENTION_SUBSET_LAYER_IDS_ATTR, ()))
+        if logical_seq_length is not None and (int(layer_idx) == 0 or int(layer_idx) in tracked):
+            return int(logical_seq_length)
+        original = getattr(self, _QWEN35_ATTENTION_SUBSET_ORIGINAL_GET_SEQ_LENGTH_ATTR, None)
+        if callable(original):
+            return int(original(layer_idx))
+        return 0
+
+    cache.get_seq_length = types.MethodType(_logical_get_seq_length, cache)
+
+
+def _advance_attention_subset_logical_seq_length(cache: Any, *, layer_id: int) -> None:
+    logical_seq_length = getattr(cache, _QWEN35_ATTENTION_SUBSET_LOGICAL_SEQ_LENGTH_ATTR, None)
+    tracked_layer_ids = tuple(getattr(cache, _QWEN35_ATTENTION_SUBSET_LAYER_IDS_ATTR, ()))
+    if logical_seq_length is None or not tracked_layer_ids:
+        return
+    if int(layer_id) != int(tracked_layer_ids[0]):
+        return
+    setattr(cache, _QWEN35_ATTENTION_SUBSET_LOGICAL_SEQ_LENGTH_ATTR, int(logical_seq_length) + 1)
 
 
 @dataclass(slots=True)

@@ -108,6 +108,20 @@ Important CUDA observation:
 - the updated real-mixed CUDA path is no longer just a research lane on every corpus
 - it now beats the same-tree non-`M0` baseline on all three portable corpora
 - the remaining CUDA work is about increasing headroom, not proving mixed viability
+- the remaining `performance_journal` tail diff is now localized to tiny upstream mixed-path numeric drift before argmax
+- forced CUDA capture shows direct-`M0` / `final_mix` matches float32 recompute very closely, so `final_mix` is not the correctness bug
+- the current fixed-tree CUDA default baseline now includes:
+  - native CUDA `final_mix` default-on
+  - fused query-first combined-cache `direct_m0_score` default-on
+  - native CUDA generic mixed stream-stats `final_mix` default-on when shape limits fit
+  - Triton scorer / fused paths still experimental only
+- the kept gains are modest but clean:
+  - native `final_mix` improved end-to-end latency by about `1.98%` on `performance_journal` and `0.73%` on the round-2 repo-local public-validation subset
+  - fused query-first `direct_m0_score` then improved end-to-end latency by another `0.42%` on `performance_journal` and `0.72%` on the same round-2 subset
+  - native mixed stream-stats `final_mix` then improved end-to-end latency by another `2.67%` on `performance_journal` and `0.77%` on the same round-2 subset
+- the dominant CUDA hotspot reduction is now real:
+  - generic mixed `final_mix` drops by about `48%` on both checked probes
+- that leaves CUDA focused on the post-`final_mix` secondary buckets, especially `direct_m0_score` plus `gather`, rather than on proving the `final_mix` direction itself
 
 ## CUDA baselines on the same portable corpus
 
@@ -200,19 +214,21 @@ If we had to choose today:
 - CUDA:
   - prefer real mixed Stage 9 `bias`
   - keep the CUDA mixed path focused on reducing `final_mix`
+  - treat native `final_mix` plus fused query-first scorer plus native mixed stream-stats `final_mix` as the current default baseline
 
 ## Immediate next work
 
 The current CUDA optimization target should not be phrased as "make mixed work at all." It already works and now wins on all three portable corpora in same-tree comparisons.
 
-The real CUDA question is:
+The real CUDA question is now:
 
-- can the remaining `final_mix` cost be reduced enough to widen the current mixed headroom, especially on `external`
+- how much additional headroom remains once the new stream-stats `final_mix` kernel is active
+- and whether the next limiter is now primarily `direct_m0_score` plus `gather`, especially on `external`
 
 That makes the next split very clean:
 
 - CUDA:
-  - optimize the remaining mixed `final_mix` realization, especially on `external`
+  - optimize the post-`final_mix` mixed path, especially `direct_m0_score` plus `gather` on `external`
 - local/MPS:
   - keep documenting the backend comparison honestly
   - keep the portable MPS reference bundles current

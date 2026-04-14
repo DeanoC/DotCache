@@ -1,0 +1,44 @@
+{
+  "records": [
+    {
+      "case_tag": "benchmark_report",
+      "prompt_file_path": "../../docs/benchmark_report.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "local_layer_profiles",
+      "prompt_file_path": "../../docs/local_layer_profiles.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "hip_call_flow",
+      "prompt_file_path": "../../docs/qwen35_hip_prompt_to_output_call_flow.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "compressed_page_rfc",
+      "prompt_file_path": "../../docs/dotcache_compressed_page_test_readiness_rfc.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "aae_stage_summary",
+      "prompt_file_path": "../../docs/aae_dotcache_stage_progress_summary_20260413.md",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "turboquant_comparison_plan",
+      "prompt_file_path": "../../docs/turboquant_comparison_plan.md",
+      "prompt_length": 1024
+    },
+    {
+      "case_tag": "bench_decode_code",
+      "prompt_file_path": "../../benchmarks/bench_decode.py",
+      "prompt_length": 1536
+    },
+    {
+      "case_tag": "test_attention_vs_dense",
+      "prompt_file_path": "../../tests/test_attention_vs_dense.py",
+      "prompt_length": 1024
+    }
+  ]
+}

@@ -9,22 +9,19 @@ from typing import Any
 _EXTENSION = None
 
 
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _native_enabled() -> bool:
-    return os.environ.get("DOTCACHE_ENABLE_NATIVE_DIRECT_M0", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return _env_flag("DOTCACHE_ENABLE_NATIVE_DIRECT_M0", default=False)
 
 
 def _native_final_mix_enabled() -> bool:
-    return os.environ.get("DOTCACHE_ENABLE_NATIVE_DIRECT_M0_FINAL_MIX", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return _env_flag("DOTCACHE_ENABLE_NATIVE_DIRECT_M0_FINAL_MIX", default=True)
 
 
 def native_direct_m0_available() -> bool:
@@ -35,7 +32,13 @@ def native_direct_m0_available() -> bool:
         from torch.utils.cpp_extension import CUDA_HOME
     except Exception:
         return False
-    return bool(torch.cuda.is_available() and CUDA_HOME)
+    if not (torch.cuda.is_available() and CUDA_HOME):
+        return False
+    try:
+        _load_extension()
+    except Exception:
+        return False
+    return True
 
 
 def native_direct_m0_final_mix_available() -> bool:
@@ -46,7 +49,13 @@ def native_direct_m0_final_mix_available() -> bool:
         from torch.utils.cpp_extension import CUDA_HOME
     except Exception:
         return False
-    return bool(torch.cuda.is_available() and CUDA_HOME)
+    if not (torch.cuda.is_available() and CUDA_HOME):
+        return False
+    try:
+        _load_extension()
+    except Exception:
+        return False
+    return True
 
 
 def _load_extension():
@@ -139,5 +148,23 @@ def softmax_value_context_cuda(
     return ext.softmax_value_context_cuda(
         logits,
         values,
+        float(query_scale),
+    )
+
+
+def softmax_value_stream_stats_cuda(
+    *,
+    logits: Any,
+    token_block_ids: Any,
+    values: Any,
+    block_count: int,
+    query_scale: float,
+):
+    ext = _load_extension()
+    return ext.softmax_value_stream_stats_cuda(
+        logits,
+        token_block_ids,
+        values,
+        int(block_count),
         float(query_scale),
     )
