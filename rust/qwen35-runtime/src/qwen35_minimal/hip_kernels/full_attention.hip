@@ -3524,19 +3524,10 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
 
                     float* conv_out = gate_up;  // reuse MLP scratch for conv output
                     for (int c = tid; c < conv_dim; c += bs) {
-                        float acc = 0.0f;
-                        // conv_state has kern-1 past values
-                        for (int t = 0; t < kern - 1; ++t) {
-                            float x = dotcache_qwen35_to_float(cs[c * (kern-1) + t]);
-                            float w = dotcache_qwen35_to_float(cw[c * kern + t]);
-                            acc += x * w;
-                        }
-                        // Current value
-                        float w_last = dotcache_qwen35_to_float(cw[c * kern + (kern-1)]);
-                        acc += static_cast<float>(dotcache_qwen35_from_float<T>(qkv_f32[c])) * w_last;
-                        // Wait, qkv_f32 is F32 — convert to BF16 for consistency
+                        // Depthwise conv: sum(state[t] * weight[t]) + new_value * weight[kern-1]
+                        // Match standard path: convert new value to BF16 for consistency
                         T qkv_bf16 = dotcache_qwen35_from_float<T>(qkv_f32[c]);
-                        acc = 0.0f;
+                        float acc = 0.0f;
                         for (int t = 0; t < kern - 1; ++t) {
                             acc += dotcache_qwen35_to_float(cs[c * (kern-1) + t])
                                  * dotcache_qwen35_to_float(cw[c * kern + t]);
