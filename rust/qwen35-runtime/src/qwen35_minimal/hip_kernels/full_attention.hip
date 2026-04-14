@@ -3644,7 +3644,7 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     }
                 }
 
-                // Step D: SiLU(z) gating (TODO: add per-head RMSNorm + weight)
+                // Step D: Gated SiLU only (norm TODO)
                 {
                     for (int d = tid; d < val_dim; d += bs) {
                         float zv = z_f32[d];
