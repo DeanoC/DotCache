@@ -56,7 +56,11 @@ from dotcache.integrations.qwen35 import (
     run_qwen35_attention_subset_persistent_serving_harness,
     run_qwen35_text_generation_harness,
     transformers_available,
+    _run_dense_prefill,
+    _clone_qwen35_past_key_values,
+    _run_dense_decode_step,
 )
+from dotcache.integrations.llama import _timed_call, _synchronize_device
 
 
 _DEFAULT_MANIFEST = (
@@ -100,6 +104,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-file-target-length", type=int, default=0)
     parser.add_argument("--lanes", nargs="*", default=None,
                         help="Subset of lane names to run (default: all three)")
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Decode steps to run as a throwaway warmup once before any timed lane run. "
+            "Primes Triton JIT and CUDA kernel caches.  Default: 1."
+        ),
+    )
+    parser.add_argument(
+        "--no-shared-prefill",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable shared-prefill optimisation.  By default all three lanes share a "
+            "single prefill per case (avoids 2 redundant prefill passes per case). "
+            "Pass this flag to revert to the original per-lane prefill behaviour."
+        ),
+    )
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-md", default=None)
     return parser.parse_args()
@@ -142,6 +166,126 @@ def _extract_telemetry(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_all_lanes_for_case(
+    *,
+    lanes: list[dict[str, Any]],
+    model,
+    adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
+    input_ids: Any,
+    attention_mask: Any,
+    decode_steps: int,
+    warmup_steps: int,
+    dense_reference_ids: list[int],
+    case_tag: str,
+) -> dict[str, dict[str, Any]]:
+    """Run all *lanes* on one prompt using a single shared prefill pass.
+
+    The prefill (dense forward on the full prompt) is identical for every lane
+    since only the decode-phase bound mode differs.  Running it once and cloning
+    the resulting KV-cache state for each lane avoids (len(lanes)-1) redundant
+    O(N²) prefill passes per case.
+
+    A single warmup pass using the first lane is also done here before any
+    timed measurement.
+    """
+    device = next(model.parameters()).device
+
+    # Run one shared prefill
+    prefill_outputs, _ = _timed_call(
+        lambda: _run_dense_prefill(model, input_ids=input_ids, attention_mask=attention_mask),
+        device=device,
+    )
+    first_decode_input = prefill_outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+
+    def _decode_from_prefill_clone(serving_config: Any, n_steps: int) -> dict[str, Any]:
+        """Load a fresh clone of the prefill cache into *adapter* and run *n_steps* decode steps."""
+        pkv_clone = _clone_qwen35_past_key_values(prefill_outputs.past_key_values)
+        adapter.persistent_serving_config = serving_config
+        adapter.clear()
+        adapter.load_attention_subset_persistent_prefill_cache(pkv_clone)
+        adapter.set_mode("dotcache_attention_subset_persistent_experimental")
+        adapter.configure_persistent_shortlist_policy_context(
+            prompt_family=None,
+            prompt_length=int(input_ids.shape[1]),
+        )
+        runtime_state = adapter.require_persistent_hybrid_runtime_state()
+
+        current_input_ids = first_decode_input.clone()
+        current_attention_mask = torch.cat(
+            [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device=device)],
+            dim=1,
+        )
+        cache_position = torch.tensor([input_ids.shape[1]], dtype=torch.long, device=device)
+        decode_ms_total = 0.0
+        generated_ids: list[int] = []
+
+        for _ in range(n_steps):
+            generated_ids.append(int(current_input_ids.item()))
+            outputs, step_ms = _timed_call(
+                lambda: _run_dense_decode_step(
+                    model,
+                    decode_input_ids=current_input_ids,
+                    attention_mask=current_attention_mask,
+                    past_key_values=runtime_state.model_past_key_values,
+                    cache_position=cache_position,
+                ),
+                device=device,
+            )
+            decode_ms_total += step_ms
+            runtime_state.advance(outputs.past_key_values)
+            current_input_ids = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            current_attention_mask = torch.cat(
+                [current_attention_mask, torch.ones((1, 1), dtype=current_attention_mask.dtype, device=device)],
+                dim=1,
+            )
+            cache_position = cache_position + 1
+
+        return {
+            "decode_ms_per_step": float(decode_ms_total / max(n_steps, 1)),
+            "generated_ids": generated_ids,
+            "runtime_state": runtime_state,
+        }
+
+    # Warmup: throw-away decode run using the first lane's config
+    if warmup_steps > 0:
+        _decode_from_prefill_clone(_build_serving_config_for_lane(lanes[0]), warmup_steps)
+
+    # Timed runs — one per lane, each gets a fresh prefill clone
+    results: dict[str, dict[str, Any]] = {}
+    for lane in lanes:
+        serving_config = _build_serving_config_for_lane(lane)
+        run = _decode_from_prefill_clone(serving_config, decode_steps)
+
+        runtime_state = run["runtime_state"]
+        decode_ms_per_step = run["decode_ms_per_step"]
+        generated_ids = run["generated_ids"]
+        dense_cmp = dense_reference_ids[:decode_steps]
+        exact_match = bool(generated_ids == dense_cmp and len(generated_ids) >= decode_steps)
+
+        # Collect telemetry from the adapter/runtime state directly
+        tel = _extract_telemetry(runtime_state.summary())
+        results[lane["name"]] = {
+            "case_tag": case_tag,
+            "decode_ms_per_step": float(decode_ms_per_step),
+            "exact_match_vs_dense": bool(exact_match),
+            "score_ms_total": float(tel["score_ms_total"]),
+            "selection_ms_total": float(tel["selection_ms_total"]),
+            "executed_m0_blocks_total": int(tel["executed_m0_blocks_total"]),
+            "executed_m3_blocks_total": int(tel["executed_m3_blocks_total"]),
+            "first_certified_stop_blocks": int(tel["first_certified_stop_blocks"]),
+            "last_checkpoint_count": int(tel["last_checkpoint_count"]),
+        }
+        print(
+            f"  [{lane['name']}] {case_tag}: "
+            f"{decode_ms_per_step:.2f} ms/step, "
+            f"exact={exact_match}, "
+            f"M0={tel['executed_m0_blocks_total']} M3={tel['executed_m3_blocks_total']}, "
+            f"cert_stop_blocks={tel['first_certified_stop_blocks']}, "
+            f"checkpoints={tel['last_checkpoint_count']}"
+        )
+    return results
+
+
 def _run_one_lane(
     *,
     lane: dict[str, Any],
@@ -151,7 +295,14 @@ def _run_one_lane(
     adapter: Qwen35AttentionSubsetDotCacheModelAdapter,
     dense_results_by_case: dict[str, list[int]],
     decode_steps: int,
+    warmup_steps: int = 0,
+    _warmup_done: list[bool] | None = None,
 ) -> list[dict[str, Any]]:
+    """Original per-lane runner (used when --no-shared-prefill is passed).
+
+    Runs one warmup call on the first case of the first lane if warmup_steps > 0
+    and *_warmup_done* is a single-element list whose first element is False.
+    """
     serving_config = _build_serving_config_for_lane(lane)
     records: list[dict[str, Any]] = []
     for prompt_record in prompt_records:
@@ -164,6 +315,17 @@ def _run_one_lane(
             prompt_text=prompt_text,
             prompt_length=int(prompt_record.get("prompt_length", 0)),
         )
+        # Warmup: once before the very first timed run across all lanes
+        if warmup_steps > 0 and _warmup_done is not None and not _warmup_done[0]:
+            run_qwen35_attention_subset_persistent_serving_harness(
+                model,
+                adapter,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=warmup_steps,
+                persistent_serving_config=serving_config,
+            )
+            _warmup_done[0] = True
         result = run_qwen35_attention_subset_persistent_serving_harness(
             model,
             adapter,
@@ -369,18 +531,53 @@ def main() -> None:
         print(f"  [dense] {case_tag}: {len(all_dense_ids)} tokens generated, keeping first {args.decode_steps}")
 
     # Step 2: Per-lane serving runs
-    lane_records: dict[str, list[dict[str, Any]]] = {}
-    for lane in active_lanes:
-        print(f"\n--- Lane: {lane['label']} ---")
-        lane_records[lane["name"]] = _run_one_lane(
-            lane=lane,
-            prompt_records=prompt_records,
-            model=persistent_model,
-            tokenizer=persistent_tokenizer,
-            adapter=persistent_adapter,
-            dense_results_by_case=dense_results_by_case,
-            decode_steps=int(args.decode_steps),
-        )
+    use_shared_prefill = not bool(args.no_shared_prefill)
+    print(f"\n--- Lane runs (shared_prefill={use_shared_prefill}, warmup_steps={args.warmup_steps}) ---")
+    lane_records: dict[str, list[dict[str, Any]]] = {lane["name"]: [] for lane in active_lanes}
+
+    if use_shared_prefill:
+        # All lanes share a single prefill per case — avoids (N_lanes-1) redundant
+        # O(N²) prefill passes per case.
+        for prompt_record in prompt_records:
+            case_tag = str(prompt_record["case_tag"])
+            prompt_text = Path(str(prompt_record["prompt_file_path"])).read_text(encoding="utf-8")
+            device = next(persistent_model.parameters()).device
+            input_ids, attention_mask = _build_prompt_text_inputs(
+                persistent_tokenizer,
+                device=device,
+                prompt_text=prompt_text,
+                prompt_length=int(prompt_record.get("prompt_length", 0)),
+            )
+            print(f"\n[case: {case_tag}]")
+            case_lane_results = _run_all_lanes_for_case(
+                lanes=active_lanes,
+                model=persistent_model,
+                adapter=persistent_adapter,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=int(args.decode_steps),
+                warmup_steps=int(args.warmup_steps),
+                dense_reference_ids=dense_results_by_case.get(case_tag, []),
+                case_tag=case_tag,
+            )
+            for lane in active_lanes:
+                lane_records[lane["name"]].append(case_lane_results[lane["name"]])
+    else:
+        # Original per-lane runner (--no-shared-prefill)
+        _warmup_done: list[bool] = [False]
+        for lane in active_lanes:
+            print(f"\n--- Lane: {lane['label']} ---")
+            lane_records[lane["name"]] = _run_one_lane(
+                lane=lane,
+                prompt_records=prompt_records,
+                model=persistent_model,
+                tokenizer=persistent_tokenizer,
+                adapter=persistent_adapter,
+                dense_results_by_case=dense_results_by_case,
+                decode_steps=int(args.decode_steps),
+                warmup_steps=int(args.warmup_steps),
+                _warmup_done=_warmup_done,
+            )
 
     # Step 3: Summarize
     lane_summaries = {

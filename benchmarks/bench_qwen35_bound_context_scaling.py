@@ -126,6 +126,29 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--lanes", nargs="*", default=None,
                         help="Subset of lane names to run (default: all three)")
+    parser.add_argument(
+        "--cert-tracking-steps",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Number of single-step harness calls used to sample cert_stop_rate. "
+            "Each call re-runs a full prefill, so this is expensive. "
+            "0 (default) skips cert tracking entirely and reports last-step cert from "
+            "the timing run instead.  Set to 16 to restore the original behaviour."
+        ),
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Decode steps to run as a throwaway warmup before the timed measurement. "
+            "Warms Triton JIT compilation and CUDA kernel caches so the timing run "
+            "does not include first-step compile overhead.  Default: 1."
+        ),
+    )
     parser.add_argument("--prompt-file", default=None,
                         help="Optional base text file for prompt (padded/truncated to each context length)")
     parser.add_argument("--output-json", default=None)
@@ -191,34 +214,53 @@ def _run_lane_at_context(
     attention_mask: Any,
     decode_steps: int,
     dense_reference_ids: list[int] | None,
+    warmup_steps: int = 1,
+    cert_tracking_steps: int = 0,
 ) -> dict[str, Any]:
-    """Run one lane at one context length; return per-step timing + cert_stop_rate."""
+    """Run one lane at one context length; return per-step timing + cert_stop_rate.
+
+    Execution order
+    ---------------
+    1. Warmup (warmup_steps > 0): throw-away harness call to prime Triton JIT
+       and CUDA kernel caches so the timed run is not polluted by cold-start.
+    2. Optional cert tracking (cert_tracking_steps > 0): N single-step harness
+       calls to sample whether each decode step issues a certified early exit.
+       Each call re-runs a full prefill, so keep N small (or 0).
+       When cert_tracking_steps=0 the cert_stop flag is taken from the last
+       step of the timing run instead (cheap, no extra prefill).
+    3. Timed N-step run: one harness call with decode_steps=N for accurate
+       avg ms/step (amortises CUDA synchronisation overhead across N steps).
+    """
     serving_config = _build_serving_config(lane)
 
-    # Track cert_stop_rate by running one step at a time.
-    # Re-use the same prefill by calling the harness with decode_steps=1 in a loop.
-    # Each call re-runs prefill — expensive, but ensures accurate cert_stop tracking.
-    # For the context-scaling benchmark the timing signal of interest is per-step
-    # decode latency, which we measure from the multi-step run below.
-    #
-    # Two-pass approach:
-    #   Pass 1 — N single-step calls to count certified exits (cert_stop_rate)
-    #   Pass 2 — one N-step call for accurate avg ms/step (amortises CUDA synchronisation)
-
-    cert_stop_count = 0
-    for _ in range(decode_steps):
-        single = run_qwen35_attention_subset_persistent_serving_harness(
+    # --- Warmup ---
+    if warmup_steps > 0:
+        run_qwen35_attention_subset_persistent_serving_harness(
             model,
             adapter,
             input_ids=input_ids,
             attention_mask=attention_mask,
-            decode_steps=1,
+            decode_steps=warmup_steps,
             persistent_serving_config=serving_config,
         )
-        if _has_cert_stop(single):
-            cert_stop_count += 1
 
-    # Multi-step run for ms/step
+    # --- Optional cert tracking (each call re-runs prefill: expensive) ---
+    cert_stop_count: int | None = None
+    if cert_tracking_steps > 0:
+        cert_stop_count = 0
+        for _ in range(cert_tracking_steps):
+            single = run_qwen35_attention_subset_persistent_serving_harness(
+                model,
+                adapter,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decode_steps=1,
+                persistent_serving_config=serving_config,
+            )
+            if _has_cert_stop(single):
+                cert_stop_count += 1
+
+    # --- Timed N-step run ---
     result = run_qwen35_attention_subset_persistent_serving_harness(
         model,
         adapter,
@@ -232,7 +274,15 @@ def _run_lane_at_context(
     score_ms_per_step = (
         _sum_by_layer(result, "persistent_full_attention_score_ms_total_by_layer") / max(decode_steps, 1)
     )
-    cert_stop_rate = float(cert_stop_count) / max(decode_steps, 1)
+
+    # cert_stop_rate: if cert tracking was enabled use the sampled rate;
+    # otherwise report whether the timing run's last step issued a cert exit.
+    if cert_tracking_steps > 0 and cert_stop_count is not None:
+        cert_stop_rate: float | None = float(cert_stop_count) / max(cert_tracking_steps, 1)
+    else:
+        # Last-step cert from the timing run (not a true rate; 0.0 or 1.0)
+        cert_stop_rate = 1.0 if _has_cert_stop(result) else 0.0
+        cert_stop_count = int(cert_stop_rate)
 
     generated_ids = [int(t) for t in result.get("persistent_generated_ids", [])]
     exact_match: bool | None = None
@@ -244,8 +294,8 @@ def _run_lane_at_context(
         "lane": str(lane["name"]),
         "decode_ms_per_step": float(decode_ms_per_step),
         "score_ms_per_step": float(score_ms_per_step),
-        "cert_stop_rate": float(cert_stop_rate),
-        "cert_stop_count": int(cert_stop_count),
+        "cert_stop_rate": float(cert_stop_rate) if cert_stop_rate is not None else None,
+        "cert_stop_count": int(cert_stop_count) if cert_stop_count is not None else None,
         "decode_steps": int(decode_steps),
         "exact_match_vs_dense": exact_match,
     }
@@ -363,13 +413,27 @@ def _render_markdown(
             row += f" {score_ms:.2f} |"
         lines.append(row)
 
+    cert_tracking_steps = int(payload.get("cert_tracking_steps", 0))
+    warmup_steps = int(payload.get("warmup_steps", 0))
     lines += [
         "",
         "## Notes",
         "",
-        "- cert_stop_rate is measured by running single-step harness calls (N=decode_steps)",
-        "  and checking whether any FA layer issued a certified exit in each step.",
-        "- ms/step is from a separate N-step run to amortise CUDA sync overhead.",
+    ]
+    if cert_tracking_steps > 0:
+        lines.append(
+            f"- cert_stop_rate: sampled from {cert_tracking_steps} single-step harness calls "
+            "(each re-runs a full prefill)."
+        )
+    else:
+        lines.append(
+            "- cert_stop_rate: taken from the last decode step of the timed N-step run "
+            "(0.0 or 1.0 per lane per context; not a true across-step rate). "
+            "Use --cert-tracking-steps N to sample across N independent prefills."
+        )
+    lines += [
+        f"- warmup_steps={warmup_steps}: throwaway harness call(s) before each timed run.",
+        "- ms/step is from a single N-step run to amortise CUDA sync overhead.",
         "- Dense reference is skipped for contexts above --max-dense-length (default: none).",
     ]
     if int(payload.get("max_dense_length", 0)) > 0:
@@ -483,6 +547,8 @@ def main() -> None:
                 attention_mask=attention_mask,
                 decode_steps=int(args.decode_steps),
                 dense_reference_ids=dense_reference_ids,
+                warmup_steps=int(args.warmup_steps),
+                cert_tracking_steps=int(args.cert_tracking_steps),
             )
             lane_results[lane["name"]] = r
             print(
@@ -545,6 +611,8 @@ def main() -> None:
         "active_lanes": [lane["name"] for lane in active_lanes],
         "decode_steps": int(args.decode_steps),
         "max_dense_length": int(max_dense_length),
+        "warmup_steps": int(args.warmup_steps),
+        "cert_tracking_steps": int(args.cert_tracking_steps),
         "model_id": str(args.model_id),
         "device": str(args.device),
         "backend": str(args.backend),
