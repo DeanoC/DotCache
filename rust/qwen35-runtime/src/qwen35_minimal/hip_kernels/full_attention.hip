@@ -3138,7 +3138,7 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
     const T* __restrict__ cos_table,   // [max_positions, rotary_dim/2] RoPE cos
     const T* __restrict__ sin_table,   // [max_positions, rotary_dim/2] RoPE sin
     int rotary_dim                      // partial rotary dimension (64 for Qwen3.5)
-) {
+) __attribute__((launch_bounds(256, 1))) {
     const int tid = threadIdx.x;
     const int bs = blockDim.x;
     const int nb = gridDim.x;
@@ -3582,26 +3582,9 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     float* conv_out = gate_up;  // reused
                     float* state = static_cast<float*>(L.recurrent_state);
 
-                    // Compute beta from b_f32: beta = sigmoid(b)
-                    // Compute decay: g = -softplus(a + dt_bias) * a_log_exp
-                    //                  = -log(1 + exp(a + dt_bias)) * a_log_exp
-                    float beta_vals[16];
-                    float decay_vals[16];  // exp(g) per head
+                    // Beta and decay computed per-iteration to minimize VGPR pressure
                     const T* dt_bw = static_cast<const T*>(L.dt_bias_w);
                     const T* ale_w = static_cast<const T*>(L.a_log_exp_w);
-                    for (int h = 0; h < nv && h < 16; ++h) {
-                        beta_vals[h] = 1.0f / (1.0f + expf(-b_f32[h]));
-                        if (dt_bw != nullptr && ale_w != nullptr) {
-                            float a_val = a_f32[h];
-                            float dt_b = dotcache_qwen35_to_float(dt_bw[h]);
-                            float a_le = dotcache_qwen35_to_float(ale_w[h]);
-                            float sp = logf(1.0f + expf(a_val + dt_b));
-                            float g = -sp * a_le;
-                            decay_vals[h] = expf(g);
-                        } else {
-                            decay_vals[h] = 1.0f;  // no decay
-                        }
-                    }
 
                     const int q_key_offset = 0;
                     const int k_key_offset = key_dim;
@@ -3614,8 +3597,14 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
 
                         if (h < nv) {
                             float* sh = state + h * hkd * hvd;
-                            const float beta = beta_vals[h];
-                            const float decay = decay_vals[h];
+                            // Compute beta = sigmoid(b) and decay = exp(g) for this head only
+                            const float beta = 1.0f / (1.0f + expf(-b_f32[h]));
+                            float decay = 1.0f;
+                            if (dt_bw != nullptr && ale_w != nullptr) {
+                                float sp = logf(1.0f + expf(
+                                    a_f32[h] + dotcache_qwen35_to_float(dt_bw[h])));
+                                decay = expf(-sp * dotcache_qwen35_to_float(ale_w[h]));
+                            }
 
                             // Apply decay: state *= exp(g)
                             for (int k = 0; k < hkd; ++k) {

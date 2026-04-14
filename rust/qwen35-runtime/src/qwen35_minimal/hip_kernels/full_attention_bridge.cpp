@@ -4437,8 +4437,10 @@ int persistent_decode_device(
         static_cast<const T*>(cos_table),
         static_cast<const T*>(sin_table),
         rotary_dim);
-    if (hipGetLastError() != hipSuccess) return 254;
-    if (hipDeviceSynchronize() != hipSuccess) return 255;
+    hipError_t launch_err = hipGetLastError();
+    hipError_t sync_err = hipDeviceSynchronize();
+    if (launch_err != hipSuccess) return 254;
+    if (sync_err != hipSuccess) return 255;
     return 0;
 }
 

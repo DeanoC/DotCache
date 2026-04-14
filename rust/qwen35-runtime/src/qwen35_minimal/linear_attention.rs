@@ -118,7 +118,8 @@ impl GatedDeltaNet {
             } else if let Some(ref cs) = self.conv_state {
                 cs.device().clone()
             } else {
-                candle::bail!("persistent desc: no state tensors to determine device");
+                // Fallback: get device from a weight tensor
+                self.out_proj.weight.device().clone()
             };
             let dtype = DType::BF16;
             let (dt_bias, a_log_exp) = self.value_cache(&device, dtype)?;
