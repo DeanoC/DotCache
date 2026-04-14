@@ -40,6 +40,88 @@ pub(super) struct DecoderLayer {
     pub(super) post_attention_layernorm: Qwen35RmsNorm,
 }
 
+/// Cached device buffers for megakernel scratch, avoiding per-call hipMalloc/hipFree.
+/// Protected by a mutex for safety but only accessed from the decode hot path.
+#[cfg(feature = "qwen35-minimal-hip")]
+pub(super) mod megakernel_scratch {
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+
+    static SCRATCH: Mutex<Option<ScratchState>> = Mutex::new(None);
+
+    struct ScratchState {
+        device_ordinal: usize,
+        counter_ptr: *mut c_void,
+        proj_table_ptr: *mut c_void,
+        proj_table_capacity: usize,
+        mlp_scratch_ptr: *mut c_void,
+        mlp_scratch_capacity: usize,
+    }
+    unsafe impl Send for ScratchState {}
+
+    pub(crate) fn get_counter(ordinal: usize) -> candle_core::Result<*mut c_void> {
+        let mut guard = SCRATCH.lock().unwrap();
+        let state = guard.get_or_insert_with(|| {
+            let counter = super::super::hip::alloc_device_bytes(ordinal, 4).expect("alloc counter");
+            ScratchState {
+                device_ordinal: ordinal,
+                counter_ptr: counter,
+                proj_table_ptr: std::ptr::null_mut(),
+                proj_table_capacity: 0,
+                mlp_scratch_ptr: std::ptr::null_mut(),
+                mlp_scratch_capacity: 0,
+            }
+        });
+        Ok(state.counter_ptr)
+    }
+
+    pub(crate) fn get_proj_table(ordinal: usize, bytes: usize) -> candle_core::Result<*mut c_void> {
+        let mut guard = SCRATCH.lock().unwrap();
+        let state = guard.get_or_insert_with(|| {
+            let counter = super::super::hip::alloc_device_bytes(ordinal, 4).expect("alloc counter");
+            ScratchState {
+                device_ordinal: ordinal,
+                counter_ptr: counter,
+                proj_table_ptr: std::ptr::null_mut(),
+                proj_table_capacity: 0,
+                mlp_scratch_ptr: std::ptr::null_mut(),
+                mlp_scratch_capacity: 0,
+            }
+        });
+        if state.proj_table_capacity < bytes {
+            if !state.proj_table_ptr.is_null() {
+                super::super::hip::free_device_bytes(state.device_ordinal, state.proj_table_ptr);
+            }
+            state.proj_table_ptr = super::super::hip::alloc_device_bytes(ordinal, bytes)?;
+            state.proj_table_capacity = bytes;
+        }
+        Ok(state.proj_table_ptr)
+    }
+
+    pub(crate) fn get_mlp_scratch(ordinal: usize, bytes: usize) -> candle_core::Result<*mut c_void> {
+        let mut guard = SCRATCH.lock().unwrap();
+        let state = guard.get_or_insert_with(|| {
+            let counter = super::super::hip::alloc_device_bytes(ordinal, 4).expect("alloc counter");
+            ScratchState {
+                device_ordinal: ordinal,
+                counter_ptr: counter,
+                proj_table_ptr: std::ptr::null_mut(),
+                proj_table_capacity: 0,
+                mlp_scratch_ptr: std::ptr::null_mut(),
+                mlp_scratch_capacity: 0,
+            }
+        });
+        if state.mlp_scratch_capacity < bytes {
+            if !state.mlp_scratch_ptr.is_null() {
+                super::super::hip::free_device_bytes(state.device_ordinal, state.mlp_scratch_ptr);
+            }
+            state.mlp_scratch_ptr = super::super::hip::alloc_device_bytes(ordinal, bytes)?;
+            state.mlp_scratch_capacity = bytes;
+        }
+        Ok(state.mlp_scratch_ptr)
+    }
+}
+
 impl DecoderLayer {
     #[cfg(any(feature = "hf", test))]
     fn new(
@@ -194,10 +276,10 @@ impl DecoderLayer {
 
         let intermediate_size = gate_w.dim(0)?;
 
-        // Allocate scratch buffers (F32 for gate+up, atomic counter)
+        // Use cached scratch buffers (allocated once, reused across calls)
         let scratch_bytes = intermediate_size * 2 * std::mem::size_of::<f32>();
-        let scratch_ptr = super::hip::alloc_device_bytes(ordinal, scratch_bytes)?;
-        let counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
+        let scratch_ptr = megakernel_scratch::get_mlp_scratch(ordinal, scratch_bytes)?;
+        let counter_ptr = megakernel_scratch::get_counter(ordinal)?;
 
         // Allocate output tensor on device — stays on GPU
         let out_tensor = Tensor::zeros(
@@ -222,8 +304,6 @@ impl DecoderLayer {
         let (Storage::Hip(h_s), Storage::Hip(nw_s), Storage::Hip(gw_s), Storage::Hip(uw_s), Storage::Hip(dw_s)) =
             (&*h_storage, &*nw_storage, &*gw_storage, &*uw_storage, &*dw_storage)
         else {
-            super::hip::free_device_bytes(ordinal, scratch_ptr);
-            super::hip::free_device_bytes(ordinal, counter_ptr);
             candle::bail!("mlp megakernel: all tensors must be on HIP");
         };
 
@@ -252,9 +332,7 @@ impl DecoderLayer {
         drop(gw_storage);
         drop(uw_storage);
         drop(dw_storage);
-
-        super::hip::free_device_bytes(ordinal, scratch_ptr);
-        super::hip::free_device_bytes(ordinal, counter_ptr);
+        // scratch_ptr and counter_ptr are cached — not freed here
 
         if status != 0 {
             candle::bail!("mlp-decode-megakernel: HIP kernel failed with status {status}");

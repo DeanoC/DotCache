@@ -860,11 +860,10 @@ impl FullAttention {
             ];
 
             let table_bytes = std::mem::size_of_val(&proj_table);
-            let table_ptr = super::hip::alloc_device_bytes(ordinal, table_bytes)?;
+            let table_ptr = super::decoder::megakernel_scratch::get_proj_table(ordinal, table_bytes)?;
             if let Err(e) = super::hip::copy_host_to_device(
                 ordinal, table_ptr, proj_table.as_ptr() as *const c_void, table_bytes,
             ) {
-                super::hip::free_device_bytes(ordinal, table_ptr);
                 return Err(e.into());
             }
 
@@ -876,7 +875,7 @@ impl FullAttention {
             let output_device_ptr =
                 out_s.raw_device_ptr_with_offset(out_layout.start_offset())? as *mut c_void;
 
-            let counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
+            let counter_ptr = super::decoder::megakernel_scratch::get_counter(ordinal)?;
 
             let status = unsafe {
                 super::hip::ffi::dotcache_qwen35_hip_norm_multi_proj(
@@ -889,8 +888,7 @@ impl FullAttention {
                 )
             };
 
-            super::hip::free_device_bytes(ordinal, table_ptr);
-            super::hip::free_device_bytes(ordinal, counter_ptr);
+            // table_ptr and counter_ptr are cached — not freed here
 
             if status != 0 {
                 candle::bail!("fused_norm_qkv: kernel failed with status {status}");
