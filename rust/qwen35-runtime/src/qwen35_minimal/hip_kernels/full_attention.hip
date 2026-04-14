@@ -2490,6 +2490,104 @@ __global__ void dotcache_qwen35_rms_norm_kernel(
     }
 }
 
+// Fused RMSNorm + Matrix-Vector Product kernel for single-token decode.
+//
+// Computes: out[i] = dot(W[i, :], rms_norm(hidden)) for each output row i.
+//
+// Phase 1: All threads in the block cooperatively compute the RMSNorm of the
+//          hidden vector and store the F32 normalized result in shared memory.
+// Phase 2: Each block computes one dot product of W[blockIdx.x, :] with the
+//          shared normalized vector, producing one output element.
+//
+// This keeps the normalized hidden in F32 throughout (no BF16 round-trip),
+// which eliminates the BF16 quantization noise between RMSNorm and projection
+// that accumulates across decoder layers.
+//
+// Grid:  (out_dim, 1, 1)
+// Block: (BLOCK_SIZE, 1, 1)  where BLOCK_SIZE <= 256
+//
+// Requires shared memory: hidden_dim * sizeof(float) + BLOCK_SIZE * sizeof(float)
+template <typename T, bool ADD_UNIT_OFFSET>
+__global__ void dotcache_qwen35_fused_rms_norm_linear_kernel(
+    int hidden_dim,
+    int out_dim,
+    float eps,
+    const T* __restrict__ hidden,
+    const T* __restrict__ norm_weight,
+    const T* __restrict__ proj_weight,
+    T* __restrict__ out
+) {
+    const int out_row = blockIdx.x;
+    if (out_row >= out_dim) return;
+
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+
+    // Shared memory layout:
+    //   [0 .. hidden_dim-1]:          F32 normalized hidden vector
+    //   [hidden_dim .. hidden_dim+block_size-1]: reduction scratch
+    extern __shared__ float shared_mem[];
+    float* shared_normed = shared_mem;
+    float* shared_scratch = shared_mem + hidden_dim;
+
+    // Phase 1: Compute RMSNorm — only block 0 needs to write shared_normed,
+    // but ALL blocks need the same result. Since each block runs independently,
+    // every block recomputes the norm (hidden_dim=1024 is cheap).
+
+    // 1a: Accumulate sum of squares
+    float partial_sq = 0.0f;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        const float x = dotcache_qwen35_to_float(hidden[col]);
+        partial_sq += x * x;
+    }
+    shared_scratch[tid] = partial_sq;
+    __syncthreads();
+
+    // 1b: Tree reduction for sum of squares
+    for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_scratch[tid] += shared_scratch[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    // 1c: Compute inv_rms and write normalized vector to shared memory
+    __shared__ float shared_inv_rms;
+    if (tid == 0) {
+        shared_inv_rms = rsqrtf(shared_scratch[0] / static_cast<float>(hidden_dim) + eps);
+    }
+    __syncthreads();
+
+    const float inv_rms = shared_inv_rms;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        const float x = dotcache_qwen35_to_float(hidden[col]);
+        const float w = dotcache_qwen35_to_float(norm_weight[col]) + (ADD_UNIT_OFFSET ? 1.0f : 0.0f);
+        shared_normed[col] = x * inv_rms * w;
+    }
+    __syncthreads();
+
+    // Phase 2: Dot product of proj_weight[out_row, :] with shared_normed
+    const T* w_row = proj_weight + static_cast<size_t>(out_row) * static_cast<size_t>(hidden_dim);
+
+    float partial_dot = 0.0f;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        partial_dot += dotcache_qwen35_to_float(w_row[col]) * shared_normed[col];
+    }
+    shared_scratch[tid] = partial_dot;
+    __syncthreads();
+
+    for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_scratch[tid] += shared_scratch[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        out[out_row] = dotcache_qwen35_from_float<T>(shared_scratch[0]);
+    }
+}
+
 template <typename T>
 __global__ void dotcache_qwen35_rms_norm_gated_kernel(
     int n_rows,

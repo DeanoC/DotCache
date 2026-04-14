@@ -518,6 +518,13 @@ impl LinearSource {
     pub(super) fn is_deferred(&self) -> bool {
         matches!(self, Self::Deferred(_))
     }
+
+    pub(super) fn weight_tensor(&self) -> Result<Tensor> {
+        match self {
+            Self::Materialized(linear) => Ok(linear.weight.clone()),
+            Self::Deferred(linear) => Ok(linear.ensure_materialized()?.weight.clone()),
+        }
+    }
 }
 
 fn profile_sync_enabled(device: &Device) -> bool {
@@ -1142,6 +1149,105 @@ impl Qwen35RmsNorm {
     pub(super) fn eps(&self) -> f64 {
         self.eps
     }
+
+    /// Fused RMSNorm + linear projection for single-token decode.
+    /// Keeps the normalized hidden vector in F32 throughout, avoiding the
+    /// BF16 round-trip between norm and projection.
+    /// Returns None if the fused kernel is not available (non-HIP, multi-token, etc.)
+    #[cfg(feature = "qwen35-minimal-hip")]
+    pub(super) fn fused_norm_and_linear_buffer(
+        &self,
+        xs: &StateBuffer,
+        proj_weight: &Tensor,
+    ) -> Result<Option<StateBuffer>> {
+        use candle::Storage;
+        use std::ffi::c_void;
+
+        let xs = xs.contiguous()?;
+        let (b_sz, seq_len, hidden_dim) = xs.dims3()?;
+        if b_sz != 1 || seq_len != 1 {
+            return Ok(None);
+        }
+        let ordinal = match xs.device().location() {
+            DeviceLocation::Hip { gpu_id } => gpu_id,
+            _ => return Ok(None),
+        };
+        let Ok(dtype_code) = super::hip::dtype_code(xs.tensor().dtype()) else {
+            return Ok(None);
+        };
+        let weight = self.weight.contiguous()?;
+        let proj_weight = proj_weight.contiguous()?;
+        if xs.tensor().dtype() != weight.dtype() || xs.tensor().dtype() != proj_weight.dtype() {
+            return Ok(None);
+        }
+        if !proj_weight.device().same_device(xs.device())
+            || !weight.device().same_device(xs.device())
+        {
+            return Ok(None);
+        }
+        let (out_dim, proj_hidden) = proj_weight.dims2()?;
+        if proj_hidden != hidden_dim || weight.elem_count() != hidden_dim {
+            return Ok(None);
+        }
+
+        let (xs_storage, xs_layout) = xs.tensor().storage_and_layout();
+        let (w_storage, w_layout) = weight.storage_and_layout();
+        let (pw_storage, pw_layout) = proj_weight.storage_and_layout();
+        let (Storage::Hip(xs_storage), Storage::Hip(w_storage), Storage::Hip(pw_storage)) =
+            (&*xs_storage, &*w_storage, &*pw_storage)
+        else {
+            return Ok(None);
+        };
+        if !(xs_layout.is_contiguous() && w_layout.is_contiguous() && pw_layout.is_contiguous()) {
+            return Ok(None);
+        }
+
+        let out_bytes = out_dim * xs.tensor().dtype().size_in_bytes();
+        let mut out = vec![0u8; out_bytes];
+        let host_ptr = out.as_mut_ptr() as *const c_void;
+        let device_ptr =
+            super::hip::register_host_mapping_for_device(ordinal, host_ptr, out_bytes)?;
+        let status = unsafe {
+            super::hip::ffi::dotcache_qwen35_hip_fused_rms_norm_linear(
+                dtype_code,
+                ordinal,
+                hidden_dim,
+                out_dim,
+                self.eps as f32,
+                1, // add_unit_offset = true for Qwen35 RMSNorm
+                xs_storage
+                    .raw_device_ptr_with_offset(xs_layout.start_offset())? as *const c_void,
+                w_storage
+                    .raw_device_ptr_with_offset(w_layout.start_offset())? as *const c_void,
+                pw_storage
+                    .raw_device_ptr_with_offset(pw_layout.start_offset())? as *const c_void,
+                device_ptr as *mut c_void,
+            )
+        };
+        super::hip::unregister_host_mapping(host_ptr);
+        if status != 0 {
+            return Err(super::hip::hip_error(
+                "dotcache-hip-fused-rms-norm-linear",
+                status,
+            ));
+        }
+        super::model::hip_tensor_from_host_bytes(
+            xs.device(),
+            xs.tensor().dtype(),
+            vec![1, 1, out_dim],
+            out,
+        )
+        .map(|t| Some(StateBuffer::from_tensor(t).expect("fused rms norm linear output")))
+    }
+
+    #[cfg(not(feature = "qwen35-minimal-hip"))]
+    pub(super) fn fused_norm_and_linear_buffer(
+        &self,
+        _xs: &StateBuffer,
+        _proj_weight: &Tensor,
+    ) -> Result<Option<StateBuffer>> {
+        Ok(None)
+    }
 }
 
 impl Module for Qwen35RmsNorm {
@@ -1277,6 +1383,36 @@ impl Mlp {
             backend.tensor_to_buffer((gate.tensor().apply(&self.act_fn)? * up.tensor())?)?
         };
         self.down_proj.forward_buffer(&hidden)
+    }
+
+    /// Fused RMSNorm + MLP forward for single-token decode.
+    /// Takes the pre-norm hidden state and the norm layer, fusing the norm
+    /// into the gate_proj and up_proj matmuls.
+    /// Returns None if the fused kernel is not available, in which case the
+    /// caller should fall back to the separate norm + forward_buffer path.
+    pub(super) fn fused_norm_forward_buffer(
+        &self,
+        pre_norm_hidden: &StateBuffer,
+        norm: &Qwen35RmsNorm,
+    ) -> Result<Option<StateBuffer>> {
+        let gate_weight = self.gate_proj.weight_tensor()?;
+        let up_weight = self.up_proj.weight_tensor()?;
+        let fused_gate = norm.fused_norm_and_linear_buffer(pre_norm_hidden, &gate_weight)?;
+        let fused_up = norm.fused_norm_and_linear_buffer(pre_norm_hidden, &up_weight)?;
+        match (fused_gate, fused_up) {
+            (Some(gate), Some(up)) => {
+                let backend = backend_buffer_api::for_device(pre_norm_hidden.device());
+                let hidden = if matches!(self.act_fn, Activation::Silu) {
+                    backend.swiglu_mul(&gate, &up)?
+                } else {
+                    backend.tensor_to_buffer(
+                        (gate.tensor().apply(&self.act_fn)? * up.tensor())?,
+                    )?
+                };
+                Ok(Some(self.down_proj.forward_buffer(&hidden)?))
+            }
+            _ => Ok(None),
+        }
     }
 
     pub(super) fn trace_buffer(&self, xs: &StateBuffer) -> Result<super::types::MlpTrace> {

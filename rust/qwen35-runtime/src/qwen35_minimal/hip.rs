@@ -556,6 +556,19 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_fused_rms_norm_linear(
+            dtype: c_int,
+            device_ordinal: usize,
+            hidden_dim: usize,
+            out_dim: usize,
+            eps: f32,
+            add_unit_offset: c_int,
+            hidden: *const c_void,
+            norm_weight: *const c_void,
+            proj_weight: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_swiglu_mul(
             dtype: c_int,
             device_ordinal: usize,

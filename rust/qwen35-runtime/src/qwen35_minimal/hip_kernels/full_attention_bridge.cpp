@@ -1805,6 +1805,39 @@ int rms_norm_device(
     return 0;
 }
 
+template <typename T, bool ADD_UNIT_OFFSET>
+int fused_rms_norm_linear_device(
+    int device_ordinal,
+    int hidden_dim,
+    int out_dim,
+    float eps,
+    const void* hidden,
+    const void* norm_weight,
+    const void* proj_weight,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const size_t shared_bytes =
+        static_cast<size_t>(hidden_dim) * sizeof(float) + block * sizeof(float);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_fused_rms_norm_linear_kernel<T, ADD_UNIT_OFFSET>),
+        dim3(static_cast<unsigned int>(out_dim)),
+        dim3(block),
+        shared_bytes,
+        0,
+        hidden_dim,
+        out_dim,
+        eps,
+        static_cast<const T*>(hidden),
+        static_cast<const T*>(norm_weight),
+        static_cast<const T*>(proj_weight),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 130;
+    if (hipDeviceSynchronize() != hipSuccess) return 131;
+    return 0;
+}
+
 template <typename T>
 int rms_norm_gated_device(
     int device_ordinal,
@@ -3964,6 +3997,83 @@ extern "C" int dotcache_qwen35_hip_rms_norm(
                   out);
     default:
         return 74;
+    }
+}
+
+extern "C" int dotcache_qwen35_hip_fused_rms_norm_linear(
+    int dtype,
+    size_t device_ordinal,
+    size_t hidden_dim,
+    size_t out_dim,
+    float eps,
+    int add_unit_offset,
+    const void* hidden,
+    const void* norm_weight,
+    const void* proj_weight,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return add_unit_offset
+            ? fused_rms_norm_linear_device<half, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out)
+            : fused_rms_norm_linear_device<half, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out);
+    case 1:
+        return add_unit_offset
+            ? fused_rms_norm_linear_device<float, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out)
+            : fused_rms_norm_linear_device<float, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out);
+    case 2:
+        return add_unit_offset
+            ? fused_rms_norm_linear_device<hip_bfloat16, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out)
+            : fused_rms_norm_linear_device<hip_bfloat16, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out);
+    default:
+        return 132;
     }
 }
 

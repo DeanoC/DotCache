@@ -9,7 +9,7 @@ use candle_nn::Init;
 
 #[derive(Clone, Debug)]
 pub struct Linear {
-    weight: Tensor,
+    pub(super) weight: Tensor,
     bias: Option<Tensor>,
 }
 
