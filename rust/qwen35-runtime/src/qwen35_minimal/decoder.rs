@@ -21,7 +21,7 @@ use super::types::{
 use super::with_tracing::linear_no_bias;
 use super::with_tracing::Linear;
 use crate::PreparedQwen35DirectMetadata;
-use candle::{DType, Device, Result, Tensor};
+use candle::{DType, Device, DeviceLocation, Result, Tensor};
 use candle_core as candle;
 use std::sync::Arc;
 
@@ -133,6 +133,123 @@ impl DecoderLayer {
         StateBuffer::from_tensor(sum)
     }
 
+    fn use_mlp_megakernel(device: &Device, xs: &StateBuffer) -> bool {
+        if !matches!(device.location(), DeviceLocation::Hip { .. }) {
+            return false;
+        }
+        let Ok((_, seq_len, _)) = xs.dims3() else {
+            return false;
+        };
+        if seq_len != 1 {
+            return false;
+        }
+        matches!(
+            std::env::var("CANDLE_QWEN35_MLP_MEGAKERNEL").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        )
+    }
+
+    #[cfg(feature = "qwen35-minimal-hip")]
+    fn mlp_megakernel_forward(
+        &self,
+        pre_norm_hidden: &StateBuffer,
+        norm: &Qwen35RmsNorm,
+    ) -> Result<StateBuffer> {
+        use candle::Storage;
+        use std::ffi::c_void;
+
+        let hidden = pre_norm_hidden.contiguous()?;
+        let (b_sz, seq_len, hidden_dim) = hidden.dims3()?;
+        if b_sz != 1 || seq_len != 1 {
+            candle::bail!("mlp_megakernel requires batch=1 seq=1, got b={b_sz} s={seq_len}");
+        }
+        let ordinal = match hidden.device().location() {
+            DeviceLocation::Hip { gpu_id } => gpu_id,
+            _ => candle::bail!("mlp_megakernel requires HIP device"),
+        };
+        let dtype_code = super::hip::dtype_code(hidden.tensor().dtype())
+            .map_err(|e| candle::Error::Msg(format!("mlp megakernel dtype: {e}")))?;
+
+        let (gate_w, up_w, down_w) = self.mlp.weight_tensors()?;
+        let norm_w = norm.weight().contiguous()?;
+        let gate_w = gate_w.contiguous()?;
+        let up_w = up_w.contiguous()?;
+        let down_w = down_w.contiguous()?;
+
+        let intermediate_size = gate_w.dim(0)?;
+
+        // Allocate scratch buffers (F32 for gate+up, atomic counter)
+        let scratch_bytes = intermediate_size * 2 * std::mem::size_of::<f32>();
+        let scratch_ptr = super::hip::alloc_device_bytes(ordinal, scratch_bytes)?;
+        let counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
+
+        // Allocate output buffer
+        let out_bytes = hidden_dim * hidden.tensor().dtype().size_in_bytes();
+        let mut out_host = vec![0u8; out_bytes];
+        let host_ptr = out_host.as_mut_ptr() as *const c_void;
+        let out_device_ptr =
+            super::hip::register_host_mapping_for_device(ordinal, host_ptr, out_bytes)?;
+
+        // Extract device pointers
+        let (h_storage, h_layout) = hidden.tensor().storage_and_layout();
+        let (nw_storage, nw_layout) = norm_w.storage_and_layout();
+        let (gw_storage, gw_layout) = gate_w.storage_and_layout();
+        let (uw_storage, uw_layout) = up_w.storage_and_layout();
+        let (dw_storage, dw_layout) = down_w.storage_and_layout();
+
+        let (Storage::Hip(h_s), Storage::Hip(nw_s), Storage::Hip(gw_s), Storage::Hip(uw_s), Storage::Hip(dw_s)) =
+            (&*h_storage, &*nw_storage, &*gw_storage, &*uw_storage, &*dw_storage)
+        else {
+            super::hip::free_device_bytes(ordinal, scratch_ptr);
+            super::hip::free_device_bytes(ordinal, counter_ptr);
+            super::hip::unregister_host_mapping(host_ptr);
+            candle::bail!("mlp megakernel: all tensors must be on HIP");
+        };
+
+        let status = unsafe {
+            super::hip::ffi::dotcache_qwen35_hip_mlp_decode_megakernel(
+                dtype_code,
+                ordinal,
+                hidden_dim,
+                intermediate_size,
+                norm.eps() as f32,
+                h_s.raw_device_ptr_with_offset(h_layout.start_offset())? as *const c_void,
+                nw_s.raw_device_ptr_with_offset(nw_layout.start_offset())? as *const c_void,
+                gw_s.raw_device_ptr_with_offset(gw_layout.start_offset())? as *const c_void,
+                uw_s.raw_device_ptr_with_offset(uw_layout.start_offset())? as *const c_void,
+                dw_s.raw_device_ptr_with_offset(dw_layout.start_offset())? as *const c_void,
+                scratch_ptr as *mut c_void,
+                out_device_ptr as *mut c_void,
+                counter_ptr as *mut c_void,
+            )
+        };
+
+        super::hip::free_device_bytes(ordinal, scratch_ptr);
+        super::hip::free_device_bytes(ordinal, counter_ptr);
+        super::hip::unregister_host_mapping(host_ptr);
+
+        if status != 0 {
+            candle::bail!("mlp-decode-megakernel: HIP kernel failed with status {status}");
+        }
+
+        super::model::hip_tensor_from_host_bytes(
+            hidden.device(),
+            hidden.tensor().dtype(),
+            vec![1, 1, hidden_dim],
+            out_host,
+        )
+        .map(|t| StateBuffer::from_tensor(t).expect("mlp megakernel output"))
+    }
+
+    #[cfg(not(feature = "qwen35-minimal-hip"))]
+    fn mlp_megakernel_forward(
+        &self,
+        _pre_norm_hidden: &StateBuffer,
+        _norm: &Qwen35RmsNorm,
+    ) -> Result<StateBuffer> {
+        candle::bail!("mlp megakernel requires qwen35-minimal-hip feature")
+    }
+
     fn forward_profiled_with_external(
         &mut self,
         layer_id: usize,
@@ -167,9 +284,13 @@ impl DecoderLayer {
         };
         let xs = Self::f32_residual_add(&residual, &xs, hidden_dtype)?;
         let residual = xs.clone();
-        let xs = self.post_attention_layernorm.forward_buffer(&xs)?;
         let mlp_start = profile_start(device)?;
-        let xs = self.mlp.forward_buffer(&xs)?;
+        let xs = if Self::use_mlp_megakernel(device, &xs) {
+            self.mlp_megakernel_forward(&xs, &self.post_attention_layernorm)?
+        } else {
+            let normed = self.post_attention_layernorm.forward_buffer(&xs)?;
+            self.mlp.forward_buffer(&normed)?
+        };
         profile.mlp_millis += profile_elapsed(mlp_start, device)?;
         Ok((Self::f32_residual_add(&residual, &xs, hidden_dtype)?, profile))
     }

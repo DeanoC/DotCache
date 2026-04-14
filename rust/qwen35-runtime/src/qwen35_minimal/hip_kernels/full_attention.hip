@@ -2691,3 +2691,209 @@ __global__ void dotcache_qwen35_rms_norm_gated_kernel(
             dotcache_qwen35_from_float<T>(x * shared_inv_rms * weight_val * gate_silu);
     }
 }
+
+// =============================================================================
+// Persistent MLP decode megakernel (v2 — block-level reduction)
+//
+// Fuses: RMSNorm + gate_proj + up_proj + SwiGLU + down_proj for one layer.
+// All CUs cooperate via atomic work-stealing for the matvec rows.
+//
+// v2 change: uses full-block (256-thread) reduction for dot products instead
+// of wave-level (32-thread). This matches the accuracy of the block-wide
+// RMSNorm reduction and avoids the accumulation errors from 32-wide reduction
+// of 1024-element dot products.
+//
+// Grid:  (num_blocks, 1, 1) — typically 16 (one per CU)
+// Block: (block_size, 1, 1) — typically 256 (8 waves × 32 lanes)
+//
+// LDS layout:
+//   shared_hidden[hidden_dim]  : F32 — input hidden state
+//   shared_normed[hidden_dim]  : F32 — RMSNorm output
+//   shared_scratch[block_size] : F32 — reduction scratch
+//
+// Global scratch: gate_up_buf[intermediate_size * 2] F32 — holds gate and up projections
+// =============================================================================
+
+// Device-side wave-level sum reduction (Wave32 on RDNA3.5)
+__device__ inline float dotcache_qwen35_wave_reduce_sum(float val) {
+    for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+        val += __shfl_down(val, offset);
+    }
+    return val;
+}
+
+template <typename T>
+__global__ void dotcache_qwen35_mlp_decode_megakernel(
+    int hidden_dim,           // 1024
+    int intermediate_size,    // 3584
+    float norm_eps,
+    const T* __restrict__ hidden_in,      // [hidden_dim] input hidden state
+    const T* __restrict__ norm_weight,    // [hidden_dim] RMSNorm weight
+    const T* __restrict__ gate_proj_w,    // [intermediate_size, hidden_dim]
+    const T* __restrict__ up_proj_w,      // [intermediate_size, hidden_dim]
+    const T* __restrict__ down_proj_w,    // [hidden_dim, intermediate_size]
+    float* __restrict__ gate_up_scratch,  // [intermediate_size * 2] global scratch
+    T* __restrict__ hidden_out,           // [hidden_dim] output
+    unsigned int* __restrict__ row_counter // atomic work counter (reset to 0 before launch)
+) {
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+    const int wave_size = warpSize;  // 32 on RDNA3.5
+    const int lane = tid % wave_size;
+    const int wave_id = tid / wave_size;
+    const int waves_per_block = block_size / wave_size;
+
+    // --- LDS allocation ---
+    extern __shared__ float lds[];
+    float* shared_hidden = lds;                          // [hidden_dim]
+    float* shared_normed = lds + hidden_dim;             // [hidden_dim]
+    float* shared_scratch = lds + hidden_dim * 2;        // [block_size]
+
+    // =========================================================================
+    // Step 1: Load hidden state into LDS and compute RMSNorm
+    // =========================================================================
+
+    // Load hidden from global → LDS as F32
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        shared_hidden[col] = dotcache_qwen35_to_float(hidden_in[col]);
+    }
+    __syncthreads();
+
+    // Compute sum of squares (parallel reduction)
+    float partial_sq = 0.0f;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        partial_sq += shared_hidden[col] * shared_hidden[col];
+    }
+    shared_scratch[tid] = partial_sq;
+    __syncthreads();
+
+    for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_scratch[tid] += shared_scratch[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    // Compute inv_rms and write normed to LDS
+    __shared__ float shared_inv_rms;
+    if (tid == 0) {
+        shared_inv_rms = rsqrtf(shared_scratch[0] / static_cast<float>(hidden_dim) + norm_eps);
+    }
+    __syncthreads();
+
+    const float inv_rms = shared_inv_rms;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        const float w = dotcache_qwen35_to_float(norm_weight[col]) + 1.0f;  // add_unit_offset
+        shared_normed[col] = shared_hidden[col] * inv_rms * w;
+    }
+    __syncthreads();
+
+    // =========================================================================
+    // Step 2: gate_proj and up_proj matvecs — block-level work-stealing
+    //
+    // Each BLOCK steals one output row at a time. All 256 threads cooperate
+    // on the dot product (256-wide reduction), matching RMSNorm accuracy.
+    // gate results → gate_up_scratch[0..intermediate_size)
+    // up results   → gate_up_scratch[intermediate_size..intermediate_size*2)
+    // =========================================================================
+
+    const int total_gate_up_rows = intermediate_size * 2;
+    for (;;) {
+        __shared__ unsigned int shared_row;
+        if (tid == 0) {
+            shared_row = atomicAdd(row_counter, 1u);
+        }
+        __syncthreads();
+        const unsigned int my_row = shared_row;
+        if (my_row >= static_cast<unsigned int>(total_gate_up_rows)) break;
+
+        const bool is_up = my_row >= static_cast<unsigned int>(intermediate_size);
+        const int proj_row = is_up ? (my_row - intermediate_size) : my_row;
+        const T* w_matrix = is_up ? up_proj_w : gate_proj_w;
+        const T* w_row = w_matrix + static_cast<size_t>(proj_row) * hidden_dim;
+
+        float partial = 0.0f;
+        for (int col = tid; col < hidden_dim; col += block_size) {
+            partial += dotcache_qwen35_to_float(w_row[col]) * shared_normed[col];
+        }
+        shared_scratch[tid] = partial;
+        __syncthreads();
+
+        for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                shared_scratch[tid] += shared_scratch[tid + stride];
+            }
+            __syncthreads();
+        }
+
+        if (tid == 0) {
+            gate_up_scratch[my_row] = shared_scratch[0];
+        }
+        __syncthreads();
+    }
+
+    // NOTE: SwiGLU and down_proj are launched as separate kernels from the
+    // bridge to avoid inter-block synchronization issues. This kernel only
+    // handles RMSNorm + gate/up projections.
+}
+
+// SwiGLU activation kernel: silu(gate) * up, element-wise
+template <typename T>
+__global__ void dotcache_qwen35_mlp_swiglu_kernel(
+    int intermediate_size,
+    float* __restrict__ gate_up_scratch    // [intermediate_size * 2]
+) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= intermediate_size) return;
+    const float gate_val = gate_up_scratch[idx];
+    const float up_val = gate_up_scratch[intermediate_size + idx];
+    const float silu = gate_val / (1.0f + expf(-gate_val));
+    gate_up_scratch[idx] = silu * up_val;
+}
+
+// down_proj matvec kernel: [hidden_dim, intermediate_size] × SwiGLU[intermediate_size]
+// Block-level work-stealing with full-block reduction.
+template <typename T>
+__global__ void dotcache_qwen35_mlp_down_proj_kernel(
+    int hidden_dim,
+    int intermediate_size,
+    const T* __restrict__ down_proj_w,
+    const float* __restrict__ swiglu_scratch,
+    T* __restrict__ hidden_out,
+    unsigned int* __restrict__ row_counter
+) {
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+    extern __shared__ float shared_scratch[];
+
+    for (;;) {
+        __shared__ unsigned int shared_row;
+        if (tid == 0) {
+            shared_row = atomicAdd(row_counter, 1u);
+        }
+        __syncthreads();
+        const unsigned int my_row = shared_row;
+        if (my_row >= static_cast<unsigned int>(hidden_dim)) break;
+
+        const T* w_row = down_proj_w + static_cast<size_t>(my_row) * intermediate_size;
+
+        float partial = 0.0f;
+        for (int col = tid; col < intermediate_size; col += block_size) {
+            partial += dotcache_qwen35_to_float(w_row[col]) * swiglu_scratch[col];
+        }
+        shared_scratch[tid] = partial;
+        __syncthreads();
+
+        for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                shared_scratch[tid] += shared_scratch[tid + stride];
+            }
+            __syncthreads();
+        }
+
+        if (tid == 0) {
+            hidden_out[my_row] = dotcache_qwen35_from_float<T>(shared_scratch[0]);
+        }
+        __syncthreads();
+    }
+}

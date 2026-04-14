@@ -1385,6 +1385,14 @@ impl Mlp {
         self.down_proj.forward_buffer(&hidden)
     }
 
+    pub(super) fn weight_tensors(&self) -> Result<(Tensor, Tensor, Tensor)> {
+        Ok((
+            self.gate_proj.weight_tensor()?,
+            self.up_proj.weight_tensor()?,
+            self.down_proj.weight_tensor()?,
+        ))
+    }
+
     /// Fused RMSNorm + MLP forward for single-token decode.
     /// Takes the pre-norm hidden state and the norm layer, fusing the norm
     /// into the gate_proj and up_proj matmuls.

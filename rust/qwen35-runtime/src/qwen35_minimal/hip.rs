@@ -556,6 +556,22 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
+        pub fn dotcache_qwen35_hip_mlp_decode_megakernel(
+            dtype: c_int,
+            device_ordinal: usize,
+            hidden_dim: usize,
+            intermediate_size: usize,
+            norm_eps: f32,
+            hidden_in: *const c_void,
+            norm_weight: *const c_void,
+            gate_proj_w: *const c_void,
+            up_proj_w: *const c_void,
+            down_proj_w: *const c_void,
+            gate_up_scratch: *mut c_void,   // F32 scratch [intermediate_size * 2]
+            hidden_out: *mut c_void,
+            row_counter: *mut c_void,       // atomic counter (single uint)
+        ) -> c_int;
+
         pub fn dotcache_qwen35_hip_fused_rms_norm_linear(
             dtype: c_int,
             device_ordinal: usize,

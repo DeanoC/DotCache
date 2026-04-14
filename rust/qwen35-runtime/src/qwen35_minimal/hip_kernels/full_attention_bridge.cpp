@@ -4122,3 +4122,123 @@ extern "C" int dotcache_qwen35_hip_rms_norm_gated(
         return 84;
     }
 }
+
+template <typename T>
+int mlp_decode_megakernel_device(
+    int device_ordinal,
+    int hidden_dim,
+    int intermediate_size,
+    float norm_eps,
+    const void* hidden_in,
+    const void* norm_weight,
+    const void* gate_proj_w,
+    const void* up_proj_w,
+    const void* down_proj_w,
+    float* gate_up_scratch,
+    void* hidden_out,
+    unsigned int* row_counter
+) {
+    ScopedHipDevice scoped(device_ordinal);
+
+    hipDeviceProp_t props;
+    if (hipGetDeviceProperties(&props, device_ordinal) != hipSuccess) return 200;
+
+    const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
+    constexpr int block_size = 256;
+    const size_t shared_bytes =
+        static_cast<size_t>(hidden_dim) * sizeof(float) * 2 +  // hidden + normed
+        block_size * sizeof(float);                              // scratch
+
+    // --- Phase 1: RMSNorm + gate/up projections ---
+    unsigned int zero = 0;
+    if (hipMemcpy(row_counter, &zero, sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess)
+        return 201;
+    if (hipDeviceSynchronize() != hipSuccess) return 202;
+
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_mlp_decode_megakernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        shared_bytes,
+        0,
+        hidden_dim,
+        intermediate_size,
+        norm_eps,
+        static_cast<const T*>(hidden_in),
+        static_cast<const T*>(norm_weight),
+        static_cast<const T*>(gate_proj_w),
+        static_cast<const T*>(up_proj_w),
+        static_cast<const T*>(down_proj_w),
+        gate_up_scratch,
+        static_cast<T*>(hidden_out),
+        row_counter);
+    if (hipGetLastError() != hipSuccess) return 203;
+    if (hipDeviceSynchronize() != hipSuccess) return 204;
+
+    // --- Phase 2: SwiGLU activation ---
+    {
+        constexpr int swiglu_block = 256;
+        const unsigned int swiglu_grid =
+            static_cast<unsigned int>((intermediate_size + swiglu_block - 1) / swiglu_block);
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_mlp_swiglu_kernel<T>),
+            dim3(swiglu_grid),
+            dim3(swiglu_block),
+            0, 0,
+            intermediate_size,
+            gate_up_scratch);
+        if (hipGetLastError() != hipSuccess) return 205;
+        if (hipDeviceSynchronize() != hipSuccess) return 206;
+    }
+
+    // --- Phase 3: down_proj matvec ---
+    if (hipMemcpy(row_counter, &zero, sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess)
+        return 207;
+    if (hipDeviceSynchronize() != hipSuccess) return 208;
+
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_mlp_down_proj_kernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        block_size * sizeof(float),
+        0,
+        hidden_dim,
+        intermediate_size,
+        static_cast<const T*>(down_proj_w),
+        gate_up_scratch,
+        static_cast<T*>(hidden_out),
+        row_counter);
+    if (hipGetLastError() != hipSuccess) return 209;
+    if (hipDeviceSynchronize() != hipSuccess) return 210;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_mlp_decode_megakernel(
+    int dtype,
+    size_t device_ordinal,
+    size_t hidden_dim,
+    size_t intermediate_size,
+    float norm_eps,
+    const void* hidden_in,
+    const void* norm_weight,
+    const void* gate_proj_w,
+    const void* up_proj_w,
+    const void* down_proj_w,
+    float* gate_up_scratch,
+    void* hidden_out,
+    unsigned int* row_counter) {
+    switch (dtype) {
+    case 0:
+        return mlp_decode_megakernel_device<half>(
+            static_cast<int>(device_ordinal), static_cast<int>(hidden_dim),
+            static_cast<int>(intermediate_size), norm_eps, hidden_in, norm_weight,
+            gate_proj_w, up_proj_w, down_proj_w, gate_up_scratch, hidden_out, row_counter);
+    case 2:
+        return mlp_decode_megakernel_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal), static_cast<int>(hidden_dim),
+            static_cast<int>(intermediate_size), norm_eps, hidden_in, norm_weight,
+            gate_proj_w, up_proj_w, down_proj_w, gate_up_scratch, hidden_out, row_counter);
+    default:
+        return 205;
+    }
+}
