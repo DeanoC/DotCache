@@ -280,11 +280,28 @@ impl DecoderLayer {
         let residual = xs.clone();
         let xs = match &mut self.token_mixer {
             LayerKind::Linear(linear_attn) => {
-                let xs_norm = self.input_layernorm.forward_buffer(xs)?;
-                let (xs, layer_profile) =
-                    linear_attn.forward_profiled_buffer(&xs_norm, attention_mask)?;
-                profile.add_assign(&layer_profile);
-                xs
+                if Self::use_attn_megakernel(device, xs) {
+                    if let Some((qkv, z, b, a)) =
+                        linear_attn.fused_norm_projections(xs, &self.input_layernorm)?
+                    {
+                        let (xs, lp) = linear_attn.forward_from_projections_buffer(
+                            &qkv, &z, &b, &a, attention_mask,
+                        )?;
+                        profile.add_assign(&lp);
+                        xs
+                    } else {
+                        let xs_norm = self.input_layernorm.forward_buffer(xs)?;
+                        let (xs, lp) = linear_attn.forward_profiled_buffer(&xs_norm, attention_mask)?;
+                        profile.add_assign(&lp);
+                        xs
+                    }
+                } else {
+                    let xs_norm = self.input_layernorm.forward_buffer(xs)?;
+                    let (xs, layer_profile) =
+                        linear_attn.forward_profiled_buffer(&xs_norm, attention_mask)?;
+                    profile.add_assign(&layer_profile);
+                    xs
+                }
             }
             LayerKind::Full(self_attn) => {
                 if Self::use_attn_megakernel(device, xs) {

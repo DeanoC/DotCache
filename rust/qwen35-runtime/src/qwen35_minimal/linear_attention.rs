@@ -3289,6 +3289,192 @@ impl GatedDeltaNet {
         self.forward_profiled_with_state_buffer(hidden_states, attention_mask)
     }
 
+    /// Fused norm + projections for linear attention using the megakernel.
+    /// Returns (mixed_qkv, z, beta_raw, a) or None if not available.
+    pub(super) fn fused_norm_projections(
+        &self,
+        pre_norm_hidden: &StateBuffer,
+        norm: &super::frontend::Qwen35RmsNorm,
+    ) -> Result<Option<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)>> {
+        #[cfg(not(feature = "qwen35-minimal-hip"))]
+        { return Ok(None); }
+
+        #[cfg(feature = "qwen35-minimal-hip")]
+        {
+            use candle::Storage;
+            use std::ffi::c_void;
+
+            let hidden = pre_norm_hidden.contiguous()?;
+            let (b_sz, seq_len, hidden_dim) = hidden.dims3()?;
+            if b_sz != 1 || seq_len != 1 { return Ok(None); }
+
+            let ordinal = match hidden.device().location() {
+                DeviceLocation::Hip { gpu_id } => gpu_id,
+                _ => return Ok(None),
+            };
+            let dtype_code = match super::hip::dtype_code(hidden.tensor().dtype()) {
+                Ok(c) => c,
+                Err(_) => return Ok(None),
+            };
+
+            let norm_w = norm.weight().contiguous()?;
+            let qkv_w = self.in_proj_qkv.weight_tensor()?.contiguous()?;
+            let z_w = self.in_proj_z.weight.contiguous()?;
+            let b_w = self.in_proj_b.weight.contiguous()?;
+            let a_w = self.in_proj_a.weight.contiguous()?;
+
+            let qkv_out = qkv_w.dim(0)?;
+            let z_out = z_w.dim(0)?;
+            let b_out = b_w.dim(0)?;
+            let a_out = a_w.dim(0)?;
+            let total_rows = qkv_out + z_out + b_out + a_out;
+
+            let (qkv_s, qkv_l) = qkv_w.storage_and_layout();
+            let (z_s, z_l) = z_w.storage_and_layout();
+            let (b_s, b_l) = b_w.storage_and_layout();
+            let (a_s, a_l) = a_w.storage_and_layout();
+            let (h_s, h_l) = hidden.tensor().storage_and_layout();
+            let (nw_s, nw_l) = norm_w.storage_and_layout();
+
+            let (
+                Storage::Hip(qkv_hip), Storage::Hip(z_hip), Storage::Hip(b_hip),
+                Storage::Hip(a_hip), Storage::Hip(h_hip), Storage::Hip(nw_hip),
+            ) = (&*qkv_s, &*z_s, &*b_s, &*a_s, &*h_s, &*nw_s)
+            else { return Ok(None); };
+
+            let mut offset = 0i32;
+            let proj_table = [
+                super::ProjectionDesc {
+                    weight: qkv_hip.raw_device_ptr_with_offset(qkv_l.start_offset())? as *const c_void,
+                    out_dim: qkv_out as i32, output_offset: { let o = offset; offset += qkv_out as i32; o },
+                },
+                super::ProjectionDesc {
+                    weight: z_hip.raw_device_ptr_with_offset(z_l.start_offset())? as *const c_void,
+                    out_dim: z_out as i32, output_offset: { let o = offset; offset += z_out as i32; o },
+                },
+                super::ProjectionDesc {
+                    weight: b_hip.raw_device_ptr_with_offset(b_l.start_offset())? as *const c_void,
+                    out_dim: b_out as i32, output_offset: { let o = offset; offset += b_out as i32; o },
+                },
+                super::ProjectionDesc {
+                    weight: a_hip.raw_device_ptr_with_offset(a_l.start_offset())? as *const c_void,
+                    out_dim: a_out as i32, output_offset: { let _o = offset; _o },
+                },
+            ];
+
+            let table_bytes = std::mem::size_of_val(&proj_table);
+            let table_ptr = super::hip::alloc_device_bytes(ordinal, table_bytes)?;
+            if let Err(e) = super::hip::copy_host_to_device(
+                ordinal, table_ptr, proj_table.as_ptr() as *const c_void, table_bytes,
+            ) {
+                super::hip::free_device_bytes(ordinal, table_ptr);
+                return Err(e.into());
+            }
+
+            let output_bytes = total_rows * std::mem::size_of::<f32>();
+            let output_ptr = super::hip::alloc_device_bytes(ordinal, output_bytes)?;
+            let counter_ptr = super::hip::alloc_device_bytes(ordinal, std::mem::size_of::<u32>())?;
+
+            let status = unsafe {
+                super::hip::ffi::dotcache_qwen35_hip_norm_multi_proj(
+                    dtype_code, ordinal, hidden_dim, total_rows, norm.eps() as f32,
+                    h_hip.raw_device_ptr_with_offset(h_l.start_offset())? as *const c_void,
+                    nw_hip.raw_device_ptr_with_offset(nw_l.start_offset())? as *const c_void,
+                    table_ptr as *const c_void, 4,
+                    output_ptr as *mut c_void,
+                    counter_ptr as *mut c_void,
+                )
+            };
+
+            super::hip::free_device_bytes(ordinal, table_ptr);
+            super::hip::free_device_bytes(ordinal, counter_ptr);
+
+            if status != 0 {
+                super::hip::free_device_bytes(ordinal, output_ptr);
+                candle::bail!("fused_norm_linear_proj: kernel failed with status {status}");
+            }
+
+            let mut out_host = vec![0u8; output_bytes];
+            if let Err(e) = super::hip::copy_device_to_host(
+                ordinal, out_host.as_mut_ptr() as *mut c_void,
+                output_ptr as *const c_void, output_bytes,
+            ) {
+                super::hip::free_device_bytes(ordinal, output_ptr);
+                return Err(e.into());
+            }
+            super::hip::free_device_bytes(ordinal, output_ptr);
+
+            let floats: &[f32] = unsafe {
+                std::slice::from_raw_parts(out_host.as_ptr() as *const f32, total_rows)
+            };
+
+            let dt = hidden.tensor().dtype();
+            let dev = hidden.device();
+            let mut pos = 0;
+            let qkv_t = Tensor::from_vec(floats[pos..pos + qkv_out].to_vec(), (1, 1, qkv_out), dev)?
+                .to_dtype(dt)?;
+            pos += qkv_out;
+            let z_t = Tensor::from_vec(floats[pos..pos + z_out].to_vec(), (1, 1, z_out), dev)?
+                .to_dtype(dt)?;
+            pos += z_out;
+            let b_t = Tensor::from_vec(floats[pos..pos + b_out].to_vec(), (1, 1, b_out), dev)?
+                .to_dtype(dt)?;
+            pos += b_out;
+            let a_t = Tensor::from_vec(floats[pos..pos + a_out].to_vec(), (1, 1, a_out), dev)?
+                .to_dtype(dt)?;
+
+            Ok(Some((
+                StateBuffer::from_tensor(qkv_t)?,
+                StateBuffer::from_tensor(z_t)?,
+                StateBuffer::from_tensor(b_t)?,
+                StateBuffer::from_tensor(a_t)?,
+            )))
+        }
+    }
+
+    /// Forward pass using pre-computed projections from the fused megakernel.
+    pub(super) fn forward_from_projections_buffer(
+        &mut self,
+        mixed_qkv: &StateBuffer,
+        z: &StateBuffer,
+        beta_raw: &StateBuffer,
+        a: &StateBuffer,
+        attention_mask: Option<&Tensor>,
+    ) -> Result<(StateBuffer, RuntimeProfile)> {
+        let device = mixed_qkv.device();
+        let total_start = profile_start(device)?;
+        let mut profile = RuntimeProfile::default();
+        let compute_dtype =
+            linear_attention_compute_dtype(device, mixed_qkv.tensor().dtype());
+        let backend = backend_buffer_api::for_device(device);
+
+        // mixed_qkv needs transpose for the linear attention path
+        let mixed_qkv = backend.tensor_to_buffer(mixed_qkv.tensor().transpose(1, 2)?)?;
+        let (batch_size, _, _) = mixed_qkv.dims3()?;
+        let seq_len = 1;
+        let z = backend.reshape_tensor_to_buffer(
+            z.tensor(),
+            &[batch_size, seq_len, self.num_v_heads, self.head_v_dim],
+        )?;
+
+        let (output, recurrent_state, linear_profile) =
+            self.forward_profiled_with_state_projected(
+                mixed_qkv.tensor().dtype(),
+                batch_size,
+                seq_len,
+                &mixed_qkv,
+                &z,
+                beta_raw,
+                a,
+                compute_dtype,
+            )?;
+        profile.add_assign(&linear_profile);
+        profile.linear_attention_millis +=
+            profile_elapsed(total_start, device)? - linear_profile.linear_attention_millis;
+        self.recurrent_state = Some(recurrent_state);
+        Ok((output, profile))
+    }
+
     fn forward_profiled_with_state_buffer(
         &mut self,
         hidden_states: &StateBuffer,
