@@ -195,6 +195,119 @@ class TieredKeyCacheLayer:
             return self.dequantise_int4_values()
         raise ValueError("No values available in VRAM")
 
+    def append_token(
+        self,
+        key_fp16: torch.Tensor,    # [kv_heads, 1, head_dim] float16/32
+        value_fp16: torch.Tensor,  # [kv_heads, 1, d_v] float16/32
+    ) -> None:
+        """Append a single token's K/V to the cache.
+
+        Grows the cache by one token. When a block boundary is crossed,
+        requantises the completed block's INT8 keys and (if INT4 mode)
+        INT4 values.
+
+        Must be called with pre-RoPE'd keys.
+        """
+        kv_heads = self.kv_heads
+        pos = self.num_tokens  # insertion position
+        device = self.keys_int8.device
+
+        # Grow the raw FP16 CPU storage (always keep originals)
+        new_k = key_fp16.to(dtype=torch.float16).squeeze(1)  # [kv_heads, head_dim]
+        new_v = value_fp16.to(dtype=torch.float16).squeeze(1)
+
+        # Grow keys_fp16_cpu
+        self.keys_fp16_cpu = torch.cat([
+            self.keys_fp16_cpu,
+            new_k.cpu().unsqueeze(1),
+        ], dim=1)
+
+        if self.values_fp16_cpu is not None:
+            self.values_fp16_cpu = torch.cat([
+                self.values_fp16_cpu,
+                new_v.cpu().unsqueeze(1),
+            ], dim=1)
+
+        # Grow VRAM values (FP16 path)
+        if self.values_fp16 is not None:
+            self.values_fp16 = torch.cat([
+                self.values_fp16,
+                new_v.to(device=device, dtype=torch.float16).unsqueeze(1),
+            ], dim=1)
+
+        # Grow INT8 keys: append a placeholder (will be requantised at block boundary)
+        # For now, do a quick single-token quantise using the current block's scale
+        new_k_f32 = new_k.to(device=device, dtype=torch.float32)  # [kv_heads, head_dim]
+        block_idx = pos // self.block_size
+
+        if block_idx < self.num_blocks:
+            # Still within existing block range — use existing scale
+            k_scale = self.keys_scale[:, block_idx]  # [kv_heads]
+            k_int8 = (new_k_f32 / k_scale.unsqueeze(-1).clamp(min=1e-8)).round().clamp(-127, 127).to(torch.int8)
+        else:
+            # New block — compute fresh scale from this single token
+            k_max = new_k_f32.abs().amax(dim=-1).clamp(min=1e-8)
+            k_scale_new = k_max / 127.0
+            k_int8 = (new_k_f32 / k_scale_new.unsqueeze(-1)).round().clamp(-127, 127).to(torch.int8)
+
+            # Extend scale and correction tensors
+            self.keys_scale = torch.cat([
+                self.keys_scale,
+                k_scale_new.unsqueeze(1).to(self.keys_scale),
+            ], dim=1)
+
+            # Conservative correction for new block
+            q_norm_est = self.head_dim ** 0.5
+            q_scale_est = 1.0 / (self.head_dim ** 0.5)
+            delta = q_norm_est * (k_scale_new * 2 / 255) / 2 * q_scale_est
+            corr = torch.exp(3 * delta)
+            self.correction = torch.cat([
+                self.correction,
+                corr.unsqueeze(1).to(self.correction),
+            ], dim=1)
+
+        # Append INT8 key
+        self.keys_int8 = torch.cat([
+            self.keys_int8,
+            k_int8.unsqueeze(1),
+        ], dim=1)
+
+        # Grow INT4 values if in INT4 mode
+        if self.values_int4_packed is not None:
+            from dotcache.kernels.int4_group_quantise import quantise_int4_grouped
+            v_token = new_v.to(device=device, dtype=torch.float16)  # [kv_heads, d_v]
+            packed_all = []
+            scales_all = []
+            zeros_all = []
+            max_err = 0.0
+            for h in range(kv_heads):
+                r = quantise_int4_grouped(v_token[h:h+1], self.values_int4_group_size)
+                packed_all.append(r["data_packed"])
+                scales_all.append(r["scales"])
+                zeros_all.append(r["zeros"])
+                max_err = max(max_err, r["error_bound"])
+            self.values_int4_packed = torch.cat([
+                self.values_int4_packed,
+                torch.stack(packed_all).to(device),
+            ], dim=1)
+            self.values_int4_scales = torch.cat([
+                self.values_int4_scales,
+                torch.stack(scales_all).to(device),
+            ], dim=1)
+            self.values_int4_zeros = torch.cat([
+                self.values_int4_zeros,
+                torch.stack(zeros_all).to(device),
+            ], dim=1)
+
+            # Extend error bounds at block boundaries
+            if block_idx >= self.values_int4_errors.shape[1]:
+                new_err = torch.full((kv_heads, 1), max_err, dtype=torch.float32, device=device)
+                self.values_int4_errors = torch.cat([self.values_int4_errors, new_err], dim=1)
+
+        # Update counts
+        self.num_tokens = pos + 1
+        self.num_blocks = (self.num_tokens + self.block_size - 1) // self.block_size
+
     def precompute_dequant(self) -> None:
         """Pre-compute dequantised keys and float32 values to avoid per-call allocation."""
         self._keys_deq_f32 = (

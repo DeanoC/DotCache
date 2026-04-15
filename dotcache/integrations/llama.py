@@ -86,6 +86,7 @@ class CertifiedAttentionState:
     default_epsilon: float = 1e-4
     block_size: int = 16
     collect_stats: bool = True  # set False during timed runs to avoid GPU syncs
+    append_kv: bool = False  # append new K/V tokens to tiered cache during decode
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):
@@ -462,10 +463,17 @@ class DotCacheLlamaAttention(nn.Module):
         if cache is None:
             raise ValueError(f"No tiered cache for layer {self.layer_idx}")
 
-        # Project Q only (K/V already in tiered cache)
-        query_states = self._project_q_only(hidden_states, position_embeddings)
+        # Project Q, K, V with RoPE (need K/V for append)
+        (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
         # query_states: [1, num_q_heads, 1, head_dim]
         q_all = query_states[0, :, 0, :].to(torch.float32)  # [num_q, head_dim]
+
+        # Append new K/V to tiered cache (grows context for future steps)
+        if cert_state.append_kv:
+            cache.append_token(
+                key_states[0].to(torch.float16),    # [kv_heads, 1, head_dim]
+                value_states[0].to(torch.float16),  # [kv_heads, 1, d_v]
+            )
 
         # Certified attention: Phase 1 (INT8 score+certify) + Phase 2 (selective attend)
         epsilon = cert_state.layer_epsilons.get(self.layer_idx, cert_state.default_epsilon)
