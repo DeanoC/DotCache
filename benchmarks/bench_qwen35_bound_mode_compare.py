@@ -156,11 +156,11 @@ def _build_serving_config_for_lane(lane: dict[str, Any]) -> PersistentServingCon
 
 
 def _sum_by_layer(result: dict[str, Any], key: str) -> float:
-    return float(sum(float(v) for v in result.get(key, {}).values()))
+    return float(sum(float(v) for v in result.get(key, {}).values() if v is not None))
 
 
 def _sum_by_layer_int(result: dict[str, Any], key: str) -> int:
-    return int(sum(int(v) for v in result.get(key, {}).values()))
+    return int(sum(int(v) for v in result.get(key, {}).values() if v is not None))
 
 
 def _extract_telemetry(result: dict[str, Any]) -> dict[str, Any]:
@@ -199,6 +199,29 @@ def _extract_telemetry(result: dict[str, Any]) -> dict[str, Any]:
         "bound_spherical_frac": float(bound_spherical) / float(bound_total) if bound_total > 0 else 0.0,
         "bound_interval_frac": float(bound_interval) / float(bound_total) if bound_total > 0 else 0.0,
         "bound_ellipsoidal_frac": float(bound_ellipsoidal) / float(bound_total) if bound_total > 0 else 0.0,
+        # Fallback ladder counts (per-layer sums)
+        "fallback_process_more_count": _sum_by_layer_int(
+            result, "persistent_full_attention_fallback_process_more_count_by_layer"
+        ),
+        "fallback_widen_count": _sum_by_layer_int(
+            result, "persistent_full_attention_fallback_widen_count_by_layer"
+        ),
+        "fallback_disable_compression_count": _sum_by_layer_int(
+            result, "persistent_full_attention_fallback_disable_compression_count_by_layer"
+        ),
+        "fallback_disable_pruning_count": _sum_by_layer_int(
+            result, "persistent_full_attention_fallback_disable_pruning_count_by_layer"
+        ),
+        "dense_fallback_count": _sum_by_layer_int(
+            result, "persistent_full_attention_dense_fallback_count_by_layer"
+        ),
+        # Format distribution histograms (per-layer dicts of mode -> count)
+        "block_k_mode_histogram": result.get(
+            "persistent_full_attention_block_k_mode_histogram_by_layer", {}
+        ),
+        "block_v_mode_histogram": result.get(
+            "persistent_full_attention_block_v_mode_histogram_by_layer", {}
+        ),
     }
 
 
@@ -317,6 +340,13 @@ def _run_all_lanes_for_case(
             "bound_spherical_frac": float(tel["bound_spherical_frac"]),
             "bound_interval_frac": float(tel["bound_interval_frac"]),
             "bound_ellipsoidal_frac": float(tel["bound_ellipsoidal_frac"]),
+            "fallback_process_more_count": int(tel["fallback_process_more_count"]),
+            "fallback_widen_count": int(tel["fallback_widen_count"]),
+            "fallback_disable_compression_count": int(tel["fallback_disable_compression_count"]),
+            "fallback_disable_pruning_count": int(tel["fallback_disable_pruning_count"]),
+            "dense_fallback_count": int(tel["dense_fallback_count"]),
+            "block_k_mode_histogram": tel["block_k_mode_histogram"],
+            "block_v_mode_histogram": tel["block_v_mode_histogram"],
         }
         print(
             f"  [{lane['name']}] {case_tag}: "
