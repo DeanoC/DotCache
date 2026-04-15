@@ -130,6 +130,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-md", default=None)
     parser.add_argument(
+        "--execution-strategy",
+        type=str,
+        default=None,
+        metavar="STRATEGY",
+        help=(
+            "Override the mixed-mode execution strategy for all lanes. "
+            "Options: 'direct_m0' (fused compressed-domain scoring, default from "
+            "serving config), 'cached_reconstruct' (widen to FP16 then standard "
+            "attention).  When set, overrides the strategy in the base serving config."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -146,12 +158,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+_EXECUTION_STRATEGY_OVERRIDE: str | None = None
+
+
 def _build_serving_config_for_lane(lane: dict[str, Any]) -> PersistentServingConfig:
     config = real_mixed_probe_serving_config(
         policy_path=str(_DEFAULT_POLICY_PATH),
     )
     config.enable_interval_bound = bool(lane["enable_interval_bound"])
     config.enable_ellipsoidal_bound = bool(lane["enable_ellipsoidal_bound"])
+    if _EXECUTION_STRATEGY_OVERRIDE is not None:
+        config.full_attention_mixed_mode_execution_strategy = _EXECUTION_STRATEGY_OVERRIDE
     return config
 
 
@@ -707,9 +724,13 @@ def _worker_run_case(
 
 
 def main() -> None:
+    global _EXECUTION_STRATEGY_OVERRIDE
     args = parse_args()
     if not transformers_available():
         raise SystemExit("bench_qwen35_bound_mode_compare.py requires the optional transformers dependencies")
+
+    if args.execution_strategy is not None:
+        _EXECUTION_STRATEGY_OVERRIDE = str(args.execution_strategy)
 
     active_lanes = (
         [lane for lane in _LANES if lane["name"] in args.lanes]

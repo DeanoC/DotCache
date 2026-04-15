@@ -1,0 +1,559 @@
+{
+  "lane_summaries": {
+    "interval": {
+      "case_count": 8,
+      "avg_ms_per_step": 159.1409494249092,
+      "exact_match_vs_dense": 0.875,
+      "avg_score_ms_per_case": 130.8914409892168,
+      "avg_selection_ms_per_case": 141.3974949537078,
+      "avg_executed_m0_blocks_per_case": 3060.0,
+      "avg_executed_m3_blocks_per_case": 12.0,
+      "avg_first_certified_stop_blocks": 384.0,
+      "avg_last_checkpoint_count": 0.0,
+      "total_bound_spherical_count": 150522,
+      "total_bound_interval_count": 46086,
+      "total_bound_ellipsoidal_count": 0,
+      "total_bound_count": 196608,
+      "bound_spherical_frac": 0.765594482421875,
+      "bound_interval_frac": 0.234405517578125,
+      "bound_ellipsoidal_frac": 0.0
+    }
+  },
+  "lane_records": {
+    "interval": [
+      {
+        "case_tag": "aae_stage_summary",
+        "decode_ms_per_step": 209.627461474156,
+        "exact_match_vs_dense": true,
+        "score_ms_total": 137.08030409179628,
+        "selection_ms_total": 148.10077601578087,
+        "executed_m0_blocks_total": 4656,
+        "executed_m3_blocks_total": 0,
+        "first_certified_stop_blocks": 582,
+        "last_checkpoint_count": 0,
+        "bound_spherical_count": 29321,
+        "bound_interval_count": 7927,
+        "bound_ellipsoidal_count": 0,
+        "bound_total_count": 37248,
+        "bound_spherical_frac": 0.7871832044673539,
+        "bound_interval_frac": 0.21281679553264604,
+        "bound_ellipsoidal_frac": 0.0,
+        "fallback_process_more_count": 0,
+        "fallback_widen_count": 0,
+        "fallback_disable_compression_count": 0,
+        "fallback_disable_pruning_count": 0,
+        "dense_fallback_count": 0,
+        "block_k_mode_histogram": {
+          "3": {
+            "M0": 194
+          },
+          "7": {
+            "M0": 194
+          },
+          "11": {
+            "M0": 194
+          },
+          "15": {
+            "M0": 194
+          },
+          "19": {
+            "M0": 194
+          },
+          "23": {
+            "M0": 194
+          }
+        },
+        "block_v_mode_histogram": {
+          "3": {
+            "M0": 194
+          },
+          "7": {
+            "M0": 194
+          },
+          "11": {
+            "M0": 194
+          },
+          "15": {
+            "M0": 194
+          },
+          "19": {
+            "M0": 194
+          },
+          "23": {
+            "M0": 194
+          }
+        }
+      },
+      {
+        "case_tag": "bench_decode_code",
+        "decode_ms_per_step": 115.12028027209453,
+        "exact_match_vs_dense": true,
+        "score_ms_total": 127.10242695175111,
+        "selection_ms_total": 137.12095411028713,
+        "executed_m0_blocks_total": 1872,
+        "executed_m3_blocks_total": 48,
+        "first_certified_stop_blocks": 240,
+        "last_checkpoint_count": 0,
+        "bound_spherical_count": 13332,
+        "bound_interval_count": 2028,
+        "bound_ellipsoidal_count": 0,
+        "bound_total_count": 15360,
+        "bound_spherical_frac": 0.86796875,
+        "bound_interval_frac": 0.13203125,
+        "bound_ellipsoidal_frac": 0.0,
+        "fallback_process_more_count": 0,
+        "fallback_widen_count": 0,
+        "fallback_disable_compression_count": 0,
+        "fallback_disable_pruning_count": 0,
+        "dense_fallback_count": 0,
+        "block_k_mode_histogram": {
+          "3": {
+            "M0": 78,
+            "M3": 2
+          },
+          "7": {
+            "M0": 78,
+            "M3": 2
+          },
+          "11": {
+            "M0": 78,
+            "M3": 2
+          },
+          "15": {
+            "M0": 78,
+            "M3": 2
+          },
+          "19": {
+            "M0": 78,
+            "M3": 2
+          },
+          "23": {
+            "M0": 78,
+            "M3": 2
+          }
+        },
+        "block_v_mode_histogram": {
+          "3": {
+            "M0": 78,
+            "M3": 2
+          },
+          "7": {
+            "M0": 78,
+            "M3": 2
+          },
+          "11": {
+            "M0": 78,
+            "M3": 2
+          },
+          "15": {
+            "M0": 78,
+            "M3": 2
+          },
+          "19": {
+            "M0": 78,
+            "M3": 2
+          },
+          "23": {
+            "M0": 78,
+            "M3": 2
+          }
+        }
+      },
+      {
+        "case_tag": "benchmark_report",
+        "decode_ms_per_step": 214.43655288021546,
+        "exact_match_vs_dense": true,
+        "score_ms_total": 141.58677158411592,
+        "selection_ms_total": 153.1278776237741,
+        "executed_m0_blocks_total": 4656,
+        "executed_m3_blocks_total": 0,
+        "first_certified_stop_blocks": 582,
+        "last_checkpoint_count": 0,
+        "bound_spherical_count": 26572,
+        "bound_interval_count": 10676,
+        "bound_ellipsoidal_count": 0,
+        "bound_total_count": 37248,
+        "bound_spherical_frac": 0.7133805841924399,
+        "bound_interval_frac": 0.2866194158075601,
+        "bound_ellipsoidal_frac": 0.0,
+        "fallback_process_more_count": 0,
+        "fallback_widen_count": 0,
+        "fallback_disable_compression_count": 0,
+        "fallback_disable_pruning_count": 0,
+        "dense_fallback_count": 0,
+        "block_k_mode_histogram": {
+          "3": {
+            "M0": 194
+          },
+          "7": {
+            "M0": 194
+          },
+          "11": {
+            "M0": 194
+          },
+          "15": {
+            "M0": 194
+          },
+          "19": {
+            "M0": 194
+          },
+          "23": {
+            "M0": 194
+          }
+        },
+        "block_v_mode_histogram": {
+          "3": {
+            "M0": 194
+          },
+          "7": {
+            "M0": 194
+          },
+          "11": {
+            "M0": 194
+          },
+          "15": {
+            "M0": 194
+          },
+          "19": {
+            "M0": 194
+          },
+          "23": {
+            "M0": 194
+          }
+        }
+      },
+      {
+        "case_tag": "compressed_page_rfc",
+        "decode_ms_per_step": 160.79768013150897,
+        "exact_match_vs_dense": true,
+        "score_ms_total": 129.7146020224318,
+        "selection_ms_total": 140.3785989386961,
+        "executed_m0_blocks_total": 3120,
+        "executed_m3_blocks_total": 0,
+        "first_certified_stop_blocks": 390,
+        "last_checkpoint_count": 0,
+        "bound_spherical_count": 19631,
+        "bound_interval_count": 5329,
+        "bound_ellipsoidal_count": 0,
+        "bound_total_count": 24960,
+        "bound_spherical_frac": 0.7864983974358974,
+        "bound_interval_frac": 0.21350160256410255,
+        "bound_ellipsoidal_frac": 0.0,
+        "fallback_process_more_count": 0,
+        "fallback_widen_count": 0,
+        "fallback_disable_compression_count": 0,
+        "fallback_disable_pruning_count": 0,
+        "dense_fallback_count": 0,
+        "block_k_mode_histogram": {
+          "3": {
+            "M0": 130
+          },
+          "7": {
+            "M0": 130
+          },
+          "11": {
+            "M0": 130
+          },
+          "15": {
+            "M0": 130
+          },
+          "19": {
+            "M0": 130
+          },
+          "23": {
+            "M0": 130
+          }
+        },
+        "block_v_mode_histogram": {
+          "3": {
+            "M0": 130
+          },
+          "7": {
+            "M0": 130
+          },
+          "11": {
+            "M0": 130
+          },
+          "15": {
+            "M0": 130
+          },
+          "19": {
+            "M0": 130
+          },
+          "23": {
+            "M0": 130
+          }
+        }
+      },
+      {
+        "case_tag": "hip_call_flow",
+        "decode_ms_per_step": 159.61193150724284,
+        "exact_match_vs_dense": true,
+        "score_ms_total": 129.03705530334264,
+        "selection_ms_total": 139.52762179542333,
+        "executed_m0_blocks_total": 3120,
+        "executed_m3_blocks_total": 0,
+        "first_certified_stop_blocks": 390,
+        "last_checkpoint_count": 0,
+        "bound_spherical_count": 20085,
+        "bound_interval_count": 4875,
+        "bound_ellipsoidal_count": 0,
+        "bound_total_count": 24960,
+        "bound_spherical_frac": 0.8046875,
+        "bound_interval_frac": 0.1953125,
+        "bound_ellipsoidal_frac": 0.0,
+        "fallback_process_more_count": 0,
+        "fallback_widen_count": 0,
+        "fallback_disable_compression_count": 0,
+        "fallback_disable_pruning_count": 0,
+        "dense_fallback_count": 0,
+        "block_k_mode_histogram": {
+          "3": {
+            "M0": 130
+          },
+          "7": {
+            "M0": 130
+          },
+          "11": {
+            "M0": 130
+          },
+          "15": {
+            "M0": 130
+          },
+          "19": {
+            "M0": 130
+          },
+          "23": {
+            "M0": 130
+          }
+        },
+        "block_v_mode_histogram": {
+          "3": {
+            "M0": 130
+          },
+          "7": {
+            "M0": 130
+          },
+          "11": {
+            "M0": 130
+          },
+          "15": {
+            "M0": 130
+          },
+          "19": {
+            "M0": 130
+          },
+          "23": {
+            "M0": 130
+          }
+        }
+      },
+      {
+        "case_tag": "local_layer_profiles",
+        "decode_ms_per_step": 159.29202061670367,
+        "exact_match_vs_dense": true,
+        "score_ms_total": 129.28617000579834,
+        "selection_ms_total": 139.9212304968387,
+        "executed_m0_blocks_total": 3120,
+        "executed_m3_blocks_total": 0,
+        "first_certified_stop_blocks": 390,
+        "last_checkpoint_count": 0,
+        "bound_spherical_count": 18215,
+        "bound_interval_count": 6745,
+        "bound_ellipsoidal_count": 0,
+        "bound_total_count": 24960,
+        "bound_spherical_frac": 0.7297676282051282,
+        "bound_interval_frac": 0.2702323717948718,
+        "bound_ellipsoidal_frac": 0.0,
+        "fallback_process_more_count": 0,
+        "fallback_widen_count": 0,
+        "fallback_disable_compression_count": 0,
+        "fallback_disable_pruning_count": 0,
+        "dense_fallback_count": 0,
+        "block_k_mode_histogram": {
+          "3": {
+            "M0": 130
+          },
+          "7": {
+            "M0": 130
+          },
+          "11": {
+            "M0": 130
+          },
+          "15": {
+            "M0": 130
+          },
+          "19": {
+            "M0": 130
+          },
+          "23": {
+            "M0": 130
+          }
+        },
+        "block_v_mode_histogram": {
+          "3": {
+            "M0": 130
+          },
+          "7": {
+            "M0": 130
+          },
+          "11": {
+            "M0": 130
+          },
+          "15": {
+            "M0": 130
+          },
+          "19": {
+            "M0": 130
+          },
+          "23": {
+            "M0": 130
+          }
+        }
+      },
+      {
+        "case_tag": "test_attention_vs_dense",
+        "decode_ms_per_step": 91.3939938909607,
+        "exact_match_vs_dense": true,
+        "score_ms_total": 123.43252683058381,
+        "selection_ms_total": 132.51412834506482,
+        "executed_m0_blocks_total": 816,
+        "executed_m3_blocks_total": 48,
+        "first_certified_stop_blocks": 108,
+        "last_checkpoint_count": 0,
+        "bound_spherical_count": 5084,
+        "bound_interval_count": 1828,
+        "bound_ellipsoidal_count": 0,
+        "bound_total_count": 6912,
+        "bound_spherical_frac": 0.7355324074074074,
+        "bound_interval_frac": 0.2644675925925926,
+        "bound_ellipsoidal_frac": 0.0,
+        "fallback_process_more_count": 0,
+        "fallback_widen_count": 0,
+        "fallback_disable_compression_count": 0,
+        "fallback_disable_pruning_count": 0,
+        "dense_fallback_count": 0,
+        "block_k_mode_histogram": {
+          "3": {
+            "M0": 34,
+            "M3": 2
+          },
+          "7": {
+            "M0": 34,
+            "M3": 2
+          },
+          "11": {
+            "M0": 34,
+            "M3": 2
+          },
+          "15": {
+            "M0": 34,
+            "M3": 2
+          },
+          "19": {
+            "M0": 34,
+            "M3": 2
+          },
+          "23": {
+            "M0": 34,
+            "M3": 2
+          }
+        },
+        "block_v_mode_histogram": {
+          "3": {
+            "M0": 34,
+            "M3": 2
+          },
+          "7": {
+            "M0": 34,
+            "M3": 2
+          },
+          "11": {
+            "M0": 34,
+            "M3": 2
+          },
+          "15": {
+            "M0": 34,
+            "M3": 2
+          },
+          "19": {
+            "M0": 34,
+            "M3": 2
+          },
+          "23": {
+            "M0": 34,
+            "M3": 2
+          }
+        }
+      },
+      {
+        "case_tag": "turboquant_comparison_plan",
+        "decode_ms_per_step": 162.84767462639138,
+        "exact_match_vs_dense": false,
+        "score_ms_total": 129.89167112391442,
+        "selection_ms_total": 140.4887723037973,
+        "executed_m0_blocks_total": 3120,
+        "executed_m3_blocks_total": 0,
+        "first_certified_stop_blocks": 390,
+        "last_checkpoint_count": 0,
+        "bound_spherical_count": 18282,
+        "bound_interval_count": 6678,
+        "bound_ellipsoidal_count": 0,
+        "bound_total_count": 24960,
+        "bound_spherical_frac": 0.7324519230769231,
+        "bound_interval_frac": 0.2675480769230769,
+        "bound_ellipsoidal_frac": 0.0,
+        "fallback_process_more_count": 0,
+        "fallback_widen_count": 0,
+        "fallback_disable_compression_count": 0,
+        "fallback_disable_pruning_count": 0,
+        "dense_fallback_count": 0,
+        "block_k_mode_histogram": {
+          "3": {
+            "M0": 130
+          },
+          "7": {
+            "M0": 130
+          },
+          "11": {
+            "M0": 130
+          },
+          "15": {
+            "M0": 130
+          },
+          "19": {
+            "M0": 130
+          },
+          "23": {
+            "M0": 130
+          }
+        },
+        "block_v_mode_histogram": {
+          "3": {
+            "M0": 130
+          },
+          "7": {
+            "M0": 130
+          },
+          "11": {
+            "M0": 130
+          },
+          "15": {
+            "M0": 130
+          },
+          "19": {
+            "M0": 130
+          },
+          "23": {
+            "M0": 130
+          }
+        }
+      }
+    ]
+  },
+  "active_lanes": [
+    "interval"
+  ],
+  "manifest_path": "/DotCache/benchmarks/manifests/qwen35_stage9_repo_public_validation_broader_20260414.json",
+  "decode_steps": 8
+}
