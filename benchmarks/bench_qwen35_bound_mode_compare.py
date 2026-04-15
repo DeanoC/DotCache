@@ -142,6 +142,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--max-k-comp-error",
+        type=float,
+        default=None,
+        metavar="THRESHOLD",
+        help=(
+            "Override max_k_comp_error for all lanes.  Controls which blocks use "
+            "M0 (compressed) vs M3 (FP16 exact) in the mixed execution path. "
+            "Set to 0.0 to force all blocks through the M3/FP16 path (Fused Fp "
+            "condition for kernel comparison).  Default: use serving config value."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -159,6 +171,7 @@ def parse_args() -> argparse.Namespace:
 
 
 _EXECUTION_STRATEGY_OVERRIDE: str | None = None
+_MAX_K_COMP_ERROR_OVERRIDE: float | None = None
 
 
 def _build_serving_config_for_lane(lane: dict[str, Any]) -> PersistentServingConfig:
@@ -169,6 +182,8 @@ def _build_serving_config_for_lane(lane: dict[str, Any]) -> PersistentServingCon
     config.enable_ellipsoidal_bound = bool(lane["enable_ellipsoidal_bound"])
     if _EXECUTION_STRATEGY_OVERRIDE is not None:
         config.full_attention_mixed_mode_execution_strategy = _EXECUTION_STRATEGY_OVERRIDE
+    if _MAX_K_COMP_ERROR_OVERRIDE is not None:
+        config.full_attention_mixed_mode_execution_max_k_comp_error = _MAX_K_COMP_ERROR_OVERRIDE
     return config
 
 
@@ -731,6 +746,8 @@ def main() -> None:
 
     if args.execution_strategy is not None:
         _EXECUTION_STRATEGY_OVERRIDE = str(args.execution_strategy)
+    if args.max_k_comp_error is not None:
+        _MAX_K_COMP_ERROR_OVERRIDE = float(args.max_k_comp_error)
 
     active_lanes = (
         [lane for lane in _LANES if lane["name"] in args.lanes]
