@@ -310,6 +310,13 @@ def _run_all_lanes_for_case(
             "executed_m3_blocks_total": int(tel["executed_m3_blocks_total"]),
             "first_certified_stop_blocks": int(tel["first_certified_stop_blocks"]),
             "last_checkpoint_count": int(tel["last_checkpoint_count"]),
+            "bound_spherical_count": int(tel["bound_spherical_count"]),
+            "bound_interval_count": int(tel["bound_interval_count"]),
+            "bound_ellipsoidal_count": int(tel["bound_ellipsoidal_count"]),
+            "bound_total_count": int(tel["bound_total_count"]),
+            "bound_spherical_frac": float(tel["bound_spherical_frac"]),
+            "bound_interval_frac": float(tel["bound_interval_frac"]),
+            "bound_ellipsoidal_frac": float(tel["bound_ellipsoidal_frac"]),
         }
         print(
             f"  [{lane['name']}] {case_tag}: "
@@ -318,6 +325,12 @@ def _run_all_lanes_for_case(
             f"M0={tel['executed_m0_blocks_total']} M3={tel['executed_m3_blocks_total']}, "
             f"cert_stop_blocks={tel['first_certified_stop_blocks']}, "
             f"checkpoints={tel['last_checkpoint_count']}"
+            + (
+                f"  bound: sph={tel['bound_spherical_frac']:.0%} int={tel['bound_interval_frac']:.0%}"
+                + (f" ellip={tel['bound_ellipsoidal_frac']:.0%}" if tel["bound_ellipsoidal_count"] > 0 else "")
+                if tel["bound_total_count"] > 0
+                else ""
+            )
         )
 
     # Reset adapter to dense mode so the next case's shared prefill (full

@@ -7510,6 +7510,18 @@ class PersistentFullAttentionState:
                 str(layer_id): int(self.telemetry.require_layer(layer_id).dense_fallback_count)
                 for layer_id in sorted(self.layers)
             },
+            "persistent_full_attention_bound_spherical_active_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).bound_spherical_active_count)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_bound_interval_active_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).bound_interval_active_count)
+                for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_bound_ellipsoidal_active_count_by_layer": {
+                str(layer_id): int(self.telemetry.require_layer(layer_id).bound_ellipsoidal_active_count)
+                for layer_id in sorted(self.layers)
+            },
             "persistent_shortlist_policy_load_ms_total": float(self.telemetry.shortlist_policy_load_ms_total),
             "persistent_shortlist_policy_resolve_ms_total": float(self.telemetry.shortlist_policy_resolve_ms_total),
             "persistent_shortlist_policy_load_count": int(self.telemetry.shortlist_policy_load_count),
@@ -7601,6 +7613,22 @@ class PersistentFullAttentionState:
             "persistent_append_update_ms_total_by_layer": {
                 str(layer_id): float(self.telemetry.require_layer(layer_id).append_ms_total)
                 for layer_id in sorted(self.layers)
+            },
+            "persistent_full_attention_block_k_mode_histogram_by_layer": {
+                str(layer_id): {
+                    str(k): int(v)
+                    for k, v in zip(*np.unique(state.block_k_mode.flatten(), return_counts=True))
+                }
+                for layer_id, state in sorted(self.layers.items())
+                if hasattr(state, "block_k_mode") and state.block_k_mode is not None
+            },
+            "persistent_full_attention_block_v_mode_histogram_by_layer": {
+                str(layer_id): {
+                    str(k): int(v)
+                    for k, v in zip(*np.unique(state.block_v_mode.flatten(), return_counts=True))
+                }
+                for layer_id, state in sorted(self.layers.items())
+                if hasattr(state, "block_v_mode") and state.block_v_mode is not None
             },
         }
 
