@@ -72,11 +72,16 @@ def sequential_epsilon_calibration(
                 print(f"  No prompts, copying from {ctx_buckets[bucket_idx-1]//1024}K")
             continue
 
-        # Pre-compute: for each prompt, get hidden states + caches + oracle outputs
+        # Prepare prompts lazily (one at a time) to manage VRAM at 32K+
+        # Store only lightweight data (hidden states CPU, oracle outputs CPU)
+        # Rebuild tiered caches on demand per-layer
         prompt_data = []
         for pidx, (ptxt, pctx) in enumerate(bucket_prompts):
+            print(f"    Preparing prompt {pidx+1}/{len(bucket_prompts)}")
             data = _prepare_prompt(model, tokenizer, ptxt, pctx, num_layers, device)
             prompt_data.append(data)
+            gc.collect()
+            torch.cuda.empty_cache()
 
         # Sequential layer calibration
         for lid in range(num_layers):
@@ -104,13 +109,15 @@ def sequential_epsilon_calibration(
                 for pdata in prompt_data:
                     cos_heads = _evaluate_layer_epsilon(
                         model, pdata, lid, eps_candidate,
-                        epsilon[bucket_idx],  # locked epsilons for layers 0..lid-1
+                        epsilon[bucket_idx],
                         num_q, num_kv, head_dim, gqa, q_scale, device,
                     )
                     for qh in range(num_q):
                         worst_cos_per_head[qh] = min(
                             worst_cos_per_head[qh], cos_heads[qh],
                         )
+                    gc.collect()
+                    torch.cuda.empty_cache()
 
                 # Check: how many heads pass at this ε?
                 passes = worst_cos_per_head >= target_cos
@@ -177,15 +184,18 @@ def _prepare_prompt(model, tokenizer, prompt_text, ctx_len, num_layers, device):
             use_cache=True, output_hidden_states=True,
         )
     hidden_cpu = [h.detach().cpu() for h in dec.hidden_states]
-    del dec
+    del dec, outputs
 
+    # Build tiered caches, compute oracle outputs, then free caches
+    # This keeps VRAM usage low at long contexts
     caches = create_tiered_cache_from_model(past_kv, list(range(num_layers)))
-    del past_kv, outputs
+    del past_kv
     gc.collect()
     torch.cuda.empty_cache()
 
-    # Pre-compute oracle outputs per layer
     oracle_outputs = {}
+    # Store per-layer cache data on CPU for reconstruction
+    cache_cpu_data = {}
     for lid in range(num_layers):
         cache = caches[lid]
         attn = model.model.layers[lid].self_attn
@@ -206,34 +216,65 @@ def _prepare_prompt(model, tokenizer, prompt_text, ctx_len, num_layers, device):
 
         oracle_outputs[lid] = out_oracle.cpu()
         del out_oracle
-        gc.collect()
-        torch.cuda.empty_cache()
+
+        # Save cache tensors to CPU for later reconstruction
+        cache_cpu_data[lid] = {
+            "keys_int8": cache.keys_int8.cpu(),
+            "keys_scale": cache.keys_scale.cpu(),
+            "correction": cache.correction.cpu(),
+            "values_fp16": cache.values_fp16.cpu(),
+            "keys_fp16_cpu": cache.keys_fp16_cpu,
+            "kv_heads": cache.kv_heads,
+            "num_tokens": cache.num_tokens,
+            "head_dim": cache.head_dim,
+            "d_v": cache.d_v,
+            "block_size": cache.block_size,
+            "num_blocks": cache.num_blocks,
+        }
+
+    del caches
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return {
         "hidden_cpu": hidden_cpu,
-        "caches": caches,
+        "cache_cpu_data": cache_cpu_data,
         "oracle_outputs": oracle_outputs,
     }
 
 
 def _evaluate_layer_epsilon(
     model, pdata, layer_id, epsilon_candidate,
-    locked_epsilon_array,  # [num_layers, num_heads] — locked for layers < layer_id
+    locked_epsilon_array,
     num_q, num_kv, head_dim, gqa, q_scale, device,
 ) -> np.ndarray:
     """Evaluate one epsilon candidate on one prompt for one layer.
 
-    Runs certified attention at this layer with the candidate ε.
-    All other layers use locked/zero epsilons, but since we measure
-    per-layer cosine (not propagated), we only run this layer.
+    Reconstructs the tiered cache on GPU from CPU data, runs certified
+    attention, then frees. This keeps VRAM usage bounded.
 
     Returns: [num_heads] cosine values.
     """
     from dotcache.kernels.certified_attention import certified_attention_layer
+    from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
 
-    cache = pdata["caches"][layer_id]
+    # Reconstruct cache on GPU for this layer
+    cd = pdata["cache_cpu_data"][layer_id]
+    cache = TieredKeyCacheLayer(
+        keys_int8=cd["keys_int8"].to(device),
+        keys_scale=cd["keys_scale"].to(device),
+        correction=cd["correction"].to(device),
+        values_fp16=cd["values_fp16"].to(device),
+        keys_fp16_cpu=cd["keys_fp16_cpu"],
+        kv_heads=cd["kv_heads"],
+        num_tokens=cd["num_tokens"],
+        head_dim=cd["head_dim"],
+        d_v=cd["d_v"],
+        block_size=cd["block_size"],
+        num_blocks=cd["num_blocks"],
+    )
+
     attn = model.model.layers[layer_id].self_attn
-
     with torch.inference_mode():
         h = pdata["hidden_cpu"][layer_id].to(device)
         q_all = attn.q_proj(h).view(num_q, head_dim).to(torch.float32)
@@ -246,10 +287,10 @@ def _evaluate_layer_epsilon(
     )
 
     oracle = pdata["oracle_outputs"][layer_id].to(device)
-    cos = F.cosine_similarity(oracle, out_cert, dim=1)  # [num_heads]
+    cos = F.cosine_similarity(oracle, out_cert, dim=1)
 
     result = cos.cpu().numpy()
-    del out_cert, oracle
+    del out_cert, oracle, cache
     return result
 
 
