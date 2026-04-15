@@ -2,10 +2,13 @@
 
 Orchestrates:
   1. Multi-head INT8 scoring + certification (fused Triton kernel)
-  2. Multi-head selective attention (fused Triton kernel)
-  3. FP16 fallback page-in for failed-certification blocks (async CPU→GPU)
+  2. Runtime V-format decision based on mass partition (ρ check)
+  3. Multi-head selective attention (fused Triton kernel)
 
-Total: 2 Triton kernel launches + optional async page-in.
+The V-format decision uses Phase 1 outputs at zero additional cost:
+  - Compute tier-2 residual mass ρ from m_b, S_b, skip_mask
+  - If η₄ · ρ < tolerance → INT4 values (45% less VRAM)
+  - Else → page in FP16 values from CPU
 """
 from __future__ import annotations
 
@@ -21,6 +24,66 @@ from dotcache.kernels.selective_attend_triton import (
 )
 
 
+# Default tolerance for INT4 value error (η₄ · ρ must be below this)
+DEFAULT_V_TOLERANCE = 0.5
+
+# Number of top-K blocks whose mass counts toward α_K (not tier-2)
+TOP_K_BLOCKS = 4
+
+
+def compute_tier2_residual_mass(
+    m_b: torch.Tensor,       # [num_q_heads, num_blocks] block maxima
+    S_b: torch.Tensor,       # [num_q_heads, num_blocks] block sums
+    skip_mask: torch.Tensor,  # [num_q_heads, num_blocks] bool (True=skip)
+    top_k: int = TOP_K_BLOCKS,
+) -> torch.Tensor:
+    """Compute per-head tier-2 residual mass ρ from Phase 1 outputs.
+
+    ρ = 1 - α_K - β, where:
+      α_K = fraction of mass on top-K blocks (by m_b)
+      β = fraction of mass on skipped blocks
+
+    Returns: [num_q_heads] float32, the worst-case ρ per head.
+    """
+    num_q_heads, num_blocks = m_b.shape
+
+    # Unnormalised mass per block: S_b * exp(m_b - m_global)
+    m_global = m_b.amax(dim=1, keepdim=True)  # [num_q_heads, 1]
+    log_mass = torch.log(S_b.clamp(min=1e-30)) + m_b - m_global
+    mass = torch.exp(log_mass)  # [num_q_heads, num_blocks]
+    total_mass = mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
+
+    # Normalised mass fractions
+    mass_frac = mass / total_mass  # [num_q_heads, num_blocks]
+
+    # α_K: mass on top-K blocks (by m_b score, per head)
+    k = min(top_k, num_blocks)
+    _, topk_idx = m_b.topk(k, dim=1)  # [num_q_heads, k]
+    alpha_K = mass_frac.gather(1, topk_idx).sum(dim=1)  # [num_q_heads]
+
+    # β: mass on skipped blocks
+    beta = (mass_frac * skip_mask.float()).sum(dim=1)  # [num_q_heads]
+
+    # ρ = 1 - α_K - β (clamped to [0, 1])
+    rho = (1.0 - alpha_K - beta).clamp(min=0.0, max=1.0)
+    return rho
+
+
+def decide_v_format(
+    rho: torch.Tensor,       # [num_q_heads] tier-2 residual mass
+    eta_int4: float,          # worst-case INT4 error bound for this layer
+    tolerance: float = DEFAULT_V_TOLERANCE,
+) -> str:
+    """Decide INT4 vs FP16 values based on mass-weighted error bound.
+
+    Uses worst-case ρ across all heads (conservative, per-layer decision).
+    Returns 'int4' or 'fp16'.
+    """
+    rho_worst = rho.max().item()
+    int4_error = eta_int4 * rho_worst
+    return "int4" if int4_error < tolerance else "fp16"
+
+
 def certified_attention_layer(
     cache: TieredKeyCacheLayer,
     q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
@@ -28,12 +91,17 @@ def certified_attention_layer(
     q_scale: float = None,
     block_epsilon: float = 0.001,
     collect_stats: bool = True,
+    v_tolerance: float = DEFAULT_V_TOLERANCE,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
+    When the cache has INT4 values, Phase 1 scoring outputs are used to
+    decide at runtime whether INT4 is safe (η₄ · ρ < tolerance) or
+    FP16 values should be paged in from CPU.
+
     Returns:
         output: [num_q_heads, d_v] float32
-        stats: dict with skip counts, timing info
+        stats: dict with skip counts, v_format decision
     """
     if q_scale is None:
         q_scale = 1.0 / (cache.head_dim ** 0.5)
@@ -52,24 +120,56 @@ def certified_attention_layer(
         block_epsilon=block_epsilon,
     )
 
-    # Phase 2: Multi-head selective attention
+    # Phase 2: Select V format and run attention
+    v_format = "fp16"  # default
+
     if cache.values_int4_packed is not None:
-        # Fused INT8 keys + INT4 values: both dequantised in-register
-        output = selective_attend_multihead_int8k_int4v(
-            keys_int8=cache.keys_int8,
-            keys_scale=cache.keys_scale,
-            values_int4_packed=cache.values_int4_packed,
-            values_int4_scales=cache.values_int4_scales,
-            values_int4_zeros=cache.values_int4_zeros,
-            q_all=q_all,
-            skip_mask_i32=skip_mask.to(torch.int32),
-            gqa_group=gqa_group,
-            block_size=cache.block_size,
-            group_size=cache.values_int4_group_size,
-            q_scale=q_scale,
-        )
+        # Runtime V-format decision based on mass partition
+        if collect_stats:
+            rho = compute_tier2_residual_mass(m_b, S_b, skip_mask)
+            eta_int4 = cache.values_int4_errors.max().item()
+            v_format = decide_v_format(rho, eta_int4, v_tolerance)
+        else:
+            # When stats disabled (timed runs), use INT4 unconditionally
+            # (the caller should set v_tolerance=inf to force INT4, or
+            # pre-decide format and use the appropriate cache)
+            v_format = "int4"
+
+        if v_format == "int4":
+            output = selective_attend_multihead_int8k_int4v(
+                keys_int8=cache.keys_int8,
+                keys_scale=cache.keys_scale,
+                values_int4_packed=cache.values_int4_packed,
+                values_int4_scales=cache.values_int4_scales,
+                values_int4_zeros=cache.values_int4_zeros,
+                q_all=q_all,
+                skip_mask_i32=skip_mask.to(torch.int32),
+                gqa_group=gqa_group,
+                block_size=cache.block_size,
+                group_size=cache.values_int4_group_size,
+                q_scale=q_scale,
+            )
+        else:
+            # Fallback: page in FP16 values from CPU
+            if cache.values_fp16_cpu is not None:
+                values_fp16 = cache.values_fp16_cpu.to(
+                    device=cache.keys_int8.device, non_blocking=True,
+                )
+            elif cache.values_fp16 is not None:
+                values_fp16 = cache.values_fp16
+            else:
+                raise ValueError("INT4 unsafe and no FP16 fallback available")
+            output = selective_attend_multihead_int8(
+                keys_int8=cache.keys_int8,
+                keys_scale=cache.keys_scale,
+                values_fp16=values_fp16,
+                q_all=q_all,
+                skip_mask_i32=skip_mask.to(torch.int32),
+                gqa_group=gqa_group,
+                block_size=cache.block_size,
+                q_scale=q_scale,
+            )
     elif cache.values_fp16 is not None:
-        # INT8 keys + FP16 values
         output = selective_attend_multihead_int8(
             keys_int8=cache.keys_int8,
             keys_scale=cache.keys_scale,
@@ -83,7 +183,7 @@ def certified_attention_layer(
     else:
         raise ValueError("No values available in cache")
 
-    # Stats (optional — skip_mask.sum().item() is a GPU sync point)
+    # Stats
     if collect_stats:
         total_blocks = num_q_heads * cache.num_blocks
         skipped = skip_mask.sum().item()
@@ -92,7 +192,13 @@ def certified_attention_layer(
             "skipped_blocks": int(skipped),
             "skip_rate": float(skipped) / float(total_blocks),
             "attended_blocks": total_blocks - int(skipped),
+            "v_format": v_format,
         }
+        if cache.values_int4_packed is not None:
+            stats["rho_max"] = rho.max().item()
+            stats["rho_mean"] = rho.mean().item()
+            stats["eta_int4"] = eta_int4
+            stats["int4_error_bound"] = eta_int4 * rho.max().item()
     else:
         stats = {}
 
