@@ -134,15 +134,16 @@ def certified_attention_layer(
     aligned_tokens = cache.aligned_tokens
     use_mixed_keys = False
 
-    use_hybrid = top_k_fp16 > 0 and cache.keys_fp16_cpu is not None and cache.num_blocks > 0
+    num_active_blocks = cache.active_blocks
+    use_hybrid = top_k_fp16 > 0 and cache.keys_fp16_cpu is not None and num_active_blocks > 0
 
     if use_hybrid:
         # Build per-head top-K mask
-        topk_mask = torch.zeros(num_q_heads, cache.num_blocks, dtype=torch.int32,
+        topk_mask = torch.zeros(num_q_heads, num_active_blocks, dtype=torch.int32,
                                 device=cache.keys_int8.device)
         all_topk = set()
         for qh in range(num_q_heads):
-            topk_idx = m_b[qh].topk(min(top_k_fp16, cache.num_blocks)).indices
+            topk_idx = m_b[qh].topk(min(top_k_fp16, num_active_blocks)).indices
             topk_mask[qh, topk_idx] = 1
             all_topk.update(topk_idx.tolist())
 
