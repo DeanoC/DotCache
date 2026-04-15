@@ -23,30 +23,42 @@ import triton.language as tl
 # Kernel 1: Fused matmul + block reduce (one launch, one program per block)
 # ---------------------------------------------------------------------------
 @triton.jit
-def _fused_matmul_reduce_kernel(
+def _fused_score_certify_single_launch_kernel(
     # Data
     K_int8_ptr,      # [N, head_dim] int8 contiguous
     K_scale_ptr,     # [num_blocks] float32
     Q_ptr,           # [head_dim] float32
+    Corr_ptr,        # [num_blocks] float32
     # Output
     M_b_ptr,         # [num_blocks] float32
     S_b_ptr,         # [num_blocks] float32
+    Skip_ptr,        # [num_blocks] int32
+    # Sync
+    Counter_ptr,     # [1] int32 — atomic counter for last-program detection
     # Layout
-    stride_k_n: tl.constexpr,     # head_dim (K contiguous)
+    stride_k_n: tl.constexpr,
     head_dim: tl.constexpr,
-    block_size: tl.constexpr,     # 16
+    block_size: tl.constexpr,
     q_scale: tl.constexpr,
     num_blocks: tl.constexpr,
+    n_programs: tl.constexpr,
+    block_epsilon: tl.constexpr,
     # Tuning
-    TILE_D: tl.constexpr,         # head_dim tile (power of 2, >= head_dim)
-    BPP: tl.constexpr,            # blocks per program
+    TILE_D: tl.constexpr,
+    BPP: tl.constexpr,
+    TILE_N: tl.constexpr,         # tile for certify pass over num_blocks
 ):
-    """Each program handles BPP blocks, amortising launch overhead."""
+    """Score + certify in one kernel launch.
+
+    Each program scores BPP blocks, then atomically increments a counter.
+    The last program to finish runs the certify pass (global max, mass, skip mask).
+    """
     pid = tl.program_id(0)
-    t_offs = tl.arange(0, block_size)  # [BS]
-    d_offs = tl.arange(0, TILE_D)     # [TD]
+    t_offs = tl.arange(0, block_size)
+    d_offs = tl.arange(0, TILE_D)
     num_tiles = (head_dim + TILE_D - 1) // TILE_D
 
+    # Phase 1: score this program's blocks
     for local_b in range(BPP):
         bid = pid * BPP + local_b
         still_valid = bid < num_blocks
@@ -66,6 +78,74 @@ def _fused_matmul_reduce_kernel(
                 k_fp = k_tile * k_scale
                 scores += tl.sum(k_fp * q_tile[None, :], axis=1)
 
+            scores = scores * q_scale
+            m_b = tl.max(scores)
+            s_b = tl.sum(tl.exp(scores - m_b))
+            tl.store(M_b_ptr + bid, m_b)
+            tl.store(S_b_ptr + bid, s_b)
+
+    # Barrier: atomic increment, last program does certify
+    old_count = tl.atomic_add(Counter_ptr, 1)
+    is_last = old_count == (n_programs - 1)
+
+    if is_last:
+        # Certify pass: global max → total mass → skip mask
+        # This runs on one SM after all scoring is done
+        m_global = tl.full((), float("-inf"), dtype=tl.float32)
+        for s in range(0, num_blocks, TILE_N):
+            o = s + tl.arange(0, TILE_N)
+            mk = o < num_blocks
+            m_global = tl.maximum(m_global, tl.max(tl.load(M_b_ptr + o, mask=mk, other=float("-inf"))))
+
+        total_mass = tl.full((), 0.0, dtype=tl.float32)
+        for s in range(0, num_blocks, TILE_N):
+            o = s + tl.arange(0, TILE_N)
+            mk = o < num_blocks
+            sb = tl.load(S_b_ptr + o, mask=mk, other=0.0)
+            mb = tl.load(M_b_ptr + o, mask=mk, other=float("-inf"))
+            cr = tl.load(Corr_ptr + o, mask=mk, other=1.0)
+            total_mass += tl.sum(tl.where(mk, sb * cr * tl.exp(mb - m_global), 0.0))
+
+        for s in range(0, num_blocks, TILE_N):
+            o = s + tl.arange(0, TILE_N)
+            mk = o < num_blocks
+            sb = tl.load(S_b_ptr + o, mask=mk, other=0.0)
+            mb = tl.load(M_b_ptr + o, mask=mk, other=float("-inf"))
+            cr = tl.load(Corr_ptr + o, mask=mk, other=1.0)
+            res = sb * cr * tl.exp(mb - m_global)
+            skip = (res / total_mass) < block_epsilon
+            tl.store(Skip_ptr + o, tl.where(mk, skip.to(tl.int32), 0), mask=mk)
+
+
+# Keep the old two-kernel versions for comparison
+@triton.jit
+def _fused_matmul_reduce_kernel(
+    K_int8_ptr, K_scale_ptr, Q_ptr, M_b_ptr, S_b_ptr,
+    stride_k_n: tl.constexpr, head_dim: tl.constexpr,
+    block_size: tl.constexpr, q_scale: tl.constexpr,
+    num_blocks: tl.constexpr, TILE_D: tl.constexpr, BPP: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    t_offs = tl.arange(0, block_size)
+    d_offs = tl.arange(0, TILE_D)
+    num_tiles = (head_dim + TILE_D - 1) // TILE_D
+    for local_b in range(BPP):
+        bid = pid * BPP + local_b
+        still_valid = bid < num_blocks
+        if still_valid:
+            base = bid * block_size
+            k_scale = tl.load(K_scale_ptr + bid).to(tl.float32)
+            scores = tl.zeros((block_size,), dtype=tl.float32)
+            row_ptrs = K_int8_ptr + (base + t_offs) * stride_k_n
+            for tile_idx in range(num_tiles):
+                d_start = tile_idx * TILE_D
+                d_off = d_start + d_offs
+                d_mask = d_off < head_dim
+                q_tile = tl.load(Q_ptr + d_off, mask=d_mask, other=0.0).to(tl.float32)
+                k_ptrs = row_ptrs[:, None] + d_off[None, :]
+                k_tile = tl.load(k_ptrs, mask=d_mask[None, :], other=0).to(tl.float32)
+                k_fp = k_tile * k_scale
+                scores += tl.sum(k_fp * q_tile[None, :], axis=1)
             scores = scores * q_scale
             m_b = tl.max(scores)
             s_b = tl.sum(tl.exp(scores - m_b))
@@ -126,7 +206,7 @@ def fused_score_certify(
     block_size: int = 16,
     q_scale: float = 1.0,
     block_epsilon: float = 0.001,
-    single_launch: bool = True,
+    single_launch: bool = True,   # True = one kernel launch, False = two
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fused INT8 scoring + certification.
 
@@ -140,32 +220,43 @@ def fused_score_certify(
     S_b = torch.empty(num_blocks, dtype=torch.float32, device=device)
 
     TILE_D = triton.next_power_of_2(head_dim)
-
     BPP = max(1, (num_blocks + 31) // 32)
     n_progs = (num_blocks + BPP - 1) // BPP
-
-    _fused_matmul_reduce_kernel[(n_progs,)](
-        K_int8, K_scale, q, m_b, S_b,
-        stride_k_n=head_dim,
-        head_dim=head_dim,
-        block_size=block_size,
-        q_scale=q_scale,
-        num_blocks=num_blocks,
-        TILE_D=TILE_D,
-        BPP=BPP,
-    )
+    TILE_N = min(triton.next_power_of_2(num_blocks), 1024)
 
     if single_launch:
-        # Do certification in PyTorch — avoids second kernel launch.
-        # At 512-1024 blocks these are fast tensor ops on tiny arrays.
-        m_global = m_b.max()
-        residual = S_b * correction * torch.exp(m_b - m_global)
-        total_mass = residual.sum()
-        skip_mask = (residual / total_mass) < block_epsilon
-        return m_b, S_b, skip_mask
-    else:
+        # Single kernel: score + certify via atomic last-program pattern
         skip_i32 = torch.empty(num_blocks, dtype=torch.int32, device=device)
-        TILE_N = min(triton.next_power_of_2(num_blocks), 1024)
+        counter = torch.zeros(1, dtype=torch.int32, device=device)
+
+        _fused_score_certify_single_launch_kernel[(n_progs,)](
+            K_int8, K_scale, q, correction,
+            m_b, S_b, skip_i32, counter,
+            stride_k_n=head_dim,
+            head_dim=head_dim,
+            block_size=block_size,
+            q_scale=q_scale,
+            num_blocks=num_blocks,
+            n_programs=n_progs,
+            block_epsilon=block_epsilon,
+            TILE_D=TILE_D,
+            BPP=BPP,
+            TILE_N=TILE_N,
+        )
+        return m_b, S_b, skip_i32.bool()
+    else:
+        # Two kernels: score then certify
+        _fused_matmul_reduce_kernel[(n_progs,)](
+            K_int8, K_scale, q, m_b, S_b,
+            stride_k_n=head_dim,
+            head_dim=head_dim,
+            block_size=block_size,
+            q_scale=q_scale,
+            num_blocks=num_blocks,
+            TILE_D=TILE_D,
+            BPP=BPP,
+        )
+        skip_i32 = torch.empty(num_blocks, dtype=torch.int32, device=device)
         _certify_kernel[(1,)](
             m_b, S_b, correction, skip_i32,
             num_blocks=num_blocks,
