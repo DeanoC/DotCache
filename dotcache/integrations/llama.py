@@ -701,26 +701,53 @@ class LlamaDotCacheModelAdapter:
         past_key_values,
         *,
         layer_epsilons: dict[int, float] | None = None,
+        epsilon_profile: Any = None,
+        context_length: int | None = None,
         default_epsilon: float = 1e-4,
         block_size: int = 16,
+        use_int4_values: bool = False,
     ) -> None:
         """Build tiered caches from prefill KV and prepare for certified decode.
 
         Args:
             past_key_values: HF DynamicCache from prefill
-            layer_epsilons: per-layer epsilon overrides (e.g. {0: 1e-3, 31: 1e-5})
-            default_epsilon: fallback epsilon for layers not in layer_epsilons
+            layer_epsilons: per-layer epsilon dict (simple mode)
+            epsilon_profile: EpsilonProfile instance (context-aware mode)
+            context_length: context length for profile lookup (required if epsilon_profile set)
+            default_epsilon: fallback epsilon for uncalibrated layers
             block_size: tokens per block for INT8 quantisation
+            use_int4_values: if True, use INT4 per-group values (45% less VRAM)
         """
         _ensure_certified_imports()
         layer_ids = list(range(self.model.config.num_hidden_layers))
-        tiered_caches = create_tiered_cache_from_model(
-            past_key_values, layer_ids, block_size=block_size,
-        )
-        # INT8 attend kernel reads keys as INT8 + scale directly — no pre-dequant needed
+
+        if use_int4_values:
+            from ..kernels.tiered_kv_cache import create_tiered_cache_int4v_from_model
+            tiered_caches = create_tiered_cache_int4v_from_model(
+                past_key_values, layer_ids, block_size=block_size,
+            )
+        else:
+            tiered_caches = create_tiered_cache_from_model(
+                past_key_values, layer_ids, block_size=block_size,
+            )
+
+        # Resolve layer epsilons
+        if epsilon_profile is not None:
+            if context_length is None:
+                # Infer from KV cache length
+                if hasattr(past_key_values, "layers"):
+                    context_length = past_key_values.layers[0].keys[0].shape[1]
+                else:
+                    context_length = 8192  # fallback
+            resolved_epsilons = epsilon_profile.get_layer_epsilons(context_length)
+        elif layer_epsilons is not None:
+            resolved_epsilons = layer_epsilons
+        else:
+            resolved_epsilons = {}
+
         self.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
-            layer_epsilons=layer_epsilons or {},
+            layer_epsilons=resolved_epsilons,
             default_epsilon=default_epsilon,
             block_size=block_size,
         )
