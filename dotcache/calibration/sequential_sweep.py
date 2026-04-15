@@ -205,10 +205,11 @@ def _prepare_prompt(model, tokenizer, prompt_text, ctx_len, num_layers, device):
             q_all = attn.q_proj(h).view(num_q, head_dim).to(torch.float32)
             del h
 
+        nt = cache.num_tokens
         out_oracle = torch.empty(num_q, head_dim, dtype=torch.float32, device=device)
         for kv in range(num_kv):
-            kf = cache.keys_fp16_cpu[kv].to(dtype=torch.float32, device=device)
-            vf = cache.values_fp16[kv].to(torch.float32)
+            kf = cache.keys_fp16_cpu[kv, :nt, :].to(dtype=torch.float32, device=device)
+            vf = cache.values_fp16[kv, :nt, :].to(torch.float32)
             for qh in range(kv * gqa, (kv + 1) * gqa):
                 s = (kf @ q_all[qh]) * q_scale
                 w = torch.softmax(s, dim=0)
