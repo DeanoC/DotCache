@@ -17,6 +17,7 @@ from dotcache.kernels.fused_score_certify import fused_score_certify_multihead
 from dotcache.kernels.selective_attend_triton import (
     selective_attend_multihead,
     selective_attend_multihead_int8,
+    selective_attend_multihead_int8k_int4v,
 )
 
 
@@ -52,19 +53,35 @@ def certified_attention_layer(
     )
 
     # Phase 2: Multi-head selective attention
-    # INT8 in-register dequant: reads INT8 keys + per-block scale directly,
-    # dequantises in register file. No float32 key tensor materialised in VRAM.
-    # Values read as FP16 and cast in-register.
-    output = selective_attend_multihead_int8(
-        keys_int8=cache.keys_int8,
-        keys_scale=cache.keys_scale,
-        values_fp16=cache.values_fp16,
-        q_all=q_all,
-        skip_mask_i32=skip_mask.to(torch.int32),
-        gqa_group=gqa_group,
-        block_size=cache.block_size,
-        q_scale=q_scale,
-    )
+    if cache.values_int4_packed is not None:
+        # Fused INT8 keys + INT4 values: both dequantised in-register
+        output = selective_attend_multihead_int8k_int4v(
+            keys_int8=cache.keys_int8,
+            keys_scale=cache.keys_scale,
+            values_int4_packed=cache.values_int4_packed,
+            values_int4_scales=cache.values_int4_scales,
+            values_int4_zeros=cache.values_int4_zeros,
+            q_all=q_all,
+            skip_mask_i32=skip_mask.to(torch.int32),
+            gqa_group=gqa_group,
+            block_size=cache.block_size,
+            group_size=cache.values_int4_group_size,
+            q_scale=q_scale,
+        )
+    elif cache.values_fp16 is not None:
+        # INT8 keys + FP16 values
+        output = selective_attend_multihead_int8(
+            keys_int8=cache.keys_int8,
+            keys_scale=cache.keys_scale,
+            values_fp16=cache.values_fp16,
+            q_all=q_all,
+            skip_mask_i32=skip_mask.to(torch.int32),
+            gqa_group=gqa_group,
+            block_size=cache.block_size,
+            q_scale=q_scale,
+        )
+    else:
+        raise ValueError("No values available in cache")
 
     # Stats (optional — skip_mask.sum().item() is a GPU sync point)
     if collect_stats:

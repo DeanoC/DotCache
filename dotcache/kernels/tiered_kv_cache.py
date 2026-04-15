@@ -4,7 +4,9 @@ The INT8 keys are the hot path — used for scoring in the fused kernel.
 The FP16 originals are cold storage — only paged in when a block's INT8
 certification fails (measured at 0-3% of blocks).
 
-Values stay in VRAM as FP16 (needed for attend, no quantised alternative yet).
+Two value storage modes:
+  - FP16 values in VRAM (original, higher quality)
+  - INT4 per-group values in VRAM (v2, ~38% less VRAM, mass-weighted safety)
 """
 from __future__ import annotations
 
@@ -45,6 +47,16 @@ class TieredKeyCacheLayer:
     # Pre-computed dequantised keys and float32 values (avoid per-call allocation)
     _keys_deq_f32: torch.Tensor | None = None   # [kv_heads, N, head_dim] float32, cuda
     _values_f32: torch.Tensor | None = None      # [kv_heads, N, d_v] float32, cuda
+
+    # INT4 per-group quantised values (v2 — optional, replaces values_fp16 in VRAM)
+    values_int4_packed: torch.Tensor | None = None   # [kv_heads, N, d_v//2] uint8, cuda
+    values_int4_scales: torch.Tensor | None = None   # [kv_heads, N, num_groups] float16, cuda
+    values_int4_zeros: torch.Tensor | None = None    # [kv_heads, N, num_groups] float16, cuda
+    values_int4_errors: torch.Tensor | None = None   # [kv_heads, num_blocks] float32, cuda
+    values_int4_group_size: int = 32
+
+    # CPU warm tier — FP16 values for fallback when INT4 error too high
+    values_fp16_cpu: torch.Tensor | None = None  # [kv_heads, N, d_v] float16, pinned CPU
 
     @classmethod
     def from_fp16_cache(
@@ -118,6 +130,71 @@ class TieredKeyCacheLayer:
             _pagein_buffer=pagein_buffer,
         )
 
+    @classmethod
+    def from_fp16_cache_int4v(
+        cls,
+        keys_fp16: torch.Tensor,     # [kv_heads, N, head_dim] float16/32, device=cuda
+        values_fp16: torch.Tensor,   # [kv_heads, N, d_v] float16/32, device=cuda
+        block_size: int = 16,
+        group_size: int = 32,
+        max_pagein_blocks: int = 64,
+    ) -> "TieredKeyCacheLayer":
+        """Create tiered cache with INT4 per-group values.
+
+        Keys: INT8 in VRAM (same as v1)
+        Values: INT4 per-group in VRAM (NEW — saves ~38% vs FP16)
+        FP16 originals: pinned CPU (both K and V)
+        """
+        from dotcache.kernels.int4_group_quantise import quantise_int4_grouped_block
+
+        # Build the base cache (INT8 keys, FP16 values)
+        base = cls.from_fp16_cache(keys_fp16, values_fp16, block_size, max_pagein_blocks)
+
+        # Quantise values to INT4 per-group
+        int4_result = quantise_int4_grouped_block(
+            values_fp16.to(torch.float16), block_size=block_size, group_size=group_size,
+        )
+
+        # Store INT4 values on the cache
+        base.values_int4_packed = int4_result["data_packed"].contiguous()
+        base.values_int4_scales = int4_result["scales"].contiguous()
+        base.values_int4_zeros = int4_result["zeros"].contiguous()
+        base.values_int4_errors = int4_result["error_bounds"].contiguous()
+        base.values_int4_group_size = group_size
+
+        # Move FP16 values to CPU pinned (they're currently in VRAM as values_fp16)
+        base.values_fp16_cpu = base.values_fp16.cpu().pin_memory()
+
+        # Free FP16 values from VRAM — INT4 replaces them
+        base.values_fp16 = None
+
+        return base
+
+    def dequantise_int4_values(self) -> torch.Tensor:
+        """Dequantise all INT4 values to float32 [kv_heads, N, d_v]."""
+        from dotcache.kernels.int4_group_quantise import dequantise_int4_grouped
+
+        kv_heads = self.values_int4_packed.shape[0]
+        N = self.values_int4_packed.shape[1]
+        results = []
+        for h in range(kv_heads):
+            deq = dequantise_int4_grouped(
+                self.values_int4_packed[h],
+                self.values_int4_scales[h],
+                self.values_int4_zeros[h],
+                self.values_int4_group_size,
+            )
+            results.append(deq)
+        return torch.stack(results).to(torch.float32)
+
+    def get_values_f32(self) -> torch.Tensor:
+        """Get float32 values from whichever tier is available in VRAM."""
+        if self.values_fp16 is not None:
+            return self.values_fp16.to(torch.float32)
+        if self.values_int4_packed is not None:
+            return self.dequantise_int4_values()
+        raise ValueError("No values available in VRAM")
+
     def precompute_dequant(self) -> None:
         """Pre-compute dequantised keys and float32 values to avoid per-call allocation."""
         self._keys_deq_f32 = (
@@ -132,18 +209,28 @@ class TieredKeyCacheLayer:
         total = self.keys_int8.nelement() * 1      # INT8
         total += self.keys_scale.nelement() * 4     # float32
         total += self.correction.nelement() * 4     # float32
-        total += self.values_fp16.nelement() * 2    # float16
+        if self.values_fp16 is not None:
+            total += self.values_fp16.nelement() * 2    # float16
         if self._pagein_buffer is not None:
             total += self._pagein_buffer.nelement() * 2
         if self._keys_deq_f32 is not None:
             total += self._keys_deq_f32.nelement() * 4
         if self._values_f32 is not None:
             total += self._values_f32.nelement() * 4
+        # INT4 value storage
+        if self.values_int4_packed is not None:
+            total += self.values_int4_packed.nelement() * 1   # uint8 (packed)
+            total += self.values_int4_scales.nelement() * 2   # float16
+            total += self.values_int4_zeros.nelement() * 2    # float16
+            total += self.values_int4_errors.nelement() * 4   # float32
         return total
 
     def cpu_bytes(self) -> int:
         """Total CPU pinned RAM usage."""
-        return self.keys_fp16_cpu.nelement() * 2
+        total = self.keys_fp16_cpu.nelement() * 2
+        if self.values_fp16_cpu is not None:
+            total += self.values_fp16_cpu.nelement() * 2
+        return total
 
     def page_in_blocks(
         self,
@@ -183,6 +270,33 @@ class nullcontext:
         return self
     def __exit__(self, *args):
         pass
+
+
+def create_tiered_cache_int4v_from_model(
+    past_kv,
+    layer_ids: list[int],
+    block_size: int = 16,
+    group_size: int = 32,
+) -> dict[int, TieredKeyCacheLayer]:
+    """Create tiered caches with INT4 per-group values from HF past_key_values."""
+    caches = {}
+    for layer_id in layer_ids:
+        if hasattr(past_kv, "layers"):
+            keys = past_kv.layers[layer_id].keys[0]
+            values = past_kv.layers[layer_id].values[0]
+        else:
+            keys = past_kv[layer_id][0][0]
+            values = past_kv[layer_id][1][0]
+
+        seq_len = keys.shape[1]
+        aligned_len = (seq_len // block_size) * block_size
+        keys = keys[:, :aligned_len, :].contiguous()
+        values = values[:, :aligned_len, :].contiguous()
+
+        caches[layer_id] = TieredKeyCacheLayer.from_fp16_cache_int4v(
+            keys, values, block_size=block_size, group_size=group_size,
+        )
+    return caches
 
 
 def create_tiered_cache_from_model(

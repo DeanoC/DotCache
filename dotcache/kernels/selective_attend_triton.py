@@ -238,6 +238,190 @@ def selective_attend_multihead_int8(
     return output
 
 
+# ─── INT8 keys + INT4 per-group values variant ───────────────────────
+
+@triton.jit
+def _multihead_selective_attend_int8k_int4v_kernel(
+    # INT8 keys
+    K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous
+    K_scale_ptr,     # [num_kv_heads, num_blocks] float32
+    # INT4 packed values + per-group scales/zeros
+    V_packed_ptr,    # [num_kv_heads * N, d_v // 2] uint8 contiguous
+    V_scales_ptr,    # [num_kv_heads * N, num_groups] float16 contiguous
+    V_zeros_ptr,     # [num_kv_heads * N, num_groups] float16 contiguous
+    # Query + skip
+    Q_ptr,           # [num_q_heads, head_dim] float32
+    Skip_ptr,        # [num_q_heads, num_blocks] int32
+    Out_ptr,         # [num_q_heads, d_v] float32
+    # Layout
+    N: tl.constexpr,
+    stride_k: tl.constexpr,
+    d_v: tl.constexpr,
+    d_v_half: tl.constexpr,     # d_v // 2
+    num_groups: tl.constexpr,
+    group_size: tl.constexpr,
+    num_blocks: tl.constexpr,
+    block_size: tl.constexpr,
+    head_dim: tl.constexpr,
+    q_scale: tl.constexpr,
+    num_q_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr,
+    gqa_group: tl.constexpr,
+    TILE_D: tl.constexpr,
+    TILE_V: tl.constexpr,
+):
+    """INT8 keys + INT4 per-group values, both dequantised in-register."""
+    qh = tl.program_id(0)
+    valid = qh < num_q_heads
+    if valid:
+        kvh = qh // gqa_group
+        kv_base = kvh * N
+
+        t_offs = tl.arange(0, block_size)
+        d_offs = tl.arange(0, TILE_D)
+        v_offs = tl.arange(0, TILE_V)
+        v_mask = v_offs < d_v
+
+        m = tl.full((), float("-inf"), dtype=tl.float32)
+        l = tl.full((), 0.0, dtype=tl.float32)
+        acc = tl.zeros((TILE_V,), dtype=tl.float32)
+
+        for bid in range(num_blocks):
+            skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
+            if skip_val == 0:
+                base_tok = kv_base + bid * block_size
+
+                # ── K scoring (INT8 in-register dequant) ──
+                k_scale = tl.load(K_scale_ptr + kvh * num_blocks + bid)
+                scores = tl.zeros((block_size,), dtype=tl.float32)
+                row_ptrs = K_int8_ptr + (base_tok + t_offs) * stride_k
+                for d_start in range(0, head_dim, TILE_D):
+                    d_off = d_start + d_offs
+                    dm = d_off < head_dim
+                    q_tile = tl.load(Q_ptr + qh * head_dim + d_off, mask=dm, other=0.0).to(tl.float32)
+                    k_ptrs = row_ptrs[:, None] + d_off[None, :]
+                    k_int8_tile = tl.load(k_ptrs, mask=dm[None, :], other=0)
+                    k_tile = k_int8_tile.to(tl.float32) * k_scale
+                    scores += tl.sum(k_tile * q_tile[None, :], axis=1)
+                scores = scores * q_scale
+
+                # ── Online softmax ──
+                block_max = tl.max(scores)
+                new_m = tl.maximum(m, block_max)
+                alpha = tl.exp(m - new_m)
+                acc = acc * alpha
+                l = l * alpha
+                weights = tl.exp(scores - new_m)
+                l += tl.sum(weights)
+
+                # ── V accumulation (INT4 per-group in-register dequant) ──
+                # Load packed uint8 [block_size, d_v//2], unpack to [block_size, d_v]
+                # Then apply per-group scale+zero
+                # Process in TILE_V chunks over the d_v dimension
+                for v_start in range(0, d_v, TILE_V):
+                    v_off = v_start + v_offs
+                    vm_local = v_off < d_v
+
+                    # Packed index: each byte holds 2 values
+                    # Even indices = low nibble, odd indices = high nibble
+                    packed_idx = v_off // 2  # [TILE_V]
+                    is_high = (v_off % 2)    # 0 for low nibble, 1 for high
+
+                    # Load packed bytes for all tokens in block
+                    v_packed_ptrs = V_packed_ptr + (base_tok + t_offs[:, None]) * d_v_half + packed_idx[None, :]
+                    packed_bytes = tl.load(v_packed_ptrs, mask=vm_local[None, :], other=0)
+
+                    # Unpack: select low or high nibble
+                    low_nibble = packed_bytes & 0x0F
+                    high_nibble = (packed_bytes >> 4) & 0x0F
+                    unpacked = tl.where(is_high[None, :] == 1, high_nibble, low_nibble)
+                    v_int4 = unpacked.to(tl.float32)
+
+                    # Per-group dequant: which group does each v_off belong to?
+                    group_idx = v_off // group_size  # [TILE_V]
+                    # Load scales and zeros for all tokens × relevant groups
+                    scale_ptrs = V_scales_ptr + (base_tok + t_offs[:, None]) * num_groups + group_idx[None, :]
+                    zero_ptrs = V_zeros_ptr + (base_tok + t_offs[:, None]) * num_groups + group_idx[None, :]
+                    v_scale = tl.load(scale_ptrs, mask=vm_local[None, :], other=0.0).to(tl.float32)
+                    v_zero = tl.load(zero_ptrs, mask=vm_local[None, :], other=0.0).to(tl.float32)
+
+                    # Dequantise: val = int4 * scale + zero
+                    v_tile = v_int4 * v_scale + v_zero  # [block_size, TILE_V]
+
+                    # Weighted accumulation
+                    w_v = tl.sum(weights[:, None] * v_tile, axis=0)  # [TILE_V]
+
+                    # Add to accumulator at the right offset
+                    # Since TILE_V >= d_v for our case, this is the only iteration
+                    acc = tl.where(vm_local, acc + w_v, acc) if v_start > 0 else acc + tl.where(vm_local, w_v, tl.zeros_like(w_v))
+
+                m = new_m
+
+        safe_l = tl.where(l > 0.0, l, 1.0)
+        output = acc / safe_l
+        tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
+
+
+def selective_attend_multihead_int8k_int4v(
+    keys_int8: torch.Tensor,          # [num_kv_heads, N, head_dim] int8
+    keys_scale: torch.Tensor,         # [num_kv_heads, num_blocks] float32
+    values_int4_packed: torch.Tensor,  # [num_kv_heads, N, d_v//2] uint8
+    values_int4_scales: torch.Tensor,  # [num_kv_heads, N, num_groups] float16
+    values_int4_zeros: torch.Tensor,   # [num_kv_heads, N, num_groups] float16
+    q_all: torch.Tensor,              # [num_q_heads, head_dim] float32
+    skip_mask_i32: torch.Tensor,      # [num_q_heads, num_blocks] int32
+    gqa_group: int,
+    block_size: int = 16,
+    group_size: int = 32,
+    q_scale: float = 1.0,
+) -> torch.Tensor:
+    """INT8 keys + INT4 per-group values, both dequantised in-register.
+
+    Keys: INT8 per-block symmetric, dequant = int8 * k_scale
+    Values: INT4 per-group asymmetric, dequant = int4 * v_scale + v_zero
+
+    Returns [num_q_heads, d_v] float32.
+    """
+    num_kv_heads, N, head_dim = keys_int8.shape
+    d_v = values_int4_packed.shape[2] * 2  # packed: d_v // 2
+    num_groups = d_v // group_size
+    num_q_heads = q_all.shape[0]
+    num_blocks = N // block_size
+    device = keys_int8.device
+
+    K_flat = keys_int8.reshape(num_kv_heads * N, head_dim).contiguous()
+    V_packed_flat = values_int4_packed.reshape(num_kv_heads * N, d_v // 2).contiguous()
+    V_scales_flat = values_int4_scales.reshape(num_kv_heads * N, num_groups).contiguous()
+    V_zeros_flat = values_int4_zeros.reshape(num_kv_heads * N, num_groups).contiguous()
+
+    output = torch.empty(num_q_heads, d_v, dtype=torch.float32, device=device)
+
+    TILE_D = triton.next_power_of_2(head_dim)
+    TILE_V = triton.next_power_of_2(d_v)
+
+    _multihead_selective_attend_int8k_int4v_kernel[(num_q_heads,)](
+        K_flat, keys_scale.contiguous(),
+        V_packed_flat, V_scales_flat, V_zeros_flat,
+        q_all.contiguous(), skip_mask_i32.contiguous(), output,
+        N=N,
+        stride_k=head_dim,
+        d_v=d_v,
+        d_v_half=d_v // 2,
+        num_groups=num_groups,
+        group_size=group_size,
+        num_blocks=num_blocks,
+        block_size=block_size,
+        head_dim=head_dim,
+        q_scale=q_scale,
+        num_q_heads=num_q_heads,
+        num_kv_heads=num_kv_heads,
+        gqa_group=gqa_group,
+        TILE_D=TILE_D,
+        TILE_V=TILE_V,
+    )
+    return output
+
+
 def selective_attend_multihead(
     keys_packed: torch.Tensor,    # [num_kv_heads, N, head_dim] float32
     values_packed: torch.Tensor,  # [num_kv_heads, N, d_v] float32
