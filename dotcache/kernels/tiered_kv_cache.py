@@ -460,13 +460,15 @@ def create_tiered_cache_from_model(
             )
 
         # Poison padding positions so they get ~zero softmax weight.
-        # Positions num_tokens..aligned_tokens are zero from pre-allocation.
-        # Set all key representations to large negative values.
+        # INT8 keys: -127 → dequant to large negative → Q·K very negative → ~0 weight
+        # FP16 keys: leave as zero (0 → Q·K = 0 → moderate weight, but V=0 → no contribution)
+        # Don't use -100 for FP16 — it causes numerical issues in the hybrid kernel
+        # when Q·(-100*ones) produces extreme positive scores for some queries.
         at = cache.aligned_tokens
         nt = cache.num_tokens
         if at > nt:
             cache.keys_int8[:, nt:at, :] = -127
-            cache.keys_fp16_cpu[:, nt:at, :] = -100.0
+            # keys_fp16_cpu padding stays as zero (from pre-allocation)
             if cache._keys_deq_f32 is not None:
                 cache._keys_deq_f32[:, nt:at, :] = -1e4
 
