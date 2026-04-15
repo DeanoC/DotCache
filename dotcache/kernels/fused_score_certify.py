@@ -198,6 +198,176 @@ def _certify_kernel(
 # ---------------------------------------------------------------------------
 # Python API
 # ---------------------------------------------------------------------------
+@triton.jit
+def _multihead_score_certify_kernel(
+    # Data — all KV heads packed: K_int8[kv_head, N, head_dim]
+    K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous (heads packed)
+    K_scale_ptr,     # [num_kv_heads, num_blocks] float32
+    Q_ptr,           # [num_q_heads, head_dim] float32
+    Corr_ptr,        # [num_kv_heads, num_blocks] float32
+    # Output
+    Skip_ptr,        # [num_q_heads, num_blocks] int32
+    M_b_ptr,         # [num_q_heads, num_blocks] float32
+    S_b_ptr,         # [num_q_heads, num_blocks] float32
+    # Sync
+    Counter_ptr,     # [1] int32
+    # Layout
+    N: tl.constexpr,             # tokens per KV head
+    stride_k_n: tl.constexpr,   # head_dim
+    head_dim: tl.constexpr,
+    block_size: tl.constexpr,
+    q_scale: tl.constexpr,
+    num_blocks: tl.constexpr,
+    num_q_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr,
+    gqa_group: tl.constexpr,     # num_q_heads // num_kv_heads
+    n_programs: tl.constexpr,
+    block_epsilon: tl.constexpr,
+    TILE_D: tl.constexpr,
+    TILE_N: tl.constexpr,
+):
+    """Score + certify ALL heads in one kernel launch.
+
+    Grid: (num_q_heads * ceil(num_blocks / BPP),)
+    Each program handles one q_head × one chunk of blocks.
+    The last program to finish (across ALL heads) runs per-head certify.
+    """
+    pid = tl.program_id(0)
+    # Map pid → (q_head_idx, block_chunk_idx)
+    blocks_per_chunk = (num_blocks + 31) // 32  # BPP
+    chunks_per_head = (num_blocks + blocks_per_chunk - 1) // blocks_per_chunk
+    q_head_idx = pid // chunks_per_head
+    chunk_idx = pid % chunks_per_head
+
+    valid_head = q_head_idx < num_q_heads
+    if valid_head:
+        kv_head_idx = q_head_idx // gqa_group
+        t_offs = tl.arange(0, block_size)
+        d_offs = tl.arange(0, TILE_D)
+        num_tiles = (head_dim + TILE_D - 1) // TILE_D
+
+        # Base pointer for this KV head's keys
+        kv_base = kv_head_idx * N * stride_k_n
+
+        # Score blocks in this chunk
+        for local_b in range(blocks_per_chunk):
+            bid = chunk_idx * blocks_per_chunk + local_b
+            still_valid = bid < num_blocks
+            if still_valid:
+                base_tok = bid * block_size
+                k_scale = tl.load(K_scale_ptr + kv_head_idx * num_blocks + bid).to(tl.float32)
+                scores = tl.zeros((block_size,), dtype=tl.float32)
+                row_ptrs = K_int8_ptr + kv_base + (base_tok + t_offs) * stride_k_n
+
+                for tile_idx in range(num_tiles):
+                    d_start = tile_idx * TILE_D
+                    d_off = d_start + d_offs
+                    d_mask = d_off < head_dim
+                    q_tile = tl.load(Q_ptr + q_head_idx * head_dim + d_off, mask=d_mask, other=0.0).to(tl.float32)
+                    k_ptrs = row_ptrs[:, None] + d_off[None, :]
+                    k_tile = tl.load(k_ptrs, mask=d_mask[None, :], other=0).to(tl.float32)
+                    k_fp = k_tile * k_scale
+                    scores += tl.sum(k_fp * q_tile[None, :], axis=1)
+
+                scores = scores * q_scale
+                m_b = tl.max(scores)
+                s_b = tl.sum(tl.exp(scores - m_b))
+                out_idx = q_head_idx * num_blocks + bid
+                tl.store(M_b_ptr + out_idx, m_b)
+                tl.store(S_b_ptr + out_idx, s_b)
+
+    # Barrier: last program does certify for ALL heads
+    old_count = tl.atomic_add(Counter_ptr, 1)
+    is_last = old_count == (n_programs - 1)
+
+    if is_last:
+        for qh in range(num_q_heads):
+            kvh = qh // gqa_group
+            m_base = qh * num_blocks
+            corr_base = kvh * num_blocks
+
+            # Global max for this head
+            m_global = tl.full((), float("-inf"), dtype=tl.float32)
+            for s in range(0, num_blocks, TILE_N):
+                o = s + tl.arange(0, TILE_N)
+                mk = o < num_blocks
+                m_global = tl.maximum(m_global, tl.max(tl.load(M_b_ptr + m_base + o, mask=mk, other=float("-inf"))))
+
+            # Total mass
+            total = tl.full((), 0.0, dtype=tl.float32)
+            for s in range(0, num_blocks, TILE_N):
+                o = s + tl.arange(0, TILE_N)
+                mk = o < num_blocks
+                sb = tl.load(S_b_ptr + m_base + o, mask=mk, other=0.0)
+                mb = tl.load(M_b_ptr + m_base + o, mask=mk, other=float("-inf"))
+                cr = tl.load(Corr_ptr + corr_base + o, mask=mk, other=1.0)
+                total += tl.sum(tl.where(mk, sb * cr * tl.exp(mb - m_global), 0.0))
+
+            # Skip mask
+            for s in range(0, num_blocks, TILE_N):
+                o = s + tl.arange(0, TILE_N)
+                mk = o < num_blocks
+                sb = tl.load(S_b_ptr + m_base + o, mask=mk, other=0.0)
+                mb = tl.load(M_b_ptr + m_base + o, mask=mk, other=float("-inf"))
+                cr = tl.load(Corr_ptr + corr_base + o, mask=mk, other=1.0)
+                res = sb * cr * tl.exp(mb - m_global)
+                skip = (res / total) < block_epsilon
+                tl.store(Skip_ptr + m_base + o, tl.where(mk, skip.to(tl.int32), 0), mask=mk)
+
+
+def fused_score_certify_multihead(
+    K_int8_packed: torch.Tensor,   # [num_kv_heads, N, head_dim] int8
+    K_scale: torch.Tensor,         # [num_kv_heads, num_blocks] float32
+    q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
+    correction: torch.Tensor,      # [num_kv_heads, num_blocks] float32
+    gqa_group: int,
+    block_size: int = 16,
+    q_scale: float = 1.0,
+    block_epsilon: float = 0.001,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Score + certify ALL heads in one kernel launch.
+
+    Returns (m_b, S_b, skip_mask) each [num_q_heads, num_blocks].
+    """
+    num_kv_heads, N, head_dim = K_int8_packed.shape
+    num_q_heads = q_all.shape[0]
+    num_blocks = N // block_size
+    device = K_int8_packed.device
+
+    # Flatten KV heads for contiguous access
+    K_flat = K_int8_packed.reshape(num_kv_heads * N, head_dim).contiguous()
+
+    m_b = torch.empty(num_q_heads, num_blocks, dtype=torch.float32, device=device)
+    S_b = torch.empty(num_q_heads, num_blocks, dtype=torch.float32, device=device)
+    skip_i32 = torch.empty(num_q_heads, num_blocks, dtype=torch.int32, device=device)
+    counter = torch.zeros(1, dtype=torch.int32, device=device)
+
+    TILE_D = triton.next_power_of_2(head_dim)
+    TILE_N = min(triton.next_power_of_2(num_blocks), 1024)
+    blocks_per_chunk = max(1, (num_blocks + 31) // 32)
+    chunks_per_head = (num_blocks + blocks_per_chunk - 1) // blocks_per_chunk
+    n_programs = num_q_heads * chunks_per_head
+
+    _multihead_score_certify_kernel[(n_programs,)](
+        K_flat, K_scale.contiguous(), q_all.contiguous(), correction.contiguous(),
+        skip_i32, m_b, S_b, counter,
+        N=N,
+        stride_k_n=head_dim,
+        head_dim=head_dim,
+        block_size=block_size,
+        q_scale=q_scale,
+        num_blocks=num_blocks,
+        num_q_heads=num_q_heads,
+        num_kv_heads=num_kv_heads,
+        gqa_group=gqa_group,
+        n_programs=n_programs,
+        block_epsilon=block_epsilon,
+        TILE_D=TILE_D,
+        TILE_N=TILE_N,
+    )
+    return m_b, S_b, skip_i32.bool()
+
+
 def fused_score_certify(
     K_int8: torch.Tensor,         # [N, head_dim] int8 contiguous
     K_scale: torch.Tensor,        # [num_blocks] float32
