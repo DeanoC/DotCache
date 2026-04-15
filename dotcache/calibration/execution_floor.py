@@ -78,7 +78,8 @@ def measure_execution_floor(
         # Per-layer measurement
         for lid in range(num_layers):
             cache = caches[lid]
-            attn = model.model.layers[lid].self_attn
+            attn_wrapper = model.model.layers[lid].self_attn
+            attn = attn_wrapper.base_attention if hasattr(attn_wrapper, 'base_attention') else attn_wrapper
 
             with torch.inference_mode():
                 h = hidden_cpu[lid].to(device)

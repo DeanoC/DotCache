@@ -198,7 +198,8 @@ def _prepare_prompt(model, tokenizer, prompt_text, ctx_len, num_layers, device):
     cache_cpu_data = {}
     for lid in range(num_layers):
         cache = caches[lid]
-        attn = model.model.layers[lid].self_attn
+        attn_wrapper = model.model.layers[lid].self_attn
+        attn = attn_wrapper.base_attention if hasattr(attn_wrapper, 'base_attention') else attn_wrapper
         with torch.inference_mode():
             h = hidden_cpu[lid].to(device)
             q_all = attn.q_proj(h).view(num_q, head_dim).to(torch.float32)
@@ -274,7 +275,8 @@ def _evaluate_layer_epsilon(
         num_blocks=cd["num_blocks"],
     )
 
-    attn = model.model.layers[layer_id].self_attn
+    attn_wrapper = model.model.layers[layer_id].self_attn
+    attn = attn_wrapper.base_attention if hasattr(attn_wrapper, 'base_attention') else attn_wrapper
     with torch.inference_mode():
         h = pdata["hidden_cpu"][layer_id].to(device)
         q_all = attn.q_proj(h).view(num_q, head_dim).to(torch.float32)

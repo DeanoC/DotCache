@@ -84,7 +84,8 @@ def measure_cosine(model, tokenizer, ctx_len, v_mode="fp16"):
     for lid in range(num_layers):
         cache = caches[lid]
         eps = LAYER_EPS.get(lid, 1e-4)
-        attn = model.model.layers[lid].self_attn
+        attn_wrapper = model.model.layers[lid].self_attn
+        attn = attn_wrapper.base_attention if hasattr(attn_wrapper, 'base_attention') else attn_wrapper
 
         with torch.inference_mode():
             h = hidden_states_cpu[lid].to("cuda")

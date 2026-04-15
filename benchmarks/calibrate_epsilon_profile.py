@@ -32,7 +32,8 @@ def calibrate_layer(
     """Find the largest epsilon for one layer where cos_min ≥ target."""
     from dotcache.kernels.certified_attention import certified_attention_layer
 
-    attn = model.model.layers[layer_id].self_attn
+    attn_wrapper = model.model.layers[layer_id].self_attn
+    attn = attn_wrapper.base_attention if hasattr(attn_wrapper, 'base_attention') else attn_wrapper
     with torch.inference_mode():
         h = hidden_state.to("cuda")
         q_all = attn.q_proj(h).view(num_q, head_dim).to(torch.float32)
