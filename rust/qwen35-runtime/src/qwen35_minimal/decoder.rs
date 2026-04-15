@@ -539,14 +539,8 @@ impl Drop for PersistentDecodeCache {
     }
 }
 
-#[cfg(feature = "qwen35-minimal-hip")]
-impl Clone for PersistentDecodeCache {
-    fn clone(&self) -> Self {
-        // Don't clone device pointers — the clone gets a fresh cache.
-        Self { ordinal: 0, desc_ptr: std::ptr::null_mut(), desc_capacity: 0,
-               workspace_ptr: std::ptr::null_mut(), sync_ptr: std::ptr::null_mut() }
-    }
-}
+// PersistentDecodeCache intentionally does NOT implement Clone.
+// Device pointers cannot be safely shared; cloned TextModels get a fresh `None` cache.
 
 #[cfg(feature = "qwen35-minimal-hip")]
 impl std::fmt::Debug for PersistentDecodeCache {
@@ -555,7 +549,7 @@ impl std::fmt::Debug for PersistentDecodeCache {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TextModel {
     embed_tokens: EmbeddingSource,
     pub(super) layers: Vec<DecoderLayer>,
@@ -569,6 +563,26 @@ pub struct TextModel {
     deferred_linear_count: usize,
     #[cfg(feature = "qwen35-minimal-hip")]
     persistent_decode_cache: Option<PersistentDecodeCache>,
+}
+
+impl Clone for TextModel {
+    fn clone(&self) -> Self {
+        Self {
+            embed_tokens: self.embed_tokens.clone(),
+            layers: self.layers.clone(),
+            norm: self.norm.clone(),
+            device: self.device.clone(),
+            dtype: self.dtype,
+            immutable_embedding_requested: self.immutable_embedding_requested,
+            immutable_embedding_active: self.immutable_embedding_active,
+            immutable_embedding_fallback_reason: self.immutable_embedding_fallback_reason.clone(),
+            immutable_linear_requested: self.immutable_linear_requested,
+            deferred_linear_count: self.deferred_linear_count,
+            // Cloned models get a fresh cache — device pointers cannot be shared.
+            #[cfg(feature = "qwen35-minimal-hip")]
+            persistent_decode_cache: None,
+        }
+    }
 }
 
 impl TextModel {
@@ -1787,9 +1801,13 @@ impl ModelForCausalLM {
                 .forward_hidden_states_profiled(hidden_states, seqlen_offset)?;
         let output_start = profile_start(device)?;
         let logits = backend.slice_last_token(&hidden_states)?;
-        // Use standalone matvec kernel for lm_head on HIP (avoids F32 upcast overhead)
+        // Use standalone matvec kernel for lm_head on HIP (avoids F32 upcast overhead).
+        // Only supported for BF16/F16 inputs; fall back to generic path for other dtypes.
         #[cfg(feature = "qwen35-minimal-hip")]
-        let logits = if logits.device().is_hip() && logits.tensor().dims3().map_or(false, |(_, s, _)| s == 1) {
+        let logits = if logits.device().is_hip()
+            && logits.tensor().dims3().map_or(false, |(_, s, _)| s == 1)
+            && matches!(logits.tensor().dtype(), DType::BF16 | DType::F16)
+        {
             self.lm_head_matvec(&logits)?
         } else {
             self.lm_head.forward_buffer(&logits)?
