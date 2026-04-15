@@ -126,6 +126,7 @@ def fused_score_certify(
     block_size: int = 16,
     q_scale: float = 1.0,
     block_epsilon: float = 0.001,
+    single_launch: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fused INT8 scoring + certification.
 
@@ -140,8 +141,6 @@ def fused_score_certify(
 
     TILE_D = triton.next_power_of_2(head_dim)
 
-    # Fewer programs, more blocks per program → amortise launch overhead
-    # Target ~32 programs (one per SM on typical GPUs)
     BPP = max(1, (num_blocks + 31) // 32)
     n_progs = (num_blocks + BPP - 1) // BPP
 
@@ -156,17 +155,24 @@ def fused_score_certify(
         BPP=BPP,
     )
 
-    # Kernel 2: certify — single program
-    skip_i32 = torch.empty(num_blocks, dtype=torch.int32, device=device)
-    TILE_N = min(triton.next_power_of_2(num_blocks), 1024)
-    _certify_kernel[(1,)](
-        m_b, S_b, correction, skip_i32,
-        num_blocks=num_blocks,
-        block_epsilon=block_epsilon,
-        TILE_N=TILE_N,
-    )
-
-    return m_b, S_b, skip_i32.bool()
+    if single_launch:
+        # Do certification in PyTorch — avoids second kernel launch.
+        # At 512-1024 blocks these are fast tensor ops on tiny arrays.
+        m_global = m_b.max()
+        residual = S_b * correction * torch.exp(m_b - m_global)
+        total_mass = residual.sum()
+        skip_mask = (residual / total_mass) < block_epsilon
+        return m_b, S_b, skip_mask
+    else:
+        skip_i32 = torch.empty(num_blocks, dtype=torch.int32, device=device)
+        TILE_N = min(triton.next_power_of_2(num_blocks), 1024)
+        _certify_kernel[(1,)](
+            m_b, S_b, correction, skip_i32,
+            num_blocks=num_blocks,
+            block_epsilon=block_epsilon,
+            TILE_N=TILE_N,
+        )
+        return m_b, S_b, skip_i32.bool()
 
 
 def selective_attend(
