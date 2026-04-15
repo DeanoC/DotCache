@@ -281,25 +281,31 @@ class TieredKeyCacheLayer:
 
     @property
     def aligned_tokens(self) -> int:
-        """Block-aligned active token count."""
-        return self.num_blocks * self.block_size
+        """Block-aligned token count (rounds UP to include partial trailing block)."""
+        return ((self.num_tokens + self.block_size - 1) // self.block_size) * self.block_size
 
     def keys_int8_active(self) -> torch.Tensor:
-        """INT8 keys for active tokens only (slice of pre-allocated buffer)."""
+        """INT8 keys for active tokens (rounded up to block boundary).
+        Trailing unused slots in the partial block are zeros from pre-allocation."""
         n = self.aligned_tokens
         return self.keys_int8[:, :n, :]
 
+    @property
+    def active_blocks(self) -> int:
+        """Number of blocks (including partial trailing block)."""
+        return (self.num_tokens + self.block_size - 1) // self.block_size
+
     def keys_scale_active(self) -> torch.Tensor:
-        return self.keys_scale[:, :self.num_blocks]
+        return self.keys_scale[:, :self.active_blocks]
 
     def correction_active(self) -> torch.Tensor:
-        return self.correction[:, :self.num_blocks]
+        return self.correction[:, :self.active_blocks]
 
     def values_fp16_active(self) -> torch.Tensor:
-        """FP16 values for active tokens."""
+        """FP16 values for active tokens (rounded up to block boundary)."""
         if self.values_fp16 is None:
             return None
-        return self.values_fp16[:, :self.num_tokens, :]
+        return self.values_fp16[:, :self.aligned_tokens, :]
 
     def keys_fp16_cpu_active(self) -> torch.Tensor:
         return self.keys_fp16_cpu[:, :self.num_tokens, :]
@@ -399,12 +405,13 @@ def create_tiered_cache_int4v_from_model(
 
         seq_len = keys.shape[1]
         aligned_len = (seq_len // block_size) * block_size
-        keys = keys[:, :aligned_len, :].contiguous()
-        values = values[:, :aligned_len, :].contiguous()
+        keys_aligned = keys[:, :aligned_len, :].contiguous()
+        values_aligned = values[:, :aligned_len, :].contiguous()
 
         caches[layer_id] = TieredKeyCacheLayer.from_fp16_cache_int4v(
             keys, values, block_size=block_size, group_size=group_size,
         )
+        caches[layer_id].num_tokens = seq_len
     return caches
 
 
@@ -432,13 +439,35 @@ def create_tiered_cache_from_model(
             keys = past_kv[layer_id][0][0]
             values = past_kv[layer_id][1][0]
 
-        # Trim to block-aligned length
+        # Trim to block-aligned, build cache, then append the trailing tokens.
+        # This ensures the scoring kernel only sees full blocks, while the
+        # trailing tokens are still in the cache for attend.
         seq_len = keys.shape[1]
         aligned_len = (seq_len // block_size) * block_size
-        keys = keys[:, :aligned_len, :].contiguous()
-        values = values[:, :aligned_len, :].contiguous()
+        keys_aligned = keys[:, :aligned_len, :].contiguous()
+        values_aligned = values[:, :aligned_len, :].contiguous()
 
-        caches[layer_id] = TieredKeyCacheLayer.from_fp16_cache(
-            keys, values, block_size=block_size,
+        cache = TieredKeyCacheLayer.from_fp16_cache(
+            keys_aligned, values_aligned, block_size=block_size,
+            max_new_tokens=512 + (seq_len - aligned_len),
         )
+
+        # Append the trailing (non-block-aligned) tokens
+        for t in range(aligned_len, seq_len):
+            cache.append_token(
+                keys[:, t:t+1, :],
+                values[:, t:t+1, :],
+            )
+
+        # Poison padding positions so they get ~zero softmax weight.
+        # Positions num_tokens..aligned_tokens are zero from pre-allocation.
+        # Set INT8 keys to -127 (min value) so Q·K is very negative.
+        at = cache.aligned_tokens
+        nt = cache.num_tokens
+        if at > nt:
+            cache.keys_int8[:, nt:at, :] = -127
+            if cache._keys_deq_f32 is not None:
+                cache._keys_deq_f32[:, nt:at, :] = -1e4
+
+        caches[layer_id] = cache
     return caches
