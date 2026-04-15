@@ -35,8 +35,8 @@ def main():
     print(f"Loading {args.model_id}...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, token=token)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_id, torch_dtype=dtype, token=token, device_map="cuda",
-    )
+        args.model_id, torch_dtype=dtype, token=token,
+    ).to("cuda")
     model.eval()
     print(f"VRAM after load: {torch.cuda.memory_allocated()/1e9:.1f} GB")
 

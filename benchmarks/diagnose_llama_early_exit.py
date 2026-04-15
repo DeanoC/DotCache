@@ -28,8 +28,8 @@ def main():
     print(f"Loading {model_id}...")
     tokenizer = AutoTokenizer.from_pretrained(model_id, token=token)
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=torch.float16, token=token, device_map="cuda",
-    )
+        model_id, torch_dtype=torch.float16, token=token,
+    ).to("cuda")
     model.eval()
 
     config = model.config
