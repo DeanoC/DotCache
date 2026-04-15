@@ -1,11 +1,14 @@
 #[cfg(feature = "qwen35-minimal")]
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::process::Command;
     use std::time::Instant;
 
-    use candle_core::{DType, Device, IndexOp, Tensor};
+    use candle_core::{D, DType, Device, IndexOp, Tensor};
     use dotcache_paged_runtime::{
         MinimalQwen35LoadMode, MinimalQwen35Runner, Result, RuntimeError,
     };
+    use dotcache_qwen35_runtime::MinimalQwen35StateBuffer as StateBuffer;
+    use serde::{Deserialize, Serialize};
     use tokenizers::Tokenizer;
 
     #[derive(Clone, Debug)]
@@ -104,6 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     enum LoadMode {
         Native,
         Direct,
+        HipDirect,
     }
 
     impl LoadMode {
@@ -111,6 +115,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             match self {
                 Self::Native => Some(MinimalQwen35LoadMode::NativeStore),
                 Self::Direct => None,
+                Self::HipDirect => Some(MinimalQwen35LoadMode::HipDirect),
+            }
+        }
+
+        fn cpu_reference_runner_mode(self) -> Option<MinimalQwen35LoadMode> {
+            match self {
+                Self::HipDirect => None,
+                _ => self.runner_mode(),
             }
         }
     }
@@ -122,11 +134,498 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             match value.trim().to_ascii_lowercase().as_str() {
                 "native" => Ok(Self::Native),
                 "direct" => Ok(Self::Direct),
+                "hip-direct" | "direct-hip" => Ok(Self::HipDirect),
                 other => Err(RuntimeError::External {
                     context: "load-mode",
-                    message: format!("unsupported load mode `{other}`, expected native or direct"),
+                    message: format!(
+                        "unsupported load mode `{other}`, expected native, direct, or hip-direct"
+                    ),
                 }),
             }
+        }
+    }
+
+    impl std::fmt::Display for LoadMode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Native => f.write_str("native"),
+                Self::Direct => f.write_str("direct"),
+                Self::HipDirect => f.write_str("hip-direct"),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum OracleMode {
+        Cpu,
+        NativeDevice,
+        None,
+        Pytorch,
+        PytorchBf16,
+        PytorchGpu,
+        PytorchGpuBf16,
+    }
+
+    impl OracleMode {
+        fn default_for(load_mode: LoadMode, device_selector: &DeviceSelector) -> Self {
+            match (load_mode, device_selector) {
+                (LoadMode::HipDirect, DeviceSelector::Hip(_)) => Self::NativeDevice,
+                _ => Self::Cpu,
+            }
+        }
+    }
+
+    impl std::str::FromStr for OracleMode {
+        type Err = RuntimeError;
+
+        fn from_str(value: &str) -> Result<Self> {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "cpu" => Ok(Self::Cpu),
+                "native-device" | "native" | "device" => Ok(Self::NativeDevice),
+                "none" => Ok(Self::None),
+                "pytorch" => Ok(Self::Pytorch),
+                "pytorch-bf16" | "pytorch_bf16" | "bf16-pytorch" => Ok(Self::PytorchBf16),
+                "pytorch-gpu" | "pytorch_gpu" => Ok(Self::PytorchGpu),
+                "pytorch-gpu-bf16" | "pytorch_gpu_bf16" => Ok(Self::PytorchGpuBf16),
+                other => Err(RuntimeError::External {
+                    context: "oracle",
+                    message: format!(
+                        "unsupported oracle `{other}`, expected cpu, native-device, none, pytorch, pytorch-bf16, pytorch-gpu, or pytorch-gpu-bf16"
+                    ),
+                }),
+            }
+        }
+    }
+
+    impl std::fmt::Display for OracleMode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Cpu => f.write_str("cpu"),
+                Self::NativeDevice => f.write_str("native-device"),
+                Self::None => f.write_str("none"),
+                Self::Pytorch => f.write_str("pytorch"),
+                Self::PytorchBf16 => f.write_str("pytorch-bf16"),
+                Self::PytorchGpu => f.write_str("pytorch-gpu"),
+                Self::PytorchGpuBf16 => f.write_str("pytorch-gpu-bf16"),
+            }
+        }
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RunRecord {
+        model_id: String,
+        prompt: String,
+        device: String,
+        load_mode: String,
+        oracle: String,
+        oracle_device: String,
+        device_only: bool,
+        prompt_token_count: usize,
+        generated_token_count: usize,
+        max_new_tokens: usize,
+        cpu_load_ms: f64,
+        device_load_ms: f64,
+        cpu_prefill_ms: f64,
+        device_prefill_ms: f64,
+        cpu_decode_ms: f64,
+        device_decode_ms: f64,
+        oracle_load_ms: f64,
+        oracle_prefill_ms: f64,
+        oracle_decode_ms: f64,
+        prefill_max_delta: f32,
+        prefill_cache_max_delta: Option<f32>,
+        pytorch_first_layer_linear_chunk_scan_mode: Option<String>,
+        pytorch_first_layer_linear_chunk_execution_branch: Option<String>,
+        pytorch_embedding_max_delta: Option<f32>,
+        pytorch_first_layer_input_layernorm_max_delta: Option<f32>,
+        pytorch_first_layer_linear_qkv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_conv_weight_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta: Option<f32>,
+        pytorch_first_layer_linear_z_max_delta: Option<f32>,
+        pytorch_first_layer_linear_b_max_delta: Option<f32>,
+        pytorch_first_layer_linear_a_max_delta: Option<f32>,
+        pytorch_first_layer_linear_post_conv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_hook_vs_direct_conv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_query_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_key_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_value_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_beta_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_g_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_direct_recurrent_max_delta: Option<f32>,
+        pytorch_first_layer_linear_focus_kv_mem_max_delta: Option<f32>,
+        pytorch_first_layer_linear_focus_delta_max_delta: Option<f32>,
+        pytorch_first_layer_linear_focus_state_max_delta: Option<f32>,
+        pytorch_first_layer_linear_focus_output_max_delta: Option<f32>,
+        pytorch_first_layer_linear_focus_kv_mem_step_max_deltas: Option<Vec<f32>>,
+        pytorch_first_layer_linear_focus_delta_step_max_deltas: Option<Vec<f32>>,
+        pytorch_first_layer_linear_focus_state_step_max_deltas: Option<Vec<f32>>,
+        pytorch_first_layer_linear_focus_output_step_max_deltas: Option<Vec<f32>>,
+        pytorch_first_layer_linear_chunk_vs_torch_like_max_delta: Option<f32>,
+        pytorch_first_layer_linear_explicit_post_conv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta: Option<f32>,
+        pytorch_first_layer_linear_fp32_reference_post_conv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_direct_conv_max_delta: Option<f32>,
+        pytorch_first_layer_linear_post_conv_value_focus_head_max_delta: Option<f32>,
+        pytorch_first_layer_linear_explicit_post_conv_value_focus_head_max_delta: Option<f32>,
+        pytorch_first_layer_linear_explicit_post_conv_reversed_taps_value_focus_head_max_delta: Option<f32>,
+        pytorch_first_layer_linear_fp32_reference_post_conv_value_focus_head_max_delta: Option<f32>,
+        pytorch_first_layer_linear_prepared_value_focus_head_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_mean_square_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_rsqrt_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax: Option<[usize; 3]>,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_delta: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime: Option<f32>,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle: Option<f32>,
+        pytorch_first_layer_linear_norm_gate_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_weight_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_silu_gate_max_delta: Option<f32>,
+        pytorch_first_layer_linear_norm_max_delta: Option<f32>,
+        pytorch_first_layer_token_mixer_max_delta: Option<f32>,
+        pytorch_first_layer_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_first_layer_mlp_max_delta: Option<f32>,
+        pytorch_first_layer_max_delta: Option<f32>,
+        pytorch_decoder_layer_max_deltas: Option<Vec<f32>>,
+        pytorch_first_bad_decoder_layer: Option<usize>,
+        pytorch_first_bad_decoder_layer_max_delta: Option<f32>,
+        pytorch_layer3_input_layernorm_max_delta: Option<f32>,
+        pytorch_layer3_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_layer3_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_layer3_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_layer3_input_layernorm_weight_max_delta: Option<f32>,
+        pytorch_layer3_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_layer3_full_q_and_gate_max_delta: Option<f32>,
+        pytorch_layer3_full_k_proj_max_delta: Option<f32>,
+        pytorch_layer3_full_v_proj_max_delta: Option<f32>,
+        pytorch_layer3_full_prepared_query_max_delta: Option<f32>,
+        pytorch_layer3_full_gate_max_delta: Option<f32>,
+        pytorch_layer3_full_prepared_key_max_delta: Option<f32>,
+        pytorch_layer3_full_prepared_value_max_delta: Option<f32>,
+        pytorch_layer3_full_attention_output_max_delta: Option<f32>,
+        pytorch_layer3_token_mixer_max_delta: Option<f32>,
+        pytorch_layer3_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_layer3_mlp_max_delta: Option<f32>,
+        pytorch_layer3_max_delta: Option<f32>,
+        pytorch_layer4_input_layernorm_max_delta: Option<f32>,
+        pytorch_layer4_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_layer4_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_layer4_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_layer4_input_layernorm_weight_max_delta: Option<f32>,
+        pytorch_layer4_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_layer4_token_mixer_max_delta: Option<f32>,
+        pytorch_layer4_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_layer4_mlp_max_delta: Option<f32>,
+        pytorch_layer4_max_delta: Option<f32>,
+        pytorch_decode_decoder_layer_max_deltas: Option<Vec<f32>>,
+        pytorch_first_bad_decode_decoder_layer: Option<usize>,
+        pytorch_first_bad_decode_decoder_layer_max_delta: Option<f32>,
+        pytorch_decode_first_layer_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_qkv_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_z_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_b_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_a_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_query_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_key_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_value_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_beta_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_prepared_g_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_direct_recurrent_max_delta: Option<f32>,
+        pytorch_decode_first_layer_initial_conv_state_shape_match: Option<bool>,
+        pytorch_decode_first_layer_initial_conv_state_max_delta: Option<f32>,
+        pytorch_decode_first_layer_initial_recurrent_state_max_delta: Option<f32>,
+        pytorch_decode_first_layer_initial_recurrent_state_focus_head_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax: Option<[usize; 3]>,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_runtime: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_oracle: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_runtime: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_oracle: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_runtime: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_oracle: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_runtime: Option<f32>,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_oracle: Option<f32>,
+        pytorch_decode_first_layer_linear_normalized_hidden_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_norm_focus_head_max_delta: Option<f32>,
+        pytorch_decode_first_layer_linear_norm_max_delta: Option<f32>,
+        pytorch_decode_first_layer_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_first_layer_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_first_layer_mlp_max_delta: Option<f32>,
+        pytorch_decode_first_layer_max_delta: Option<f32>,
+        pytorch_decode_final_hidden_max_delta: Option<f32>,
+        pytorch_decode_final_norm_input_max_delta: Option<f32>,
+        pytorch_decode_final_norm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_final_norm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_final_norm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_final_norm_output_max_delta: Option<f32>,
+        pytorch_decode_output_projection_from_oracle_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer3_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer3_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer3_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer3_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer3_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer23_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer23_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer23_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer23_mlp_gate_proj_max_delta: Option<f32>,
+        pytorch_decode_layer23_mlp_up_proj_max_delta: Option<f32>,
+        pytorch_decode_layer23_mlp_activated_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer23_mlp_down_proj_max_delta: Option<f32>,
+        pytorch_decode_layer23_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer23_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer15_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer15_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer15_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer15_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer15_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer16_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer16_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer16_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer16_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer16_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer17_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer17_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer17_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer17_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer17_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_input_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_mean_square_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_rsqrt_max_delta: Option<f32>,
+        pytorch_decode_layer18_input_layernorm_weighted_hidden_max_delta: Option<f32>,
+        pytorch_decode_layer18_token_mixer_max_delta: Option<f32>,
+        pytorch_decode_layer18_post_attention_layernorm_max_delta: Option<f32>,
+        pytorch_decode_layer18_mlp_max_delta: Option<f32>,
+        pytorch_decode_layer18_max_delta: Option<f32>,
+        pytorch_decode_layer15_mlp_from_oracle_input_max_delta: Option<f32>,
+        pytorch_decode_layer23_mlp_from_oracle_input_max_delta: Option<f32>,
+        pytorch_decode_decoder_layer_input_max_deltas: Option<Vec<f32>>,
+        pytorch_decode_decoder_layer_residual_growths: Option<Vec<f32>>,
+        decode_max_delta: f32,
+        decode_input_hidden_max_delta: Option<f32>,
+        decode_step_cache_max_delta: Option<f32>,
+        generated_text: String,
+        hip_trace_candle_fallback: bool,
+        hip_print_transfers: bool,
+        full_prefill_megakernel_requested: bool,
+        hip_persistent_full_prefill_requested: bool,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct PytorchOracleRecord {
+        load_ms: f64,
+        prefill_ms: f64,
+        decode_ms: f64,
+        embedding_output: Vec<Vec<Vec<f32>>>,
+        first_layer_input_layernorm_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_qkv_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_conv_weight: Vec<Vec<f32>>,
+        first_layer_linear_pre_conv_value_focus_head_output: Vec<f32>,
+        first_layer_linear_z_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_b_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_a_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_post_conv_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_direct_conv_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_prepared_query_output: Vec<Vec<Vec<Vec<f32>>>>,
+        first_layer_linear_prepared_key_output: Vec<Vec<Vec<Vec<f32>>>>,
+        first_layer_linear_prepared_value_output: Vec<Vec<Vec<Vec<f32>>>>,
+        first_layer_linear_prepared_beta_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_prepared_g_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_direct_recurrent_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_focus_kv_mem_output: Vec<f32>,
+        first_layer_linear_focus_delta_output: Vec<f32>,
+        first_layer_linear_focus_state_output: Vec<Vec<f32>>,
+        first_layer_linear_focus_output: Vec<f32>,
+        first_layer_linear_focus_kv_mem_steps: Vec<Vec<f32>>,
+        first_layer_linear_focus_delta_steps: Vec<Vec<f32>>,
+        first_layer_linear_focus_state_steps: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_focus_output_steps: Vec<Vec<f32>>,
+        first_layer_linear_prepared_value_focus_head_output: Vec<f32>,
+        first_layer_linear_pre_norm_output: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_pre_norm_mean_square: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_pre_norm_rsqrt: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_pre_norm_focus_head_output: Vec<f32>,
+        first_layer_linear_norm_gate_input: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_norm_weight: Vec<f32>,
+        first_layer_linear_norm_weighted_hidden: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_norm_silu_gate: Vec<Vec<Vec<f32>>>,
+        first_layer_linear_norm_output: Vec<Vec<Vec<f32>>>,
+        first_layer_token_mixer_output: Vec<Vec<Vec<f32>>>,
+        first_layer_post_attention_layernorm_output: Vec<Vec<Vec<f32>>>,
+        first_layer_mlp_output: Vec<Vec<Vec<f32>>>,
+        first_layer_output: Vec<Vec<Vec<f32>>>,
+        layer3_input_layernorm_output: Vec<Vec<Vec<f32>>>,
+        layer3_input_layernorm_input: Vec<Vec<Vec<f32>>>,
+        layer3_input_layernorm_mean_square: Vec<Vec<Vec<f32>>>,
+        layer3_input_layernorm_rsqrt: Vec<Vec<Vec<f32>>>,
+        layer3_input_layernorm_weight: Vec<f32>,
+        layer3_input_layernorm_weighted_hidden: Vec<Vec<Vec<f32>>>,
+        layer3_q_and_gate_output: Vec<Vec<Vec<f32>>>,
+        layer3_k_proj_output: Vec<Vec<Vec<f32>>>,
+        layer3_v_proj_output: Vec<Vec<Vec<f32>>>,
+        layer3_prepared_query_output: Vec<Vec<Vec<Vec<f32>>>>,
+        layer3_gate_output: Vec<Vec<Vec<f32>>>,
+        layer3_prepared_key_output: Vec<Vec<Vec<Vec<f32>>>>,
+        layer3_prepared_value_output: Vec<Vec<Vec<Vec<f32>>>>,
+        layer3_attention_output: Vec<Vec<Vec<f32>>>,
+        layer3_token_mixer_output: Vec<Vec<Vec<f32>>>,
+        layer3_post_attention_layernorm_output: Vec<Vec<Vec<f32>>>,
+        layer3_mlp_output: Vec<Vec<Vec<f32>>>,
+        layer3_output: Vec<Vec<Vec<f32>>>,
+        layer4_input_layernorm_output: Vec<Vec<Vec<f32>>>,
+        layer4_input_layernorm_input: Vec<Vec<Vec<f32>>>,
+        layer4_input_layernorm_mean_square: Vec<Vec<Vec<f32>>>,
+        layer4_input_layernorm_rsqrt: Vec<Vec<Vec<f32>>>,
+        layer4_input_layernorm_weight: Vec<f32>,
+        layer4_input_layernorm_weighted_hidden: Vec<Vec<Vec<f32>>>,
+        layer4_token_mixer_output: Vec<Vec<Vec<f32>>>,
+        layer4_post_attention_layernorm_output: Vec<Vec<Vec<f32>>>,
+        layer4_mlp_output: Vec<Vec<Vec<f32>>>,
+        layer4_output: Vec<Vec<Vec<f32>>>,
+        decoder_layer_outputs: Vec<Vec<Vec<Vec<f32>>>>,
+        decode_decoder_layer_outputs: Vec<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_qkv_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_z_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_b_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_a_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_prepared_query_output: Option<Vec<Vec<Vec<Vec<f32>>>>>,
+        decode_first_layer_linear_prepared_key_output: Option<Vec<Vec<Vec<Vec<f32>>>>>,
+        decode_first_layer_linear_prepared_value_output: Option<Vec<Vec<Vec<Vec<f32>>>>>,
+        decode_first_layer_linear_prepared_beta_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_prepared_g_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_direct_recurrent_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_conv_state_before: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_recurrent_state_before: Option<Vec<Vec<Vec<Vec<f32>>>>>,
+        decode_first_layer_linear_pre_norm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_linear_norm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_first_layer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_hidden_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_final_norm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer3_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_mlp_gate_proj_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_mlp_up_proj_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_mlp_activated_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_mlp_down_proj_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer23_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer15_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer16_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer17_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_input: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_mean_square: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_rsqrt: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_input_layernorm_weighted_hidden: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_token_mixer_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_post_attention_layernorm_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_mlp_output: Option<Vec<Vec<Vec<f32>>>>,
+        decode_layer18_output: Option<Vec<Vec<Vec<f32>>>>,
+        prefill_last_token_logits: Vec<f32>,
+        first_decode_step_last_token_logits: Option<Vec<f32>>,
+        decode_last_token_logits: Vec<Vec<f32>>,
+        generated_token_ids: Vec<u32>,
+    }
+
+    fn env_flag_truthy(key: &str) -> bool {
+        matches!(
+            std::env::var(key).as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES") | Ok("on") | Ok("ON")
+        )
+    }
+
+    fn device_label(device: &Device) -> &'static str {
+        if device.is_cpu() {
+            "cpu"
+        } else if device.is_cuda() {
+            "cuda"
+        } else if device.is_hip() {
+            "hip"
+        } else if device.is_metal() {
+            "metal"
+        } else {
+            "unknown"
         }
     }
 
@@ -191,12 +690,559 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(max_delta)
     }
 
+    fn max_last_token_delta_vec(logits: &Tensor, rhs: &[f32]) -> Result<f32> {
+        let last_token = match logits.dims() {
+            [1, vocab] => {
+                if *vocab != rhs.len() {
+                    return Err(RuntimeError::DimensionMismatch {
+                        context: "last-token logit delta",
+                        expected: rhs.len(),
+                        got: *vocab,
+                    });
+                }
+                logits.clone()
+            }
+            [1, seq, vocab] => {
+                if *vocab != rhs.len() {
+                    return Err(RuntimeError::DimensionMismatch {
+                        context: "last-token logit delta",
+                        expected: rhs.len(),
+                        got: *vocab,
+                    });
+                }
+                logits.i((0, seq - 1))?
+            }
+            dims => {
+                return Err(RuntimeError::External {
+                    context: "last-token logit delta",
+                    message: format!("unexpected logits shape {dims:?}"),
+                });
+            }
+        };
+        let lhs = last_token.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn max_tensor_delta_vec3(logits: &Tensor, rhs: &[Vec<Vec<f32>>]) -> Result<f32> {
+        let dims = logits.dims();
+        if dims.len() != 3 {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("expected rank-3 tensor, got shape {dims:?}"),
+            });
+        }
+        let lhs = logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let rhs_flat = rhs
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        if lhs.len() != rhs_flat.len() {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor delta",
+                expected: rhs_flat.len(),
+                got: lhs.len(),
+            });
+        }
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.iter().zip(rhs_flat.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn max_tensor_delta_vec4(logits: &Tensor, rhs: &[Vec<Vec<Vec<f32>>>]) -> Result<f32> {
+        let dims = logits.dims();
+        if dims.len() != 4 {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("expected rank-4 tensor, got shape {dims:?}"),
+            });
+        }
+        let lhs = logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let rhs_flat = rhs
+            .iter()
+            .flat_map(|a| {
+                a.iter()
+                    .flat_map(|b| b.iter().flat_map(|c| c.iter().copied()))
+            })
+            .collect::<Vec<_>>();
+        if lhs.len() != rhs_flat.len() {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor delta",
+                expected: rhs_flat.len(),
+                got: lhs.len(),
+            });
+        }
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.iter().zip(rhs_flat.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn max_vec3_delta(lhs: &[Vec<Vec<f32>>], rhs: &[Vec<Vec<f32>>]) -> Result<f32> {
+        let lhs_flat = lhs
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        let rhs_flat = rhs
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        if lhs_flat.len() != rhs_flat.len() {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor delta",
+                expected: lhs_flat.len(),
+                got: rhs_flat.len(),
+            });
+        }
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs_flat.iter().zip(rhs_flat.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn max_vec3_delta_with_argmax(
+        lhs: &[Vec<Vec<f32>>],
+        rhs: &[Vec<Vec<f32>>],
+    ) -> Result<(f32, [usize; 3], f32, f32)> {
+        if lhs.len() != rhs.len()
+            || lhs
+                .iter()
+                .zip(rhs.iter())
+                .any(|(a, b)| a.len() != b.len()
+                    || a.iter().zip(b.iter()).any(|(x, y)| x.len() != y.len()))
+        {
+            return Err(RuntimeError::External {
+                context: "vec3 delta",
+                message: "lhs/rhs shape mismatch".to_string(),
+            });
+        }
+        let mut best = (-1.0f32, [0usize, 0usize, 0usize], 0.0f32, 0.0f32);
+        for (i, (lhs_outer, rhs_outer)) in lhs.iter().zip(rhs.iter()).enumerate() {
+            for (j, (lhs_inner, rhs_inner)) in lhs_outer.iter().zip(rhs_outer.iter()).enumerate() {
+                for (k, (lhs_value, rhs_value)) in lhs_inner.iter().zip(rhs_inner.iter()).enumerate()
+                {
+                    let delta = (*lhs_value - *rhs_value).abs();
+                    if delta > best.0 {
+                        best = (delta, [i, j, k], *lhs_value, *rhs_value);
+                    }
+                }
+            }
+        }
+        Ok(best)
+    }
+
+    fn flattened_decode_focus_head(
+        hidden: &[Vec<Vec<f32>>],
+        argmax: [usize; 3],
+        head_dim: usize,
+    ) -> Result<Vec<f32>> {
+        let [_batch_idx, _token_idx, head_idx] = argmax;
+        let flat = hidden
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        let start = head_idx * head_dim;
+        let end = start + head_dim;
+        if end > flat.len() {
+            return Err(RuntimeError::External {
+                context: "decode focus head",
+                message: format!(
+                    "head slice [{start}:{end}) out of bounds for flattened hidden width {}",
+                    flat.len()
+                ),
+            });
+        }
+        Ok(flat[start..end].to_vec())
+    }
+
+    fn hidden_vec3_stats_flattened_decode(
+        hidden: &[Vec<Vec<f32>>],
+        num_heads: usize,
+        head_dim: usize,
+        eps: f32,
+    ) -> Result<(Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>, Vec<Vec<Vec<f32>>>)> {
+        let flat = hidden
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        if flat.len() != num_heads * head_dim {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "decode hidden flattened stats",
+                expected: num_heads * head_dim,
+                got: flat.len(),
+            });
+        }
+        let mut mean_square = vec![vec![vec![0.0f32; num_heads]; 1]; 1];
+        let mut rsqrt = vec![vec![vec![0.0f32; num_heads]; 1]; 1];
+        let mut normalized = vec![vec![vec![0.0f32; flat.len()]; 1]; 1];
+        for head_idx in 0..num_heads {
+            let start = head_idx * head_dim;
+            let end = start + head_dim;
+            let slice = &flat[start..end];
+            let ms = slice.iter().map(|value| value * value).sum::<f32>() / head_dim as f32;
+            let inv = 1.0f32 / (ms + eps).sqrt();
+            mean_square[0][0][head_idx] = ms;
+            rsqrt[0][0][head_idx] = inv;
+            for (dim_idx, value) in slice.iter().enumerate() {
+                normalized[0][0][start + dim_idx] = *value * inv;
+            }
+        }
+        Ok((mean_square, rsqrt, normalized))
+    }
+
+    fn max_tensor_delta_vec2(tensor: &Tensor, rhs: &[Vec<f32>]) -> Result<f32> {
+        let dims = tensor.dims();
+        if dims.len() != 2 {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("expected rank-2 tensor, got shape {dims:?}"),
+            });
+        }
+        let lhs = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let rhs_flat = rhs
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect::<Vec<_>>();
+        if lhs.len() != rhs_flat.len() {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor delta",
+                expected: rhs_flat.len(),
+                got: lhs.len(),
+            });
+        }
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.iter().zip(rhs_flat.iter()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn max_tensor_delta_vec1_list(tensors: &[StateBuffer], rhs: &[Vec<f32>]) -> Result<Vec<f32>> {
+        let mut out = Vec::with_capacity(tensors.len().min(rhs.len()));
+        for (lhs, rhs_item) in tensors.iter().zip(rhs.iter()) {
+            out.push(max_tensor_delta_vec1(lhs.tensor(), rhs_item)?);
+        }
+        Ok(out)
+    }
+
+    fn max_tensor_delta_vec2_list(tensors: &[StateBuffer], rhs: &[Vec<Vec<f32>>]) -> Result<Vec<f32>> {
+        let mut out = Vec::with_capacity(tensors.len().min(rhs.len()));
+        for (lhs, rhs_item) in tensors.iter().zip(rhs.iter()) {
+            out.push(max_tensor_delta_vec2(lhs.tensor(), rhs_item)?);
+        }
+        Ok(out)
+    }
+
+    fn tensor_to_vec3(tensor: &Tensor) -> Result<Vec<Vec<Vec<f32>>>> {
+        let dims = tensor.dims();
+        if dims.len() != 3 {
+            return Err(RuntimeError::External {
+                context: "tensor to vec3",
+                message: format!("expected rank-3 tensor, got shape {dims:?}"),
+            });
+        }
+        let d0 = dims[0];
+        let d1 = dims[1];
+        let d2 = dims[2];
+        let flat = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let mut out = vec![vec![vec![0.0f32; d2]; d1]; d0];
+        let mut idx = 0usize;
+        for outer in &mut out {
+            for inner in outer {
+                for value in inner {
+                    *value = flat[idx];
+                    idx += 1;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn tensor_to_vec3_like(tensor: &Tensor, shape: &[Vec<Vec<f32>>]) -> Result<Vec<Vec<Vec<f32>>>> {
+        let d0 = shape.len();
+        let d1 = shape.first().map_or(0usize, |outer| outer.len());
+        let d2 = shape
+            .first()
+            .and_then(|outer| outer.first())
+            .map_or(0usize, |inner| inner.len());
+        let flat = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        if flat.len() != d0 * d1 * d2 {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor to vec3 like",
+                expected: d0 * d1 * d2,
+                got: flat.len(),
+            });
+        }
+        let mut out = vec![vec![vec![0.0f32; d2]; d1]; d0];
+        let mut idx = 0usize;
+        for outer in &mut out {
+            for inner in outer {
+                for value in inner {
+                    *value = flat[idx];
+                    idx += 1;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn max_tensor_delta_vec3_with_argmax(
+        logits: &Tensor,
+        rhs: &[Vec<Vec<f32>>],
+    ) -> Result<(f32, [usize; 3], f32, f32)> {
+        let dims = logits.dims();
+        if dims.len() != 3 {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("expected rank-3 tensor, got shape {dims:?}"),
+            });
+        }
+        let [d0, d1, d2] = [dims[0], dims[1], dims[2]];
+        if rhs.len() != d0
+            || rhs.iter().any(|outer| outer.len() != d1)
+            || rhs
+                .iter()
+                .flat_map(|outer| outer.iter())
+                .any(|inner| inner.len() != d2)
+        {
+            return Err(RuntimeError::External {
+                context: "tensor delta",
+                message: format!("rhs shape did not match lhs shape {dims:?}"),
+            });
+        }
+        let lhs = logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let rhs_flat = rhs
+            .iter()
+            .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+            .collect::<Vec<_>>();
+        let mut best_idx = 0usize;
+        let mut best_delta = -1.0f32;
+        for (idx, (lhs, rhs)) in lhs.iter().zip(rhs_flat.iter()).enumerate() {
+            let delta = (lhs - rhs).abs();
+            if delta > best_delta {
+                best_delta = delta;
+                best_idx = idx;
+            }
+        }
+        let i = best_idx / (d1 * d2);
+        let rem = best_idx % (d1 * d2);
+        let j = rem / d2;
+        let k = rem % d2;
+        Ok((best_delta, [i, j, k], lhs[best_idx], rhs_flat[best_idx]))
+    }
+
+    fn max_tensor_delta_vec1(tensor: &Tensor, rhs: &[f32]) -> Result<f32> {
+        let lhs = tensor.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        if lhs.len() != rhs.len() {
+            return Err(RuntimeError::DimensionMismatch {
+                context: "tensor delta",
+                expected: lhs.len(),
+                got: rhs.len(),
+            });
+        }
+        let mut max_delta = 0.0f32;
+        for (lhs, rhs) in lhs.into_iter().zip(rhs.iter().copied()) {
+            max_delta = max_delta.max((lhs - rhs).abs());
+        }
+        Ok(max_delta)
+    }
+
+    fn slice_stats(values: &[f32]) -> (f32, f32, f32) {
+        let mean_square = if values.is_empty() {
+            0.0
+        } else {
+            values.iter().map(|v| v * v).sum::<f32>() / values.len() as f32
+        };
+        let mut min_abs = f32::INFINITY;
+        let mut max_abs = 0.0f32;
+        for value in values.iter().copied() {
+            let abs = value.abs();
+            min_abs = min_abs.min(abs);
+            max_abs = max_abs.max(abs);
+        }
+        if values.is_empty() {
+            min_abs = 0.0;
+        }
+        (mean_square, min_abs, max_abs)
+    }
+
+    fn nan_count_slice(values: &[f32]) -> usize {
+        values.iter().filter(|value| value.is_nan()).count()
+    }
+
+    fn argmax_slice(values: &[f32]) -> Result<u32> {
+        let mut best: Option<(usize, f32)> = None;
+        let mut nan_count = 0usize;
+        for (index, value) in values.iter().copied().enumerate() {
+            if value.is_nan() {
+                nan_count += 1;
+                continue;
+            }
+            match best {
+                Some((_, best_value)) if value <= best_value => {}
+                _ => best = Some((index, value)),
+            }
+        }
+        let (index, _) = best.ok_or_else(|| RuntimeError::External {
+            context: "last-token logits",
+            message: format!("all oracle logits were NaN ({} values)", nan_count),
+        })?;
+        Ok(index as u32)
+    }
+
+    fn run_pytorch_oracle_with_device(
+        model_id: &str,
+        prompt_ids: &[u32],
+        max_new_tokens: usize,
+        dtype: &str,
+        device: Option<&str>,
+    ) -> Result<PytorchOracleRecord> {
+        let prompt_ids = prompt_ids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut cmd = Command::new("python3");
+        cmd.arg("benchmarks/qwen35_pytorch_oracle.py")
+            .arg("--model-id")
+            .arg(model_id)
+            .arg("--prompt-ids")
+            .arg(&prompt_ids)
+            .arg("--max-new-tokens")
+            .arg(max_new_tokens.to_string())
+            .arg("--dtype")
+            .arg(dtype);
+        if let Some(device) = device {
+            cmd.arg("--device").arg(device);
+            // ROCm PyTorch may need architecture override for iGPUs
+            cmd.env("HSA_OVERRIDE_GFX_VERSION", "11.0.0");
+        }
+        let output = cmd.output()
+            .map_err(|err| RuntimeError::External {
+                context: "pytorch oracle",
+                message: format!("failed to launch Python oracle: {err}"),
+            })?;
+        if !output.status.success() {
+            return Err(RuntimeError::External {
+                context: "pytorch oracle",
+                message: format!(
+                    "python oracle failed with status {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
+        }
+        serde_json::from_slice::<PytorchOracleRecord>(&output.stdout).map_err(|err| {
+            RuntimeError::External {
+                context: "pytorch oracle",
+                message: format!(
+                    "failed to parse oracle output: {err}; stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            }
+        })
+    }
+
+    fn cache_max_delta(
+        lhs: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+        rhs: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+    ) -> Result<Option<f32>> {
+        let mut max_delta: Option<f32> = None;
+        for line in lhs.layer_max_abs_deltas(rhs)? {
+            for field in line.split_whitespace() {
+                if let Some((key, value)) = field.split_once('=') {
+                    if key.ends_with("_max_abs_delta") {
+                        let parsed = value.parse::<f32>().map_err(|err| RuntimeError::External {
+                            context: "cache delta parse",
+                            message: format!("failed to parse `{field}`: {err}"),
+                        })?;
+                        max_delta = Some(match max_delta {
+                            Some(current) => current.max(parsed),
+                            None => parsed,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(max_delta)
+    }
+
     fn logit_nan_count(logits: &Tensor) -> Result<usize> {
         let values = logits
             .to_dtype(DType::F32)?
             .flatten_all()?
             .to_vec1::<f32>()?;
         Ok(values.iter().filter(|value| value.is_nan()).count())
+    }
+
+    fn trace_decode_input_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_DECODE_INPUT_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn trace_cross_runner_cache_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_CROSS_RUNNER_CACHE_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn trace_cpu_oracle_cache_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_CPU_ORACLE_CACHE_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn trace_cross_runner_generic_decode_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_CROSS_RUNNER_GENERIC_DECODE_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn trace_cross_runner_model_only_decode_delta_enabled() -> bool {
+        matches!(
+            std::env::var("DOTCACHE_QWEN35_TRACE_CROSS_RUNNER_MODEL_ONLY_DECODE_DELTA").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn trace_cross_runner_cache_delta(
+        label: &str,
+        oracle: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+        device: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+    ) -> Result<()> {
+        if !trace_cross_runner_cache_delta_enabled() {
+            return Ok(());
+        }
+        for line in oracle.layer_max_abs_deltas(device)? {
+            eprintln!("cross-runner-cache-delta[{label}] {line}");
+        }
+        Ok(())
+    }
+
+    fn trace_cpu_oracle_cache_delta(
+        label: &str,
+        oracle: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+        device: &dotcache_qwen35_runtime::MinimalQwen35KvCache,
+    ) -> Result<()> {
+        if !trace_cpu_oracle_cache_delta_enabled() {
+            return Ok(());
+        }
+        for line in oracle.layer_max_abs_deltas(device)? {
+            eprintln!("cpu-oracle-cache-delta[{label}] {line}");
+        }
+        Ok(())
     }
 
     fn report_linear_nan_trace(runner: &mut MinimalQwen35Runner, input_ids: &Tensor) -> Result<()> {
@@ -229,13 +1275,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut args = std::env::args().skip(1);
     let model_id = args.next().ok_or(
-        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct] [--device-only]",
+        "usage: hf_qwen35_minimal <model_id> <prompt> [max_new_tokens] [--device cpu|cuda[:ordinal]|hip[:ordinal]] [--load-mode native|direct|hip-direct] [--oracle cpu|native-device|none|pytorch|pytorch-bf16] [--device-only] [--record-json <path>]",
     )?;
     let prompt = args.next().ok_or("missing prompt")?;
     let mut positional = Vec::new();
     let mut device_selector = DeviceSelector::Cpu;
     let mut load_mode = LoadMode::Native;
+    let mut oracle_mode: Option<OracleMode> = None;
     let mut device_only = false;
+    let mut record_json_path: Option<String> = None;
     while let Some(arg) = args.next() {
         if arg == "--device" {
             let value = args.next().ok_or("missing value for --device")?;
@@ -243,8 +1291,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         } else if arg == "--load-mode" {
             let value = args.next().ok_or("missing value for --load-mode")?;
             load_mode = value.parse()?;
+        } else if arg == "--oracle" {
+            let value = args.next().ok_or("missing value for --oracle")?;
+            oracle_mode = Some(value.parse()?);
         } else if arg == "--device-only" {
             device_only = true;
+        } else if arg == "--record-json" {
+            record_json_path = Some(args.next().ok_or("missing value for --record-json")?);
         } else {
             positional.push(arg);
         }
@@ -254,18 +1307,33 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|value| value.parse::<usize>())
         .transpose()?
         .unwrap_or(8);
+    let oracle_mode = oracle_mode.unwrap_or_else(|| OracleMode::default_for(load_mode, &device_selector));
 
     let cpu_device = Device::Cpu;
     let target_device = device_selector.resolve()?;
-    let (mut cpu_runner, cpu_load_elapsed) = if device_only {
+    let (oracle_device, oracle_runner_mode) = match oracle_mode {
+        OracleMode::Cpu => (
+            cpu_device.clone(),
+            load_mode.cpu_reference_runner_mode(),
+        ),
+        OracleMode::NativeDevice => (
+            target_device.clone(),
+            Some(MinimalQwen35LoadMode::NativeStore),
+        ),
+        OracleMode::None => (cpu_device.clone(), None),
+        OracleMode::Pytorch | OracleMode::PytorchBf16 | OracleMode::PytorchGpu | OracleMode::PytorchGpuBf16 => (cpu_device.clone(), None),
+    };
+    let (mut oracle_runner, oracle_load_elapsed) = if device_only
+        || matches!(oracle_mode, OracleMode::None | OracleMode::Pytorch | OracleMode::PytorchBf16 | OracleMode::PytorchGpu | OracleMode::PytorchGpuBf16)
+    {
         (None, std::time::Duration::ZERO)
     } else {
-        let cpu_load_started = Instant::now();
-        let cpu_runner = match load_mode.runner_mode() {
-            Some(mode) => MinimalQwen35Runner::load_with_mode(&model_id, &cpu_device, mode)?,
-            None => MinimalQwen35Runner::load_from_hf_direct_f16(&model_id, &cpu_device)?,
+        let oracle_load_started = Instant::now();
+        let oracle_runner = match oracle_runner_mode {
+            Some(mode) => MinimalQwen35Runner::load_with_mode(&model_id, &oracle_device, mode)?,
+            None => MinimalQwen35Runner::load_from_hf_direct_f16(&model_id, &oracle_device)?,
         };
-        (Some(cpu_runner), cpu_load_started.elapsed())
+        (Some(oracle_runner), oracle_load_started.elapsed())
     };
 
     let device_load_started = Instant::now();
@@ -279,23 +1347,744 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if prompt_ids.is_empty() {
         return Err(RuntimeError::EmptyInput { context: "prompt" }.into());
     }
-
-    let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
-    let hidden_states = if let Some(cpu_runner) = cpu_runner.as_ref() {
-        cpu_runner.hidden_states_from_input_ids(&input_ids)?
+    let pytorch_oracle = if device_only
+        || !matches!(oracle_mode, OracleMode::Pytorch | OracleMode::PytorchBf16 | OracleMode::PytorchGpu | OracleMode::PytorchGpuBf16)
+    {
+        None
     } else {
-        device_runner.hidden_states_from_input_ids(&input_ids)?
+        let dtype = match oracle_mode {
+            OracleMode::Pytorch | OracleMode::PytorchGpu => "fp32",
+            OracleMode::PytorchBf16 | OracleMode::PytorchGpuBf16 => "bf16",
+            _ => unreachable!(),
+        };
+        let device = match oracle_mode {
+            OracleMode::PytorchGpu | OracleMode::PytorchGpuBf16 => Some("cuda:0"),
+            _ => None,
+        };
+        Some(run_pytorch_oracle_with_device(&model_id, &prompt_ids, max_new_tokens, dtype, device)?)
     };
 
-    let (mut cpu_logits, mut cpu_cache, cpu_prefill_elapsed) =
-        if let Some(cpu_runner) = cpu_runner.as_mut() {
-            let cpu_prefill_started = Instant::now();
-            let (cpu_logits, cpu_cache) = cpu_runner.prefill_from_hidden_states(&hidden_states)?;
+    let input_ids = Tensor::from_vec(prompt_ids.clone(), (1, prompt_ids.len()), &cpu_device)?;
+    let target_input_ids = if target_device.location() == cpu_device.location() {
+        input_ids.clone()
+    } else {
+        input_ids.to_device(&target_device)?
+    };
+    let pytorch_embedding_max_delta = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+        let device_input_hidden = device_runner.hidden_states_from_input_ids(&target_input_ids)?;
+        Some(max_tensor_delta_vec3(
+            device_input_hidden.tensor(),
+            &pytorch_oracle.embedding_output,
+        )?)
+    } else {
+        None
+    };
+    let (
+        pytorch_first_layer_linear_chunk_scan_mode,
+        pytorch_first_layer_linear_chunk_execution_branch,
+        pytorch_first_layer_input_layernorm_max_delta,
+        pytorch_first_layer_linear_qkv_max_delta,
+        pytorch_first_layer_linear_conv_weight_max_delta,
+        pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta,
+        pytorch_first_layer_linear_z_max_delta,
+        pytorch_first_layer_linear_b_max_delta,
+        pytorch_first_layer_linear_a_max_delta,
+        pytorch_first_layer_linear_post_conv_max_delta,
+        pytorch_first_layer_linear_hook_vs_direct_conv_max_delta,
+        pytorch_first_layer_linear_prepared_query_max_delta,
+        pytorch_first_layer_linear_prepared_key_max_delta,
+        pytorch_first_layer_linear_prepared_value_max_delta,
+        pytorch_first_layer_linear_prepared_beta_max_delta,
+        pytorch_first_layer_linear_prepared_g_max_delta,
+        pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_direct_recurrent_max_delta,
+        pytorch_first_layer_linear_focus_kv_mem_max_delta,
+        pytorch_first_layer_linear_focus_delta_max_delta,
+        pytorch_first_layer_linear_focus_state_max_delta,
+        pytorch_first_layer_linear_focus_output_max_delta,
+        pytorch_first_layer_linear_focus_kv_mem_step_max_deltas,
+        pytorch_first_layer_linear_focus_delta_step_max_deltas,
+        pytorch_first_layer_linear_focus_state_step_max_deltas,
+        pytorch_first_layer_linear_focus_output_step_max_deltas,
+        pytorch_first_layer_linear_chunk_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_explicit_post_conv_max_delta,
+        pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
+        pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
+        pytorch_first_layer_linear_direct_conv_max_delta,
+        pytorch_first_layer_linear_post_conv_value_focus_head_max_delta,
+        pytorch_first_layer_linear_explicit_post_conv_value_focus_head_max_delta,
+        pytorch_first_layer_linear_explicit_post_conv_reversed_taps_value_focus_head_max_delta,
+        pytorch_first_layer_linear_fp32_reference_post_conv_value_focus_head_max_delta,
+        pytorch_first_layer_linear_prepared_value_focus_head_max_delta,
+        pytorch_first_layer_linear_pre_norm_max_delta,
+        pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
+        pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
+        pytorch_first_layer_linear_norm_gate_max_delta,
+        pytorch_first_layer_linear_norm_weight_max_delta,
+        pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
+        pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta,
+        pytorch_first_layer_linear_norm_silu_gate_max_delta,
+        pytorch_first_layer_linear_norm_max_delta,
+        pytorch_first_layer_token_mixer_max_delta,
+        pytorch_first_layer_post_attention_layernorm_max_delta,
+        pytorch_first_layer_mlp_max_delta,
+        pytorch_first_layer_max_delta,
+        pytorch_decoder_layer_max_deltas,
+        pytorch_first_bad_decoder_layer,
+        pytorch_first_bad_decoder_layer_max_delta,
+        pytorch_layer3_input_layernorm_max_delta,
+        pytorch_layer3_input_layernorm_input_max_delta,
+        pytorch_layer3_input_layernorm_mean_square_max_delta,
+        pytorch_layer3_input_layernorm_rsqrt_max_delta,
+        pytorch_layer3_input_layernorm_weight_max_delta,
+        pytorch_layer3_input_layernorm_weighted_hidden_max_delta,
+        pytorch_layer3_full_q_and_gate_max_delta,
+        pytorch_layer3_full_k_proj_max_delta,
+        pytorch_layer3_full_v_proj_max_delta,
+        pytorch_layer3_full_prepared_query_max_delta,
+        pytorch_layer3_full_gate_max_delta,
+        pytorch_layer3_full_prepared_key_max_delta,
+        pytorch_layer3_full_prepared_value_max_delta,
+        pytorch_layer3_full_attention_output_max_delta,
+        pytorch_layer3_token_mixer_max_delta,
+        pytorch_layer3_post_attention_layernorm_max_delta,
+        pytorch_layer3_mlp_max_delta,
+        pytorch_layer3_max_delta,
+        pytorch_layer4_input_layernorm_max_delta,
+        pytorch_layer4_input_layernorm_input_max_delta,
+        pytorch_layer4_input_layernorm_mean_square_max_delta,
+        pytorch_layer4_input_layernorm_rsqrt_max_delta,
+        pytorch_layer4_input_layernorm_weight_max_delta,
+        pytorch_layer4_input_layernorm_weighted_hidden_max_delta,
+        pytorch_layer4_token_mixer_max_delta,
+        pytorch_layer4_post_attention_layernorm_max_delta,
+        pytorch_layer4_mlp_max_delta,
+        pytorch_layer4_max_delta,
+    ) = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+        let first_layer_trace = device_runner.trace_decoder_layer(&target_input_ids, 0, 0)?;
+        let pytorch_first_layer_linear_chunk_scan_mode = first_layer_trace
+            .linear_core_trace
+            .as_ref()
+            .and_then(|trace| trace.chunk_scan_mode.clone());
+        let pytorch_first_layer_linear_chunk_execution_branch = first_layer_trace
+            .linear_core_trace
+            .as_ref()
+            .and_then(|trace| trace.chunk_execution_branch.clone());
+        let pytorch_first_layer_input_layernorm_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.input_layernorm_output.tensor(),
+            &pytorch_oracle.first_layer_input_layernorm_output,
+        )?);
+        let linear_projection_trace = first_layer_trace
+            .linear_projection_trace
+            .as_ref()
+            .ok_or_else(|| RuntimeError::External {
+                context: "pytorch oracle",
+                message: "first traced layer did not expose linear projection trace".to_string(),
+            })?;
+        let pytorch_first_layer_linear_qkv_max_delta = Some(max_tensor_delta_vec3(
+            linear_projection_trace.qkv_output.tensor(),
+            &pytorch_oracle.first_layer_linear_qkv_output,
+        )?);
+        let value_dim = linear_projection_trace.z_output.tensor().dim(D::Minus1)?;
+        let qkv_dim = linear_projection_trace.qkv_output.tensor().dim(D::Minus1)?;
+        let key_dim = (qkv_dim - value_dim) / 2;
+        let num_v_heads = 16;
+        let head_v_dim = value_dim / num_v_heads;
+        let pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta = Some(
+            max_tensor_delta_vec1(
+                &linear_projection_trace
+                    .qkv_output
+                    .tensor()
+                    .narrow(D::Minus1, key_dim * 2, value_dim)?
+                    .reshape((1, prompt_ids.len(), num_v_heads, head_v_dim))?
+                    .i((0, 2, 6))?,
+                &pytorch_oracle.first_layer_linear_pre_conv_value_focus_head_output,
+            )?,
+        );
+        let pytorch_first_layer_linear_z_max_delta = Some(max_tensor_delta_vec3(
+            linear_projection_trace.z_output.tensor(),
+            &pytorch_oracle.first_layer_linear_z_output,
+        )?);
+        let pytorch_first_layer_linear_b_max_delta = Some(max_tensor_delta_vec3(
+            linear_projection_trace.b_output.tensor(),
+            &pytorch_oracle.first_layer_linear_b_output,
+        )?);
+        let pytorch_first_layer_linear_a_max_delta = Some(max_tensor_delta_vec3(
+            linear_projection_trace.a_output.tensor(),
+            &pytorch_oracle.first_layer_linear_a_output,
+        )?);
+        let linear_core_trace = first_layer_trace
+            .linear_core_trace
+            .as_ref()
+            .ok_or_else(|| RuntimeError::External {
+                context: "pytorch oracle",
+                message: "first traced layer did not expose linear core trace".to_string(),
+            })?;
+        let pytorch_first_layer_linear_conv_weight_max_delta = Some(max_tensor_delta_vec2(
+            linear_core_trace.conv_weight_squeezed.tensor(),
+            &pytorch_oracle.first_layer_linear_conv_weight,
+        )?);
+        let pytorch_first_layer_linear_post_conv_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.post_conv_mixed_qkv.tensor(),
+            &pytorch_oracle.first_layer_linear_direct_conv_output,
+        )?);
+        let pytorch_first_layer_linear_hook_vs_direct_conv_max_delta = Some(max_vec3_delta(
+            &pytorch_oracle.first_layer_linear_post_conv_output,
+            &pytorch_oracle.first_layer_linear_direct_conv_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_query_max_delta = Some(max_tensor_delta_vec4(
+            linear_core_trace.prepared_query.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_query_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_key_max_delta = Some(max_tensor_delta_vec4(
+            linear_core_trace.prepared_key.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_key_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_value_max_delta = Some(max_tensor_delta_vec4(
+            linear_core_trace.prepared_value.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_value_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_beta_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.prepared_beta.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_beta_output,
+        )?);
+        let pytorch_first_layer_linear_prepared_g_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.prepared_g.tensor(),
+            &pytorch_oracle.first_layer_linear_prepared_g_output,
+        )?);
+        let pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta =
+            Some(max_logit_delta(
+                linear_core_trace.flat3d_weighted_k.tensor(),
+                linear_core_trace.torch_like_weighted_k.tensor(),
+            )?);
+        let pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta = Some(max_logit_delta(
+            linear_core_trace.flat3d_attn.tensor(),
+            linear_core_trace.torch_like_attn.tensor(),
+        )?);
+        let pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta =
+            Some(max_logit_delta(
+                linear_core_trace.flat3d_k_cumdecay.tensor(),
+                linear_core_trace.torch_like_k_cumdecay.tensor(),
+            )?);
+        let pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta =
+            Some(max_logit_delta(
+                linear_core_trace.flat3d_single_chunk_v_new.tensor(),
+                linear_core_trace.torch_like_single_chunk_v_new.tensor(),
+            )?);
+        let pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta =
+            Some(max_logit_delta(
+                linear_core_trace.flat3d_single_chunk_output.tensor(),
+                linear_core_trace.torch_like_single_chunk_output.tensor(),
+            )?);
+        let pytorch_first_layer_linear_direct_recurrent_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.pre_gated_norm_output.tensor(),
+            &pytorch_oracle.first_layer_linear_direct_recurrent_output,
+        )?);
+        let pytorch_first_layer_linear_focus_kv_mem_max_delta = Some(max_tensor_delta_vec1(
+            linear_core_trace.focused_recurrent_kv_mem.tensor(),
+            &pytorch_oracle.first_layer_linear_focus_kv_mem_output,
+        )?);
+        let pytorch_first_layer_linear_focus_delta_max_delta = Some(max_tensor_delta_vec1(
+            linear_core_trace.focused_recurrent_delta.tensor(),
+            &pytorch_oracle.first_layer_linear_focus_delta_output,
+        )?);
+        let pytorch_first_layer_linear_focus_state_max_delta = Some(max_tensor_delta_vec2(
+            linear_core_trace.focused_recurrent_state.tensor(),
+            &pytorch_oracle.first_layer_linear_focus_state_output,
+        )?);
+        let pytorch_first_layer_linear_focus_output_max_delta = Some(max_tensor_delta_vec1(
+            linear_core_trace.focused_recurrent_output.tensor(),
+            &pytorch_oracle.first_layer_linear_focus_output,
+        )?);
+        let pytorch_first_layer_linear_focus_kv_mem_step_max_deltas = Some(
+            max_tensor_delta_vec1_list(
+                &linear_core_trace.focused_recurrent_kv_mem_steps,
+                &pytorch_oracle.first_layer_linear_focus_kv_mem_steps,
+            )?,
+        );
+        let pytorch_first_layer_linear_focus_delta_step_max_deltas = Some(
+            max_tensor_delta_vec1_list(
+                &linear_core_trace.focused_recurrent_delta_steps,
+                &pytorch_oracle.first_layer_linear_focus_delta_steps,
+            )?,
+        );
+        let pytorch_first_layer_linear_focus_state_step_max_deltas = Some(
+            max_tensor_delta_vec2_list(
+                &linear_core_trace.focused_recurrent_state_steps,
+                &pytorch_oracle.first_layer_linear_focus_state_steps,
+            )?,
+        );
+        let pytorch_first_layer_linear_focus_output_step_max_deltas = Some(
+            max_tensor_delta_vec1_list(
+                &linear_core_trace.focused_recurrent_output_steps,
+                &pytorch_oracle.first_layer_linear_focus_output_steps,
+            )?,
+        );
+        let pytorch_first_layer_linear_chunk_vs_torch_like_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.pre_gated_norm_output.tensor(),
+            &tensor_to_vec3(linear_core_trace.torch_like_pre_gated_norm_output.tensor())?,
+        )?);
+        let pytorch_first_layer_linear_explicit_post_conv_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.explicit_post_conv_mixed_qkv.tensor(),
+            &pytorch_oracle.first_layer_linear_direct_conv_output,
+        )?);
+        let pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta =
+            Some(max_tensor_delta_vec3(
+                linear_core_trace
+                    .explicit_post_conv_reversed_taps_mixed_qkv
+                    .tensor(),
+                &pytorch_oracle.first_layer_linear_direct_conv_output,
+            )?);
+        let pytorch_first_layer_linear_fp32_reference_post_conv_max_delta = Some(
+            max_tensor_delta_vec3(
+                linear_core_trace.fp32_reference_post_conv_mixed_qkv.tensor(),
+                &pytorch_oracle.first_layer_linear_direct_conv_output,
+            )?,
+        );
+        let pytorch_first_layer_linear_direct_conv_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.fp32_reference_post_conv_mixed_qkv.tensor(),
+            &pytorch_oracle.first_layer_linear_direct_conv_output,
+        )?);
+        let pytorch_first_layer_linear_post_conv_value_focus_head_max_delta = Some(
+            max_tensor_delta_vec1(
+                linear_core_trace.post_conv_value_focus_head.tensor(),
+                &pytorch_oracle.first_layer_linear_prepared_value_focus_head_output,
+            )?,
+        );
+        let pytorch_first_layer_linear_explicit_post_conv_value_focus_head_max_delta = Some(
+            max_tensor_delta_vec1(
+                linear_core_trace.explicit_post_conv_value_focus_head.tensor(),
+                &pytorch_oracle.first_layer_linear_prepared_value_focus_head_output,
+            )?,
+        );
+        let pytorch_first_layer_linear_explicit_post_conv_reversed_taps_value_focus_head_max_delta =
+            Some(max_tensor_delta_vec1(
+                linear_core_trace
+                    .explicit_post_conv_reversed_taps_value_focus_head
+                    .tensor(),
+                &pytorch_oracle.first_layer_linear_prepared_value_focus_head_output,
+            )?);
+        let pytorch_first_layer_linear_fp32_reference_post_conv_value_focus_head_max_delta =
+            Some(max_tensor_delta_vec1(
+                linear_core_trace
+                    .fp32_reference_post_conv_value_focus_head
+                    .tensor(),
+                &pytorch_oracle.first_layer_linear_prepared_value_focus_head_output,
+            )?);
+        let pytorch_first_layer_linear_prepared_value_focus_head_max_delta = Some(
+            max_tensor_delta_vec1(
+                linear_core_trace.prepared_value_focus_head.tensor(),
+                &pytorch_oracle.first_layer_linear_prepared_value_focus_head_output,
+            )?,
+        );
+        let pytorch_first_layer_linear_pre_norm_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.pre_gated_norm_output.tensor(),
+            &pytorch_oracle.first_layer_linear_pre_norm_output,
+        )?);
+        let pytorch_first_layer_linear_pre_norm_mean_square_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.pre_gated_norm_mean_square.tensor(),
+            &pytorch_oracle.first_layer_linear_pre_norm_mean_square,
+        )?);
+        let (
+            pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        ) = {
+            let (delta, argmax, runtime, oracle) = max_tensor_delta_vec3_with_argmax(
+                linear_core_trace.pre_gated_norm_rsqrt.tensor(),
+                &pytorch_oracle.first_layer_linear_pre_norm_rsqrt,
+            )?;
+            (Some(delta), Some(argmax), Some(runtime), Some(oracle))
+        };
+        let runtime_focus_head = linear_core_trace
+            .pre_gated_norm_output
+            .tensor()
+            .reshape((1, 4, 16, 128))?
+            .i((0, 2, 6))?;
+        let pytorch_first_layer_linear_pre_norm_focus_head_max_delta =
+            Some(max_tensor_delta_vec1(
+                &runtime_focus_head,
+                &pytorch_oracle.first_layer_linear_pre_norm_focus_head_output,
+            )?);
+        let runtime_focus_head_vec = runtime_focus_head
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let oracle_focus_head_vec = pytorch_oracle.first_layer_linear_pre_norm_focus_head_output.clone();
+        let (
+            pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        ) = {
+            let (mean_square, min_abs, max_abs) = slice_stats(&runtime_focus_head_vec);
+            (Some(mean_square), Some(min_abs), Some(max_abs))
+        };
+        let (
+            pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
+        ) = {
+            let (mean_square, min_abs, max_abs) = slice_stats(&oracle_focus_head_vec);
+            (Some(mean_square), Some(min_abs), Some(max_abs))
+        };
+        let pytorch_first_layer_linear_norm_gate_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.gated_norm_gate_input.tensor(),
+            &pytorch_oracle.first_layer_linear_norm_gate_input,
+        )?);
+        let pytorch_first_layer_linear_norm_weight_max_delta = Some(max_tensor_delta_vec1(
+            linear_core_trace.gated_norm_weight.tensor(),
+            &pytorch_oracle.first_layer_linear_norm_weight,
+        )?);
+        let pytorch_first_layer_linear_norm_weighted_hidden_max_delta = Some(
+            max_tensor_delta_vec3(
+                linear_core_trace.gated_norm_weighted_hidden.tensor(),
+                &pytorch_oracle.first_layer_linear_norm_weighted_hidden,
+            )?,
+        );
+        let pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta = Some(
+            max_tensor_delta_vec3(
+                linear_core_trace.gated_norm_weighted_hidden_fallback.tensor(),
+                &pytorch_oracle.first_layer_linear_norm_weighted_hidden,
+            )?,
+        );
+        let pytorch_first_layer_linear_norm_silu_gate_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.gated_norm_silu_gate.tensor(),
+            &pytorch_oracle.first_layer_linear_norm_silu_gate,
+        )?);
+        let pytorch_first_layer_linear_norm_max_delta = Some(max_tensor_delta_vec3(
+            linear_core_trace.post_gated_norm_output.tensor(),
+            &pytorch_oracle.first_layer_linear_norm_output,
+        )?);
+        let pytorch_first_layer_token_mixer_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.token_mixer_output.tensor(),
+            &pytorch_oracle.first_layer_token_mixer_output,
+        )?);
+        let pytorch_first_layer_post_attention_layernorm_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.post_attention_layernorm_output.tensor(),
+            &pytorch_oracle.first_layer_post_attention_layernorm_output,
+        )?);
+        let pytorch_first_layer_mlp_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.mlp_output.tensor(),
+            &pytorch_oracle.first_layer_mlp_output,
+        )?);
+        let pytorch_first_layer_max_delta = Some(max_tensor_delta_vec3(
+            first_layer_trace.layer_output.tensor(),
+            &pytorch_oracle.first_layer_output,
+        )?);
+        let pytorch_decoder_layer_max_deltas = Some({
+            let mut deltas = Vec::with_capacity(pytorch_oracle.decoder_layer_outputs.len());
+            let tolerance = 1e-2f32;
+            for (layer_id, oracle_layer_output) in
+                pytorch_oracle.decoder_layer_outputs.iter().enumerate()
+            {
+                let runtime_layer_output =
+                    device_runner.trace_decoder_layer_output(&target_input_ids, layer_id, 0)?;
+                let delta = max_tensor_delta_vec3(
+                    runtime_layer_output.tensor(),
+                    oracle_layer_output,
+                )?;
+                deltas.push(delta);
+                if delta > tolerance {
+                    break;
+                }
+            }
+            deltas
+        });
+        let (
+            pytorch_first_bad_decoder_layer,
+            pytorch_first_bad_decoder_layer_max_delta,
+        ) = if let Some(deltas) = pytorch_decoder_layer_max_deltas.as_ref() {
+            let tolerance = 1e-2f32;
+            if let Some((layer_id, delta)) = deltas
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, delta)| *delta > tolerance)
+            {
+                (Some(layer_id), Some(delta))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+        let layer3_trace = device_runner.trace_decoder_layer(&target_input_ids, 3, 0)?;
+        let layer3_input_norm_trace = layer3_trace
+            .input_layernorm_trace
+            .as_ref()
+            .ok_or_else(|| RuntimeError::External {
+                context: "pytorch oracle",
+                message: "layer 3 input rmsnorm trace missing".to_string(),
+            })?;
+        let layer3_full_trace = layer3_trace
+            .full_attention_trace
+            .as_ref()
+            .ok_or_else(|| RuntimeError::External {
+                context: "pytorch oracle",
+                message: "layer 3 full-attention trace missing".to_string(),
+            })?;
+        let pytorch_layer3_input_layernorm_max_delta = Some(max_tensor_delta_vec3(
+            layer3_trace.input_layernorm_output.tensor(),
+            &pytorch_oracle.layer3_input_layernorm_output,
+        )?);
+        let pytorch_layer3_input_layernorm_input_max_delta = Some(max_tensor_delta_vec3(
+            layer3_input_norm_trace.input_hidden.tensor(),
+            &pytorch_oracle.layer3_input_layernorm_input,
+        )?);
+        let pytorch_layer3_input_layernorm_mean_square_max_delta = Some(max_tensor_delta_vec3(
+            layer3_input_norm_trace.mean_square.tensor(),
+            &pytorch_oracle.layer3_input_layernorm_mean_square,
+        )?);
+        let pytorch_layer3_input_layernorm_rsqrt_max_delta = Some(max_tensor_delta_vec3(
+            layer3_input_norm_trace.rsqrt.tensor(),
+            &pytorch_oracle.layer3_input_layernorm_rsqrt,
+        )?);
+        let pytorch_layer3_input_layernorm_weight_max_delta = Some(max_tensor_delta_vec1(
+            layer3_input_norm_trace.weight.tensor(),
+            &pytorch_oracle.layer3_input_layernorm_weight,
+        )?);
+        let pytorch_layer3_input_layernorm_weighted_hidden_max_delta =
+            Some(max_tensor_delta_vec3(
+                layer3_input_norm_trace.weighted_hidden.tensor(),
+                &pytorch_oracle.layer3_input_layernorm_weighted_hidden,
+            )?);
+        let pytorch_layer3_full_q_and_gate_max_delta = Some(max_tensor_delta_vec3(
+            layer3_full_trace.q_and_gate_output.tensor(),
+            &pytorch_oracle.layer3_q_and_gate_output,
+        )?);
+        let pytorch_layer3_full_k_proj_max_delta = Some(max_tensor_delta_vec3(
+            layer3_full_trace.k_proj_output.tensor(),
+            &pytorch_oracle.layer3_k_proj_output,
+        )?);
+        let pytorch_layer3_full_v_proj_max_delta = Some(max_tensor_delta_vec3(
+            layer3_full_trace.v_proj_output.tensor(),
+            &pytorch_oracle.layer3_v_proj_output,
+        )?);
+        let pytorch_layer3_full_prepared_query_max_delta = Some(max_tensor_delta_vec4(
+            layer3_full_trace.prepared_query.tensor(),
+            &pytorch_oracle.layer3_prepared_query_output,
+        )?);
+        let pytorch_layer3_full_gate_max_delta = Some(max_tensor_delta_vec3(
+            layer3_full_trace.gate.tensor(),
+            &pytorch_oracle.layer3_gate_output,
+        )?);
+        let pytorch_layer3_full_prepared_key_max_delta = Some(max_tensor_delta_vec4(
+            layer3_full_trace.prepared_key.tensor(),
+            &pytorch_oracle.layer3_prepared_key_output,
+        )?);
+        let pytorch_layer3_full_prepared_value_max_delta = Some(max_tensor_delta_vec4(
+            layer3_full_trace.prepared_value.tensor(),
+            &pytorch_oracle.layer3_prepared_value_output,
+        )?);
+        let pytorch_layer3_full_attention_output_max_delta = Some(max_tensor_delta_vec3(
+            layer3_full_trace.attention_output.tensor(),
+            &pytorch_oracle.layer3_attention_output,
+        )?);
+        let pytorch_layer3_token_mixer_max_delta = Some(max_tensor_delta_vec3(
+            layer3_trace.token_mixer_output.tensor(),
+            &pytorch_oracle.layer3_token_mixer_output,
+        )?);
+        let pytorch_layer3_post_attention_layernorm_max_delta = Some(max_tensor_delta_vec3(
+            layer3_trace.post_attention_layernorm_output.tensor(),
+            &pytorch_oracle.layer3_post_attention_layernorm_output,
+        )?);
+        let pytorch_layer3_mlp_max_delta = Some(max_tensor_delta_vec3(
+            layer3_trace.mlp_output.tensor(),
+            &pytorch_oracle.layer3_mlp_output,
+        )?);
+        let pytorch_layer3_max_delta = Some(max_tensor_delta_vec3(
+            layer3_trace.layer_output.tensor(),
+            &pytorch_oracle.layer3_output,
+        )?);
+        let layer4_trace = device_runner.trace_decoder_layer(&target_input_ids, 4, 0)?;
+        let pytorch_layer4_input_layernorm_max_delta = Some(max_tensor_delta_vec3(
+            layer4_trace.input_layernorm_output.tensor(),
+            &pytorch_oracle.layer4_input_layernorm_output,
+        )?);
+        let layer4_input_norm_trace = layer4_trace
+            .input_layernorm_trace
+            .as_ref()
+            .ok_or_else(|| RuntimeError::External {
+                context: "pytorch oracle",
+                message: "layer 4 input rmsnorm trace missing".to_string(),
+            })?;
+        let pytorch_layer4_input_layernorm_input_max_delta = Some(max_tensor_delta_vec3(
+            layer4_input_norm_trace.input_hidden.tensor(),
+            &pytorch_oracle.layer4_input_layernorm_input,
+        )?);
+        let pytorch_layer4_input_layernorm_mean_square_max_delta = Some(max_tensor_delta_vec3(
+            layer4_input_norm_trace.mean_square.tensor(),
+            &pytorch_oracle.layer4_input_layernorm_mean_square,
+        )?);
+        let pytorch_layer4_input_layernorm_rsqrt_max_delta = Some(max_tensor_delta_vec3(
+            layer4_input_norm_trace.rsqrt.tensor(),
+            &pytorch_oracle.layer4_input_layernorm_rsqrt,
+        )?);
+        let pytorch_layer4_input_layernorm_weight_max_delta = Some(max_tensor_delta_vec1(
+            layer4_input_norm_trace.weight.tensor(),
+            &pytorch_oracle.layer4_input_layernorm_weight,
+        )?);
+        let pytorch_layer4_input_layernorm_weighted_hidden_max_delta =
+            Some(max_tensor_delta_vec3(
+                layer4_input_norm_trace.weighted_hidden.tensor(),
+                &pytorch_oracle.layer4_input_layernorm_weighted_hidden,
+            )?);
+        let pytorch_layer4_token_mixer_max_delta = Some(max_tensor_delta_vec3(
+            layer4_trace.token_mixer_output.tensor(),
+            &pytorch_oracle.layer4_token_mixer_output,
+        )?);
+        let pytorch_layer4_post_attention_layernorm_max_delta = Some(max_tensor_delta_vec3(
+            layer4_trace.post_attention_layernorm_output.tensor(),
+            &pytorch_oracle.layer4_post_attention_layernorm_output,
+        )?);
+        let pytorch_layer4_mlp_max_delta = Some(max_tensor_delta_vec3(
+            layer4_trace.mlp_output.tensor(),
+            &pytorch_oracle.layer4_mlp_output,
+        )?);
+        let pytorch_layer4_max_delta = Some(max_tensor_delta_vec3(
+            layer4_trace.layer_output.tensor(),
+            &pytorch_oracle.layer4_output,
+        )?);
+        (
+            pytorch_first_layer_linear_chunk_scan_mode,
+            pytorch_first_layer_linear_chunk_execution_branch,
+            pytorch_first_layer_input_layernorm_max_delta,
+            pytorch_first_layer_linear_qkv_max_delta,
+            pytorch_first_layer_linear_conv_weight_max_delta,
+            pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta,
+            pytorch_first_layer_linear_z_max_delta,
+            pytorch_first_layer_linear_b_max_delta,
+            pytorch_first_layer_linear_a_max_delta,
+            pytorch_first_layer_linear_post_conv_max_delta,
+            pytorch_first_layer_linear_hook_vs_direct_conv_max_delta,
+            pytorch_first_layer_linear_prepared_query_max_delta,
+            pytorch_first_layer_linear_prepared_key_max_delta,
+            pytorch_first_layer_linear_prepared_value_max_delta,
+            pytorch_first_layer_linear_prepared_beta_max_delta,
+            pytorch_first_layer_linear_prepared_g_max_delta,
+            pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_direct_recurrent_max_delta,
+            pytorch_first_layer_linear_focus_kv_mem_max_delta,
+            pytorch_first_layer_linear_focus_delta_max_delta,
+            pytorch_first_layer_linear_focus_state_max_delta,
+            pytorch_first_layer_linear_focus_output_max_delta,
+            pytorch_first_layer_linear_focus_kv_mem_step_max_deltas,
+            pytorch_first_layer_linear_focus_delta_step_max_deltas,
+            pytorch_first_layer_linear_focus_state_step_max_deltas,
+            pytorch_first_layer_linear_focus_output_step_max_deltas,
+            pytorch_first_layer_linear_chunk_vs_torch_like_max_delta,
+            pytorch_first_layer_linear_explicit_post_conv_max_delta,
+            pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
+            pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
+            pytorch_first_layer_linear_direct_conv_max_delta,
+            pytorch_first_layer_linear_post_conv_value_focus_head_max_delta,
+            pytorch_first_layer_linear_explicit_post_conv_value_focus_head_max_delta,
+            pytorch_first_layer_linear_explicit_post_conv_reversed_taps_value_focus_head_max_delta,
+            pytorch_first_layer_linear_fp32_reference_post_conv_value_focus_head_max_delta,
+            pytorch_first_layer_linear_prepared_value_focus_head_max_delta,
+            pytorch_first_layer_linear_pre_norm_max_delta,
+            pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
+            pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+            pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
+            pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+            pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
+            pytorch_first_layer_linear_norm_gate_max_delta,
+            pytorch_first_layer_linear_norm_weight_max_delta,
+            pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
+            pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta,
+            pytorch_first_layer_linear_norm_silu_gate_max_delta,
+            pytorch_first_layer_linear_norm_max_delta,
+            pytorch_first_layer_token_mixer_max_delta,
+            pytorch_first_layer_post_attention_layernorm_max_delta,
+            pytorch_first_layer_mlp_max_delta,
+            pytorch_first_layer_max_delta,
+            pytorch_decoder_layer_max_deltas,
+            pytorch_first_bad_decoder_layer,
+            pytorch_first_bad_decoder_layer_max_delta,
+            pytorch_layer3_input_layernorm_max_delta,
+            pytorch_layer3_input_layernorm_input_max_delta,
+            pytorch_layer3_input_layernorm_mean_square_max_delta,
+            pytorch_layer3_input_layernorm_rsqrt_max_delta,
+            pytorch_layer3_input_layernorm_weight_max_delta,
+            pytorch_layer3_input_layernorm_weighted_hidden_max_delta,
+            pytorch_layer3_full_q_and_gate_max_delta,
+            pytorch_layer3_full_k_proj_max_delta,
+            pytorch_layer3_full_v_proj_max_delta,
+            pytorch_layer3_full_prepared_query_max_delta,
+            pytorch_layer3_full_gate_max_delta,
+            pytorch_layer3_full_prepared_key_max_delta,
+            pytorch_layer3_full_prepared_value_max_delta,
+            pytorch_layer3_full_attention_output_max_delta,
+            pytorch_layer3_token_mixer_max_delta,
+            pytorch_layer3_post_attention_layernorm_max_delta,
+            pytorch_layer3_mlp_max_delta,
+            pytorch_layer3_max_delta,
+            pytorch_layer4_input_layernorm_max_delta,
+            pytorch_layer4_input_layernorm_input_max_delta,
+            pytorch_layer4_input_layernorm_mean_square_max_delta,
+            pytorch_layer4_input_layernorm_rsqrt_max_delta,
+            pytorch_layer4_input_layernorm_weight_max_delta,
+            pytorch_layer4_input_layernorm_weighted_hidden_max_delta,
+            pytorch_layer4_token_mixer_max_delta,
+            pytorch_layer4_post_attention_layernorm_max_delta,
+            pytorch_layer4_mlp_max_delta,
+            pytorch_layer4_max_delta,
+        )
+    } else {
+        (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+    };
+    let oracle_input_ids = if oracle_device.location() == cpu_device.location() {
+        input_ids.clone()
+    } else {
+        input_ids.to_device(&oracle_device)?
+    };
+    let (mut oracle_logits, mut oracle_cache, oracle_prefill_elapsed) =
+        if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
             (
-                Some(cpu_logits),
-                Some(cpu_cache),
-                cpu_prefill_started.elapsed(),
+                None,
+                None,
+                std::time::Duration::from_secs_f64(pytorch_oracle.prefill_ms / 1000.0),
             )
+        } else if let Some(oracle_runner) = oracle_runner.as_mut() {
+            let oracle_hidden_states = oracle_runner.hidden_states_from_input_ids(&oracle_input_ids)?;
+            let oracle_prefill_started = Instant::now();
+            match oracle_runner.prefill_from_hidden_states(&oracle_hidden_states) {
+                Ok((oracle_logits, oracle_cache)) => (
+                    Some(oracle_logits),
+                    Some(oracle_cache),
+                    oracle_prefill_started.elapsed(),
+                ),
+                Err(err) => {
+                    eprintln!("warning: disabling oracle path after prefill failure: {err}");
+                    (None, None, std::time::Duration::ZERO)
+                }
+            }
         } else {
             (None, None, std::time::Duration::ZERO)
         };
@@ -304,9 +2093,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if target_device.is_hip() {
         candle_core::hip::reset_transfer_counters();
     }
+    let device_hidden_states = device_runner.hidden_states_from_input_ids_direct(&input_ids)?;
     let device_prefill_started = Instant::now();
     let (mut device_logits, mut device_cache) =
-        device_runner.prefill_from_hidden_states(&hidden_states)?;
+        device_runner.prefill_from_hidden_states(&device_hidden_states)?;
     let device_prefill_elapsed = device_prefill_started.elapsed();
     #[cfg(feature = "qwen35-minimal-hip")]
     if target_device.is_hip()
@@ -317,43 +2107,1533 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         print_hip_counters("prefill");
     }
-    let cpu_prefill_nans = match cpu_logits.as_ref() {
-        Some(cpu_logits) => logit_nan_count(cpu_logits.tensor())?,
-        None => 0,
+    let oracle_prefill_nans = match pytorch_oracle.as_ref() {
+        Some(pytorch_oracle) => nan_count_slice(&pytorch_oracle.prefill_last_token_logits),
+        None => match oracle_logits.as_ref() {
+            Some(oracle_logits) => logit_nan_count(oracle_logits.tensor())?,
+            None => 0,
+        },
     };
     let device_prefill_nans = logit_nan_count(device_logits.tensor())?;
-    if cpu_prefill_nans > 0 || device_prefill_nans > 0 {
+    if oracle_prefill_nans > 0 || device_prefill_nans > 0 {
         eprintln!(
-            "warning: prefill logits contain NaNs cpu={} device={}",
-            cpu_prefill_nans, device_prefill_nans
+            "warning: prefill logits contain NaNs oracle={} device={}",
+            oracle_prefill_nans, device_prefill_nans
         );
-        if let Some(cpu_runner) = cpu_runner.as_mut() {
-            report_linear_nan_trace(cpu_runner, &input_ids)?;
+        if let Some(oracle_runner) = oracle_runner.as_mut() {
+            report_linear_nan_trace(oracle_runner, &oracle_input_ids)?;
         }
     }
 
-    let prefill_delta = match cpu_logits.as_ref() {
-        Some(cpu_logits) => max_logit_delta(cpu_logits.tensor(), device_logits.tensor())?,
-        None => f32::NAN,
+    let prefill_delta = match pytorch_oracle.as_ref() {
+        Some(pytorch_oracle) => {
+            max_last_token_delta_vec(device_logits.tensor(), &pytorch_oracle.prefill_last_token_logits)?
+        }
+        None => match oracle_logits.as_ref() {
+            Some(oracle_logits) => max_logit_delta(oracle_logits.tensor(), device_logits.tensor())?,
+            None => f32::NAN,
+        },
     };
+    let prefill_cache_max_delta = match pytorch_oracle.as_ref() {
+        Some(_) => None,
+        None => match oracle_cache.as_ref() {
+            Some(oracle_cache) => cache_max_delta(oracle_cache, &device_cache)?,
+            None => None,
+        },
+    };
+    let (
+        pytorch_decode_decoder_layer_max_deltas,
+        pytorch_first_bad_decode_decoder_layer,
+        pytorch_first_bad_decode_decoder_layer_max_delta,
+        pytorch_decode_first_layer_input_layernorm_max_delta,
+        pytorch_decode_first_layer_linear_qkv_max_delta,
+        pytorch_decode_first_layer_linear_z_max_delta,
+        pytorch_decode_first_layer_linear_b_max_delta,
+        pytorch_decode_first_layer_linear_a_max_delta,
+        pytorch_decode_first_layer_linear_prepared_query_max_delta,
+        pytorch_decode_first_layer_linear_prepared_key_max_delta,
+        pytorch_decode_first_layer_linear_prepared_value_max_delta,
+        pytorch_decode_first_layer_linear_prepared_beta_max_delta,
+        pytorch_decode_first_layer_linear_prepared_g_max_delta,
+        pytorch_decode_first_layer_linear_direct_recurrent_max_delta,
+        pytorch_decode_first_layer_initial_conv_state_shape_match,
+        pytorch_decode_first_layer_initial_conv_state_max_delta,
+        pytorch_decode_first_layer_initial_recurrent_state_max_delta,
+        pytorch_decode_first_layer_initial_recurrent_state_focus_head_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
+        pytorch_decode_first_layer_linear_normalized_hidden_max_delta,
+        pytorch_decode_first_layer_linear_norm_focus_head_max_delta,
+        pytorch_decode_first_layer_linear_norm_max_delta,
+        pytorch_decode_first_layer_token_mixer_max_delta,
+        pytorch_decode_first_layer_post_attention_layernorm_max_delta,
+        pytorch_decode_first_layer_mlp_max_delta,
+        pytorch_decode_first_layer_max_delta,
+        pytorch_decode_final_hidden_max_delta,
+        pytorch_decode_final_norm_input_max_delta,
+        pytorch_decode_final_norm_mean_square_max_delta,
+        pytorch_decode_final_norm_rsqrt_max_delta,
+        pytorch_decode_final_norm_weighted_hidden_max_delta,
+        pytorch_decode_final_norm_output_max_delta,
+        pytorch_decode_output_projection_from_oracle_hidden_max_delta,
+        pytorch_decode_layer3_input_layernorm_max_delta,
+        pytorch_decode_layer3_input_layernorm_input_max_delta,
+        pytorch_decode_layer3_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer3_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer3_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer3_token_mixer_max_delta,
+        pytorch_decode_layer3_post_attention_layernorm_max_delta,
+        pytorch_decode_layer3_mlp_max_delta,
+        pytorch_decode_layer3_max_delta,
+        pytorch_decode_layer23_input_layernorm_max_delta,
+        pytorch_decode_layer23_input_layernorm_input_max_delta,
+        pytorch_decode_layer23_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer23_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer23_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer23_token_mixer_max_delta,
+        pytorch_decode_layer23_post_attention_layernorm_max_delta,
+        pytorch_decode_layer23_mlp_gate_proj_max_delta,
+        pytorch_decode_layer23_mlp_up_proj_max_delta,
+        pytorch_decode_layer23_mlp_activated_hidden_max_delta,
+        pytorch_decode_layer23_mlp_down_proj_max_delta,
+        pytorch_decode_layer23_mlp_max_delta,
+        pytorch_decode_layer23_max_delta,
+        pytorch_decode_layer15_input_layernorm_max_delta,
+        pytorch_decode_layer15_input_layernorm_input_max_delta,
+        pytorch_decode_layer15_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer15_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer15_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer15_token_mixer_max_delta,
+        pytorch_decode_layer15_post_attention_layernorm_max_delta,
+        pytorch_decode_layer15_mlp_max_delta,
+        pytorch_decode_layer15_max_delta,
+        pytorch_decode_layer16_input_layernorm_max_delta,
+        pytorch_decode_layer16_input_layernorm_input_max_delta,
+        pytorch_decode_layer16_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer16_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer16_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer16_token_mixer_max_delta,
+        pytorch_decode_layer16_post_attention_layernorm_max_delta,
+        pytorch_decode_layer16_mlp_max_delta,
+        pytorch_decode_layer16_max_delta,
+        pytorch_decode_layer17_input_layernorm_max_delta,
+        pytorch_decode_layer17_input_layernorm_input_max_delta,
+        pytorch_decode_layer17_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer17_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer17_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer17_token_mixer_max_delta,
+        pytorch_decode_layer17_post_attention_layernorm_max_delta,
+        pytorch_decode_layer17_mlp_max_delta,
+        pytorch_decode_layer17_max_delta,
+        pytorch_decode_layer18_input_layernorm_max_delta,
+        pytorch_decode_layer18_input_layernorm_input_max_delta,
+        pytorch_decode_layer18_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer18_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer18_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer18_token_mixer_max_delta,
+        pytorch_decode_layer18_post_attention_layernorm_max_delta,
+        pytorch_decode_layer18_mlp_max_delta,
+        pytorch_decode_layer18_max_delta,
+        pytorch_decode_layer15_mlp_from_oracle_input_max_delta,
+        pytorch_decode_layer23_mlp_from_oracle_input_max_delta,
+    ) = if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+        if !pytorch_oracle.decode_decoder_layer_outputs.is_empty() {
+            let decode_input_token = *pytorch_oracle.generated_token_ids.first().ok_or_else(|| {
+                RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "missing first decode input token".to_string(),
+                }
+            })?;
+            let decode_input =
+                Tensor::from_vec(vec![decode_input_token], (1, 1), &target_device)?;
+            let decode_input_hidden = device_runner.hidden_states_from_input_ids_direct(&decode_input)?;
+            let mut deltas =
+                Vec::with_capacity(pytorch_oracle.decode_decoder_layer_outputs.len());
+            for (layer_id, oracle_layer_output) in
+                pytorch_oracle.decode_decoder_layer_outputs.iter().enumerate()
+            {
+                let runtime_layer_trace = device_runner.trace_decoder_layer_with_cache(
+                    &decode_input,
+                    layer_id,
+                    prompt_ids.len(),
+                    &device_cache,
+                )?;
+                deltas.push(max_tensor_delta_vec3(
+                    runtime_layer_trace.layer_output.tensor(),
+                    oracle_layer_output,
+                )?);
+            }
+            let first_bad = deltas
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, delta)| *delta > 1e-2f32);
+            let layer0_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input,
+                0,
+                prompt_ids.len(),
+                &device_cache,
+            )?;
+            let layer0_linear_projection_trace = layer0_trace
+                .linear_projection_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 0 linear projection trace missing".to_string(),
+                })?;
+            let layer0_linear_core_trace = layer0_trace
+                .linear_core_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 0 linear core trace missing".to_string(),
+                })?;
+            let layer3_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input,
+                3,
+                prompt_ids.len(),
+                &device_cache,
+            )?;
+            let layer3_input_norm_trace = layer3_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 3 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer23_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input,
+                23,
+                prompt_ids.len(),
+                &device_cache,
+            )?;
+            let layer23_input_norm_trace = layer23_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 23 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer23_mlp_trace = layer23_trace
+                .mlp_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 23 mlp trace missing".to_string(),
+                })?;
+            // Middle accumulation layers 15-18
+            let layer15_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input, 15, prompt_ids.len(), &device_cache,
+            )?;
+            let layer15_input_norm_trace = layer15_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 15 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer16_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input, 16, prompt_ids.len(), &device_cache,
+            )?;
+            let layer16_input_norm_trace = layer16_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 16 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer17_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input, 17, prompt_ids.len(), &device_cache,
+            )?;
+            let layer17_input_norm_trace = layer17_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 17 input rmsnorm trace missing".to_string(),
+                })?;
+            let layer18_trace = device_runner.trace_decoder_layer_with_cache(
+                &decode_input, 18, prompt_ids.len(), &device_cache,
+            )?;
+            let layer18_input_norm_trace = layer18_trace
+                .input_layernorm_trace
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "decode layer 18 input rmsnorm trace missing".to_string(),
+                })?;
+            let runtime_decode_final_hidden = device_runner.trace_decode_final_hidden_with_cache(
+                &decode_input_hidden,
+                &device_cache,
+            )?;
+            let runtime_decode_final_norm = device_runner.trace_decode_final_norm_with_cache(
+                &decode_input_hidden,
+                &device_cache,
+            )?;
+            let oracle_decode_final_hidden = pytorch_oracle
+                .decode_final_hidden_output
+                .as_ref()
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: "missing decode final hidden output".to_string(),
+                })?;
+            let oracle_decode_final_hidden_flat = oracle_decode_final_hidden
+                .iter()
+                .flat_map(|outer| outer.iter().flat_map(|inner| inner.iter().copied()))
+                .collect::<Vec<_>>();
+            let oracle_decode_final_hidden_tensor = Tensor::from_vec(
+                oracle_decode_final_hidden_flat,
+                (
+                    oracle_decode_final_hidden.len(),
+                    oracle_decode_final_hidden[0].len(),
+                    oracle_decode_final_hidden[0][0].len(),
+                ),
+                &target_device,
+            )?
+            .to_dtype(runtime_decode_final_hidden.tensor().dtype())?;
+            let runtime_logits_from_oracle_hidden = device_runner
+                .trace_output_projection_from_final_hidden_tensor(&oracle_decode_final_hidden_tensor)?;
+            (
+                Some(deltas),
+                first_bad.map(|(layer_id, _)| layer_id),
+                first_bad.map(|(_, delta)| delta),
+                pytorch_oracle
+                    .decode_first_layer_input_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer0_trace.input_layernorm_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_qkv_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_projection_trace.qkv_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_z_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_projection_trace.z_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_b_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_projection_trace.b_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_a_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_projection_trace.a_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_query_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec4(
+                            layer0_linear_core_trace.prepared_query.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_key_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec4(
+                            layer0_linear_core_trace.prepared_key.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_value_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec4(
+                            layer0_linear_core_trace.prepared_value.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_beta_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.prepared_beta.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_prepared_g_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.prepared_g.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_direct_recurrent_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_conv_state_before
+                    .as_ref()
+                    .map(|oracle| {
+                        let runtime_dims = layer0_linear_core_trace.initial_conv_state.tensor().dims();
+                        let oracle_dims = [
+                            oracle.len(),
+                            oracle.first().map_or(0usize, |outer| outer.len()),
+                            oracle
+                                .first()
+                                .and_then(|outer| outer.first())
+                                .map_or(0usize, |inner| inner.len()),
+                        ];
+                        Ok::<bool, RuntimeError>(runtime_dims == oracle_dims)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_conv_state_before
+                    .as_ref()
+                    .map(|oracle| {
+                        let runtime_dims = layer0_linear_core_trace.initial_conv_state.tensor().dims();
+                        let oracle_dims = [
+                            oracle.len(),
+                            oracle.first().map_or(0usize, |outer| outer.len()),
+                            oracle
+                                .first()
+                                .and_then(|outer| outer.first())
+                                .map_or(0usize, |inner| inner.len()),
+                        ];
+                        if runtime_dims == oracle_dims {
+                            Ok::<Option<f32>, RuntimeError>(Some(max_tensor_delta_vec3(
+                                layer0_linear_core_trace.initial_conv_state.tensor(),
+                                oracle,
+                            )?))
+                        } else {
+                            Ok::<Option<f32>, RuntimeError>(None)
+                        }
+                    })
+                    .transpose()?
+                    .flatten(),
+                pytorch_oracle
+                    .decode_first_layer_recurrent_state_before
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.initial_recurrent_state.tensor(),
+                            &oracle[0],
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_recurrent_state_before
+                    .as_ref()
+                    .map(|oracle_state| {
+                        let pre_norm_oracle = pytorch_oracle
+                            .decode_first_layer_linear_pre_norm_output
+                            .as_ref()
+                            .ok_or_else(|| RuntimeError::External {
+                                context: "decode linear pre norm oracle",
+                                message: "missing decode pre-norm oracle tensor".to_string(),
+                            })?;
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            pre_norm_oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            pre_norm_oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let focus_head = argmax[2];
+                        max_tensor_delta_vec2(
+                            &layer0_linear_core_trace
+                                .initial_recurrent_state
+                                .tensor()
+                                .i((focus_head, .., ..))?,
+                            &oracle_state[0][focus_head],
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (runtime_ms, _, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (oracle_ms, _, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        max_vec3_delta(&runtime_ms, &oracle_ms)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        max_vec3_delta(&runtime_rsqrt, &oracle_rsqrt)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        Ok(argmax)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, _argmax, runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        Ok(runtime)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, _argmax, _runtime, oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        Ok(oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_hidden, argmax, head_dim)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let delta = runtime_focus_head
+                            .iter()
+                            .zip(oracle_focus_head.iter())
+                            .map(|(lhs, rhs)| (lhs - rhs).abs())
+                            .fold(0.0f32, f32::max);
+                        Ok(delta)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_hidden, argmax, head_dim)?;
+                        let (mean_square, _min_abs, _max_abs) = slice_stats(&runtime_focus_head);
+                        Ok(mean_square)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let (mean_square, _min_abs, _max_abs) = slice_stats(&oracle_focus_head);
+                        Ok(mean_square)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_hidden, argmax, head_dim)?;
+                        let (_mean_square, min_abs, _max_abs) = slice_stats(&runtime_focus_head);
+                        Ok(min_abs)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let (_mean_square, min_abs, _max_abs) = slice_stats(&oracle_focus_head);
+                        Ok(min_abs)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_hidden, argmax, head_dim)?;
+                        let (_mean_square, _min_abs, max_abs) = slice_stats(&runtime_focus_head);
+                        Ok(max_abs)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let (_mean_square, _min_abs, max_abs) = slice_stats(&oracle_focus_head);
+                        Ok(max_abs)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_pre_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let (_, _, runtime_normalized) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, _, oracle_normalized) = hidden_vec3_stats_flattened_decode(
+                            oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        max_vec3_delta(&runtime_normalized, &oracle_normalized)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_linear_core_trace.post_gated_norm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_linear_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        let head_dims = layer0_linear_core_trace.prepared_value.tensor().dims();
+                        let (num_heads, head_dim) = match head_dims {
+                            [_, _, heads, dim] => (*heads, *dim),
+                            dims => {
+                                return Err(RuntimeError::External {
+                                    context: "decode linear prepared value shape",
+                                    message: format!("unexpected prepared value shape {dims:?}"),
+                                });
+                            }
+                        };
+                        let pre_norm_oracle = pytorch_oracle
+                            .decode_first_layer_linear_pre_norm_output
+                            .as_ref()
+                            .ok_or_else(|| RuntimeError::External {
+                                context: "decode linear pre norm oracle",
+                                message: "missing decode pre-norm oracle tensor".to_string(),
+                            })?;
+                        let runtime_hidden = tensor_to_vec3_like(
+                            layer0_linear_core_trace.pre_gated_norm_output.tensor(),
+                            pre_norm_oracle,
+                        )?;
+                        let (_, runtime_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            &runtime_hidden,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_, oracle_rsqrt, _) = hidden_vec3_stats_flattened_decode(
+                            pre_norm_oracle,
+                            num_heads,
+                            head_dim,
+                            1e-6,
+                        )?;
+                        let (_delta, argmax, _runtime, _oracle) =
+                            max_vec3_delta_with_argmax(&runtime_rsqrt, &oracle_rsqrt)?;
+                        let runtime_norm = tensor_to_vec3_like(
+                            layer0_linear_core_trace.post_gated_norm_output.tensor(),
+                            oracle,
+                        )?;
+                        let runtime_focus_head =
+                            flattened_decode_focus_head(&runtime_norm, argmax, head_dim)?;
+                        let oracle_focus_head =
+                            flattened_decode_focus_head(oracle, argmax, head_dim)?;
+                        let delta = runtime_focus_head
+                            .iter()
+                            .zip(oracle_focus_head.iter())
+                            .map(|(lhs, rhs)| (lhs - rhs).abs())
+                            .fold(0.0f32, f32::max);
+                        Ok(delta)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_token_mixer_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer0_trace.token_mixer_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_post_attention_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer0_trace.post_attention_layernorm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_mlp_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer0_trace.mlp_output.tensor(), oracle))
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_first_layer_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer0_trace.layer_output.tensor(), oracle))
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_hidden_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(runtime_decode_final_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_input
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            runtime_decode_final_norm.input_hidden.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_mean_square
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            runtime_decode_final_norm.mean_square.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_rsqrt
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(runtime_decode_final_norm.rsqrt.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_weighted_hidden
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            runtime_decode_final_norm.weighted_hidden.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_final_norm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(runtime_decode_final_norm.output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .first_decode_step_last_token_logits
+                    .as_ref()
+                    .map(|oracle| {
+                        max_last_token_delta_vec(runtime_logits_from_oracle_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_trace.input_layernorm_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_input
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_input_norm_trace.input_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_mean_square
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_input_norm_trace.mean_square.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_rsqrt
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_input_norm_trace.rsqrt.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_input_layernorm_weighted_hidden
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_input_norm_trace.weighted_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_token_mixer_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer3_trace.token_mixer_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_post_attention_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer3_trace.post_attention_layernorm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_mlp_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer3_trace.mlp_output.tensor(), oracle))
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer3_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer3_trace.layer_output.tensor(), oracle))
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_trace.input_layernorm_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_input
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_input_norm_trace.input_hidden.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_mean_square
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_input_norm_trace.mean_square.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_rsqrt
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_input_norm_trace.rsqrt.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_input_layernorm_weighted_hidden
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer23_input_norm_trace.weighted_hidden.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_token_mixer_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_trace.token_mixer_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_post_attention_layernorm_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer23_trace.post_attention_layernorm_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_mlp_gate_proj_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer23_mlp_trace.gate_proj_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_mlp_up_proj_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(layer23_mlp_trace.up_proj_output.tensor(), oracle)
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_mlp_activated_hidden
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer23_mlp_trace.activated_hidden.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_mlp_down_proj_output
+                    .as_ref()
+                    .map(|oracle| {
+                        max_tensor_delta_vec3(
+                            layer23_mlp_trace.down_proj_output.tensor(),
+                            oracle,
+                        )
+                    })
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_mlp_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer23_trace.mlp_output.tensor(), oracle))
+                    .transpose()?,
+                pytorch_oracle
+                    .decode_layer23_output
+                    .as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer23_trace.layer_output.tensor(), oracle))
+                    .transpose()?,
+                // Layer 15
+                pytorch_oracle.decode_layer15_input_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.input_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_input_layernorm_input.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_input_norm_trace.input_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_input_layernorm_mean_square.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_input_norm_trace.mean_square.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_input_layernorm_rsqrt.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_input_norm_trace.rsqrt.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_input_layernorm_weighted_hidden.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_input_norm_trace.weighted_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_token_mixer_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.token_mixer_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_post_attention_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.post_attention_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_mlp_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.mlp_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer15_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer15_trace.layer_output.tensor(), oracle)).transpose()?,
+                // Layer 16
+                pytorch_oracle.decode_layer16_input_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.input_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_input_layernorm_input.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_input_norm_trace.input_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_input_layernorm_mean_square.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_input_norm_trace.mean_square.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_input_layernorm_rsqrt.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_input_norm_trace.rsqrt.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_input_layernorm_weighted_hidden.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_input_norm_trace.weighted_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_token_mixer_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.token_mixer_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_post_attention_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.post_attention_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_mlp_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.mlp_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer16_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer16_trace.layer_output.tensor(), oracle)).transpose()?,
+                // Layer 17
+                pytorch_oracle.decode_layer17_input_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.input_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_input_layernorm_input.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_input_norm_trace.input_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_input_layernorm_mean_square.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_input_norm_trace.mean_square.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_input_layernorm_rsqrt.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_input_norm_trace.rsqrt.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_input_layernorm_weighted_hidden.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_input_norm_trace.weighted_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_token_mixer_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.token_mixer_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_post_attention_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.post_attention_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_mlp_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.mlp_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer17_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer17_trace.layer_output.tensor(), oracle)).transpose()?,
+                // Layer 18
+                pytorch_oracle.decode_layer18_input_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.input_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_input_layernorm_input.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_input_norm_trace.input_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_input_layernorm_mean_square.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_input_norm_trace.mean_square.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_input_layernorm_rsqrt.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_input_norm_trace.rsqrt.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_input_layernorm_weighted_hidden.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_input_norm_trace.weighted_hidden.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_token_mixer_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.token_mixer_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_post_attention_layernorm_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.post_attention_layernorm_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_mlp_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.mlp_output.tensor(), oracle)).transpose()?,
+                pytorch_oracle.decode_layer18_output.as_ref()
+                    .map(|oracle| max_tensor_delta_vec3(layer18_trace.layer_output.tensor(), oracle)).transpose()?,
+                // Oracle-fed MLP test: feed PyTorch post-attn norm output into runtime MLP
+                pytorch_oracle.decode_layer15_post_attention_layernorm_output.as_ref()
+                    .and_then(|oracle_input| {
+                        pytorch_oracle.decode_layer15_mlp_output.as_ref().map(|oracle_mlp| {
+                            let flat: Vec<f32> = oracle_input.iter()
+                                .flat_map(|o| o.iter().flat_map(|i| i.iter().copied()))
+                                .collect();
+                            let shape = (oracle_input.len(), oracle_input[0].len(), oracle_input[0][0].len());
+                            let input_tensor = Tensor::from_vec(flat, shape, &target_device)
+                                .and_then(|t| t.to_dtype(DType::BF16))?;
+                            let mlp_trace = device_runner.trace_layer_mlp_from_external_input(15, &input_tensor)?;
+                            max_tensor_delta_vec3(mlp_trace.down_proj_output.tensor(), oracle_mlp)
+                        })
+                    }).transpose()?,
+                pytorch_oracle.decode_layer23_post_attention_layernorm_output.as_ref()
+                    .and_then(|oracle_input| {
+                        pytorch_oracle.decode_layer23_mlp_output.as_ref().map(|oracle_mlp| {
+                            let flat: Vec<f32> = oracle_input.iter()
+                                .flat_map(|o| o.iter().flat_map(|i| i.iter().copied()))
+                                .collect();
+                            let shape = (oracle_input.len(), oracle_input[0].len(), oracle_input[0][0].len());
+                            let input_tensor = Tensor::from_vec(flat, shape, &target_device)
+                                .and_then(|t| t.to_dtype(DType::BF16))?;
+                            let mlp_trace = device_runner.trace_layer_mlp_from_external_input(23, &input_tensor)?;
+                            max_tensor_delta_vec3(mlp_trace.down_proj_output.tensor(), oracle_mlp)
+                        })
+                    }).transpose()?,
+            )
+        } else {
+            (
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None,
+            )
+        }
+    } else {
+        (
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None,
+        )
+    };
+    if let Some(oracle_cache) = oracle_cache.as_ref() {
+        trace_cpu_oracle_cache_delta("prefill", oracle_cache, &device_cache)?;
+    }
+    if let (Some(oracle_cache), true) = (oracle_cache.as_ref(), oracle_device.location() == target_device.location()) {
+        trace_cross_runner_cache_delta("prefill", oracle_cache, &device_cache)?;
+    }
     let mut generated_ids = prompt_ids.clone();
     let mut max_decode_delta = if device_only { f32::NAN } else { 0.0f32 };
-    let mut cpu_decode_elapsed = std::time::Duration::ZERO;
-    let mut device_decode_elapsed = std::time::Duration::ZERO;
-    let mut next_token = match cpu_logits.as_ref() {
-        Some(cpu_logits) => argmax_last_token(cpu_logits.tensor())?,
-        None => argmax_last_token(device_logits.tensor())?,
+    let mut max_decode_input_hidden_delta: Option<f32> = None;
+    let mut max_decode_step_cache_delta: Option<f32> = None;
+    let mut oracle_decode_elapsed = match pytorch_oracle.as_ref() {
+        Some(pytorch_oracle) => std::time::Duration::from_secs_f64(pytorch_oracle.decode_ms / 1000.0),
+        None => std::time::Duration::ZERO,
     };
-    for _ in 0..max_new_tokens {
+    let mut device_decode_elapsed = std::time::Duration::ZERO;
+    let mut oracle_reference_enabled = pytorch_oracle.is_none() && oracle_logits.is_some() && oracle_cache.is_some();
+    let mut next_token = match pytorch_oracle.as_ref() {
+        Some(pytorch_oracle) => argmax_slice(&pytorch_oracle.prefill_last_token_logits)?,
+        None => match oracle_logits.as_ref() {
+            Some(oracle_logits) => argmax_last_token(oracle_logits.tensor())?,
+            None => argmax_last_token(device_logits.tensor())?,
+        },
+    };
+    for step_index in 0..max_new_tokens {
         generated_ids.push(next_token);
 
         let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &cpu_device)?;
-        let device_hidden_state = device_runner.hidden_states_from_input_ids(&decode_input)?;
-        if let (Some(cpu_runner), Some(cpu_cache)) = (cpu_runner.as_mut(), cpu_cache.as_mut()) {
-            let cpu_hidden_state = cpu_runner.hidden_states_from_input_ids(&decode_input)?;
-            let cpu_decode_started = Instant::now();
-            cpu_logits = Some(cpu_runner.decode_from_hidden_state(&cpu_hidden_state, cpu_cache)?);
-            cpu_decode_elapsed += cpu_decode_started.elapsed();
+        let device_hidden_state = device_runner.hidden_states_from_input_ids_direct(&decode_input)?;
+        let device_pre_decode_cache = if trace_cross_runner_generic_decode_delta_enabled() {
+            Some(device_cache.clone())
+        } else {
+            None
+        };
+        if let Some(pytorch_oracle) = pytorch_oracle.as_ref() {
+            let oracle_logits_ref = pytorch_oracle
+                .decode_last_token_logits
+                .get(step_index)
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: format!("missing decode logits for step {step_index}"),
+                })?;
+            max_decode_delta = max_decode_delta.max(max_last_token_delta_vec(
+                device_logits.tensor(),
+                oracle_logits_ref,
+            )?);
+            next_token = *pytorch_oracle
+                .generated_token_ids
+                .get(step_index)
+                .ok_or_else(|| RuntimeError::External {
+                    context: "pytorch oracle",
+                    message: format!("missing generated token for step {step_index}"),
+                })?;
+        } else if oracle_reference_enabled {
+            if let (Some(oracle_runner), Some(oracle_cache_ref)) = (oracle_runner.as_mut(), oracle_cache.as_mut()) {
+            let oracle_decode_input = if oracle_device.location() == cpu_device.location() {
+                decode_input.clone()
+            } else {
+                decode_input.to_device(&oracle_device)?
+            };
+            let oracle_hidden_state = oracle_runner.hidden_states_from_input_ids(&oracle_decode_input)?;
+            let input_delta = max_logit_delta(
+                oracle_hidden_state.tensor(),
+                device_hidden_state.tensor(),
+            )?;
+            max_decode_input_hidden_delta = Some(match max_decode_input_hidden_delta {
+                Some(current) => current.max(input_delta),
+                None => input_delta,
+            });
+            if trace_decode_input_delta_enabled() && oracle_device.location() == target_device.location() {
+                eprintln!(
+                    "decode-input-hidden-delta token={} max_abs_delta={:.6}",
+                    next_token, input_delta
+                );
+            }
+            let oracle_decode_started = Instant::now();
+            match oracle_runner.decode_from_hidden_state(&oracle_hidden_state, oracle_cache_ref) {
+                Ok(logits) => {
+                    oracle_logits = Some(logits);
+                    oracle_decode_elapsed += oracle_decode_started.elapsed();
+                }
+                Err(err) => {
+                    eprintln!(
+                        "warning: disabling oracle path after decode failure: {err}"
+                    );
+                    oracle_logits = None;
+                    oracle_cache = None;
+                    oracle_reference_enabled = false;
+                }
+            }
+        }
         }
 
         #[cfg(feature = "qwen35-minimal-hip")]
@@ -364,6 +3644,66 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         device_logits =
             device_runner.decode_from_hidden_state(&device_hidden_state, &mut device_cache)?;
         device_decode_elapsed += device_decode_started.elapsed();
+        if trace_cross_runner_generic_decode_delta_enabled()
+            && oracle_device.location() == target_device.location()
+        {
+            if let (Some(oracle_logits_ref), Some(oracle_cache_ref)) =
+                (oracle_logits.as_ref(), oracle_cache.as_ref())
+            {
+                let mut generic_cache = device_pre_decode_cache
+                    .clone()
+                    .unwrap_or_else(|| device_cache.clone());
+                let generic_logits = device_runner
+                    .decode_from_hidden_state_generic_only(&device_hidden_state, &mut generic_cache)?;
+                let generic_logit_delta =
+                    max_logit_delta(oracle_logits_ref.tensor(), generic_logits.tensor())?;
+                eprintln!(
+                    "cross-runner-generic-decode-delta logits_max_abs_delta={:.6}",
+                    generic_logit_delta
+                );
+                trace_cross_runner_cache_delta(
+                    "generic-decode-step",
+                    oracle_cache_ref,
+                    &generic_cache,
+                )?;
+            }
+        }
+        if trace_cross_runner_model_only_decode_delta_enabled()
+            && oracle_device.location() == target_device.location()
+        {
+            if let (Some(oracle_logits_ref), Some(oracle_cache_ref)) =
+                (oracle_logits.as_ref(), oracle_cache.as_ref())
+            {
+                let mut model_only_cache = device_pre_decode_cache
+                    .clone()
+                    .unwrap_or_else(|| device_cache.clone());
+                let model_only_logits = device_runner
+                    .decode_from_hidden_state_model_only(&device_hidden_state, &mut model_only_cache)?;
+                let model_only_logit_delta =
+                    max_logit_delta(oracle_logits_ref.tensor(), model_only_logits.tensor())?;
+                eprintln!(
+                    "cross-runner-model-only-decode-delta logits_max_abs_delta={:.6}",
+                    model_only_logit_delta
+                );
+                trace_cross_runner_cache_delta(
+                    "model-only-decode-step",
+                    oracle_cache_ref,
+                    &model_only_cache,
+                )?;
+            }
+        }
+        if let Some(oracle_cache_ref) = oracle_cache.as_ref() {
+            if let Some(cache_delta) = cache_max_delta(oracle_cache_ref, &device_cache)? {
+                max_decode_step_cache_delta = Some(match max_decode_step_cache_delta {
+                    Some(current) => current.max(cache_delta),
+                    None => cache_delta,
+                });
+            }
+            trace_cpu_oracle_cache_delta("decode-step", oracle_cache_ref, &device_cache)?;
+            if oracle_device.location() == target_device.location() {
+                trace_cross_runner_cache_delta("decode-step", oracle_cache_ref, &device_cache)?;
+            }
+        }
         #[cfg(feature = "qwen35-minimal-hip")]
         if target_device.is_hip()
             && matches!(
@@ -373,39 +3713,339 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
             print_hip_counters("decode-step");
         }
-        let cpu_decode_nans = match cpu_logits.as_ref() {
-            Some(cpu_logits) => logit_nan_count(cpu_logits.tensor())?,
-            None => 0,
+        let oracle_decode_nans = match pytorch_oracle.as_ref() {
+            Some(pytorch_oracle) => pytorch_oracle
+                .decode_last_token_logits
+                .get(step_index)
+                .map_or(0, |values| nan_count_slice(values)),
+            None => match oracle_logits.as_ref() {
+                Some(oracle_logits) => logit_nan_count(oracle_logits.tensor())?,
+                None => 0,
+            },
         };
         let device_decode_nans = logit_nan_count(device_logits.tensor())?;
-        if cpu_decode_nans > 0 || device_decode_nans > 0 {
+        if oracle_decode_nans > 0 || device_decode_nans > 0 {
             eprintln!(
-                "warning: decode logits contain NaNs cpu={} device={}",
-                cpu_decode_nans, device_decode_nans
+                "warning: decode logits contain NaNs oracle={} device={}",
+                oracle_decode_nans, device_decode_nans
             );
         }
 
-        if let Some(cpu_logits) = cpu_logits.as_ref() {
-            max_decode_delta = max_decode_delta
-                .max(max_logit_delta(cpu_logits.tensor(), device_logits.tensor())?);
-            next_token = argmax_last_token(cpu_logits.tensor())?;
+        if pytorch_oracle.is_some() {
+        } else if let Some(oracle_logits) = oracle_logits.as_ref() {
+            max_decode_delta = max_decode_delta.max(max_logit_delta(
+                oracle_logits.tensor(),
+                device_logits.tensor(),
+            )?);
+            next_token = argmax_last_token(oracle_logits.tensor())?;
         } else {
             next_token = argmax_last_token(device_logits.tensor())?;
         }
     }
 
     let generated_text = tokenizer.decode(&generated_ids, true)?;
+    let (
+        pytorch_decode_decoder_layer_input_max_deltas,
+        pytorch_decode_decoder_layer_residual_growths,
+    ) = match (
+        pytorch_decode_decoder_layer_max_deltas.as_ref(),
+        max_decode_input_hidden_delta.or(Some(0.0)),
+    ) {
+        (Some(layer_deltas), Some(input_delta)) => {
+            let mut inputs = Vec::with_capacity(layer_deltas.len());
+            let mut growths = Vec::with_capacity(layer_deltas.len());
+            let mut prev = input_delta;
+            for &cur in layer_deltas {
+                inputs.push(prev);
+                growths.push(cur - prev);
+                prev = cur;
+            }
+            (Some(inputs), Some(growths))
+        }
+        _ => (None, None),
+    };
+    let record = RunRecord {
+        model_id: model_id.clone(),
+        prompt: prompt.clone(),
+        device: device_selector.to_string(),
+        load_mode: load_mode.to_string(),
+        oracle: oracle_mode.to_string(),
+        oracle_device: match oracle_mode {
+            OracleMode::None => "none".to_string(),
+            OracleMode::Pytorch => "pytorch-cpu".to_string(),
+            OracleMode::PytorchBf16 => "pytorch-cpu-bf16".to_string(),
+            _ => device_label(&oracle_device).to_string(),
+        },
+        device_only,
+        prompt_token_count: prompt_ids.len(),
+        generated_token_count: generated_ids.len().saturating_sub(prompt_ids.len()),
+        max_new_tokens,
+        cpu_load_ms: if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_load_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
+        device_load_ms: device_load_elapsed.as_secs_f64() * 1000.0,
+        cpu_prefill_ms: if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_prefill_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
+        device_prefill_ms: device_prefill_elapsed.as_secs_f64() * 1000.0,
+        cpu_decode_ms: if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_decode_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
+        device_decode_ms: device_decode_elapsed.as_secs_f64() * 1000.0,
+        oracle_load_ms: match pytorch_oracle.as_ref() {
+            Some(pytorch_oracle) => pytorch_oracle.load_ms,
+            None => oracle_load_elapsed.as_secs_f64() * 1000.0,
+        },
+        oracle_prefill_ms: oracle_prefill_elapsed.as_secs_f64() * 1000.0,
+        oracle_decode_ms: oracle_decode_elapsed.as_secs_f64() * 1000.0,
+        prefill_max_delta: prefill_delta,
+        prefill_cache_max_delta,
+        pytorch_first_layer_linear_chunk_scan_mode,
+        pytorch_first_layer_linear_chunk_execution_branch,
+        pytorch_embedding_max_delta,
+        pytorch_first_layer_input_layernorm_max_delta,
+        pytorch_first_layer_linear_qkv_max_delta,
+        pytorch_first_layer_linear_conv_weight_max_delta,
+        pytorch_first_layer_linear_pre_conv_value_focus_head_max_delta,
+        pytorch_first_layer_linear_z_max_delta,
+        pytorch_first_layer_linear_b_max_delta,
+        pytorch_first_layer_linear_a_max_delta,
+        pytorch_first_layer_linear_post_conv_max_delta,
+        pytorch_first_layer_linear_hook_vs_direct_conv_max_delta,
+        pytorch_first_layer_linear_prepared_query_max_delta,
+        pytorch_first_layer_linear_prepared_key_max_delta,
+        pytorch_first_layer_linear_prepared_value_max_delta,
+        pytorch_first_layer_linear_prepared_beta_max_delta,
+        pytorch_first_layer_linear_prepared_g_max_delta,
+        pytorch_first_layer_linear_flat3d_weighted_k_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_attn_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_k_cumdecay_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_single_chunk_v_new_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_flat3d_single_chunk_output_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_direct_recurrent_max_delta,
+        pytorch_first_layer_linear_focus_kv_mem_max_delta,
+        pytorch_first_layer_linear_focus_delta_max_delta,
+        pytorch_first_layer_linear_focus_state_max_delta,
+        pytorch_first_layer_linear_focus_output_max_delta,
+        pytorch_first_layer_linear_focus_kv_mem_step_max_deltas,
+        pytorch_first_layer_linear_focus_delta_step_max_deltas,
+        pytorch_first_layer_linear_focus_state_step_max_deltas,
+        pytorch_first_layer_linear_focus_output_step_max_deltas,
+        pytorch_first_layer_linear_chunk_vs_torch_like_max_delta,
+        pytorch_first_layer_linear_explicit_post_conv_max_delta,
+        pytorch_first_layer_linear_explicit_post_conv_reversed_taps_max_delta,
+        pytorch_first_layer_linear_fp32_reference_post_conv_max_delta,
+        pytorch_first_layer_linear_direct_conv_max_delta,
+        pytorch_first_layer_linear_post_conv_value_focus_head_max_delta,
+        pytorch_first_layer_linear_explicit_post_conv_value_focus_head_max_delta,
+        pytorch_first_layer_linear_explicit_post_conv_reversed_taps_value_focus_head_max_delta,
+        pytorch_first_layer_linear_fp32_reference_post_conv_value_focus_head_max_delta,
+        pytorch_first_layer_linear_prepared_value_focus_head_max_delta,
+        pytorch_first_layer_linear_pre_norm_max_delta,
+        pytorch_first_layer_linear_pre_norm_mean_square_max_delta,
+        pytorch_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+        pytorch_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_delta,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        pytorch_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
+        pytorch_first_layer_linear_norm_gate_max_delta,
+        pytorch_first_layer_linear_norm_weight_max_delta,
+        pytorch_first_layer_linear_norm_weighted_hidden_max_delta,
+        pytorch_first_layer_linear_norm_weighted_hidden_fallback_max_delta,
+        pytorch_first_layer_linear_norm_silu_gate_max_delta,
+        pytorch_first_layer_linear_norm_max_delta,
+        pytorch_first_layer_token_mixer_max_delta,
+        pytorch_first_layer_post_attention_layernorm_max_delta,
+        pytorch_first_layer_mlp_max_delta,
+        pytorch_first_layer_max_delta,
+        pytorch_decoder_layer_max_deltas,
+        pytorch_first_bad_decoder_layer,
+        pytorch_first_bad_decoder_layer_max_delta,
+        pytorch_layer3_input_layernorm_max_delta,
+        pytorch_layer3_input_layernorm_input_max_delta,
+        pytorch_layer3_input_layernorm_mean_square_max_delta,
+        pytorch_layer3_input_layernorm_rsqrt_max_delta,
+        pytorch_layer3_input_layernorm_weight_max_delta,
+        pytorch_layer3_input_layernorm_weighted_hidden_max_delta,
+        pytorch_layer3_full_q_and_gate_max_delta,
+        pytorch_layer3_full_k_proj_max_delta,
+        pytorch_layer3_full_v_proj_max_delta,
+        pytorch_layer3_full_prepared_query_max_delta,
+        pytorch_layer3_full_gate_max_delta,
+        pytorch_layer3_full_prepared_key_max_delta,
+        pytorch_layer3_full_prepared_value_max_delta,
+        pytorch_layer3_full_attention_output_max_delta,
+        pytorch_layer3_token_mixer_max_delta,
+        pytorch_layer3_post_attention_layernorm_max_delta,
+        pytorch_layer3_mlp_max_delta,
+        pytorch_layer3_max_delta,
+        pytorch_layer4_input_layernorm_max_delta,
+        pytorch_layer4_input_layernorm_input_max_delta,
+        pytorch_layer4_input_layernorm_mean_square_max_delta,
+        pytorch_layer4_input_layernorm_rsqrt_max_delta,
+        pytorch_layer4_input_layernorm_weight_max_delta,
+        pytorch_layer4_input_layernorm_weighted_hidden_max_delta,
+        pytorch_layer4_token_mixer_max_delta,
+        pytorch_layer4_post_attention_layernorm_max_delta,
+        pytorch_layer4_mlp_max_delta,
+        pytorch_layer4_max_delta,
+        pytorch_decode_decoder_layer_max_deltas,
+        pytorch_first_bad_decode_decoder_layer,
+        pytorch_first_bad_decode_decoder_layer_max_delta,
+        pytorch_decode_first_layer_input_layernorm_max_delta,
+        pytorch_decode_first_layer_linear_qkv_max_delta,
+        pytorch_decode_first_layer_linear_z_max_delta,
+        pytorch_decode_first_layer_linear_b_max_delta,
+        pytorch_decode_first_layer_linear_a_max_delta,
+        pytorch_decode_first_layer_linear_prepared_query_max_delta,
+        pytorch_decode_first_layer_linear_prepared_key_max_delta,
+        pytorch_decode_first_layer_linear_prepared_value_max_delta,
+        pytorch_decode_first_layer_linear_prepared_beta_max_delta,
+        pytorch_decode_first_layer_linear_prepared_g_max_delta,
+        pytorch_decode_first_layer_linear_direct_recurrent_max_delta,
+        pytorch_decode_first_layer_initial_conv_state_shape_match,
+        pytorch_decode_first_layer_initial_conv_state_max_delta,
+        pytorch_decode_first_layer_initial_recurrent_state_max_delta,
+        pytorch_decode_first_layer_initial_recurrent_state_focus_head_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_mean_square_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_rsqrt_argmax_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_delta,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_mean_square_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_min_abs_oracle,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_runtime,
+        pytorch_decode_first_layer_linear_pre_norm_focus_head_max_abs_oracle,
+        pytorch_decode_first_layer_linear_normalized_hidden_max_delta,
+        pytorch_decode_first_layer_linear_norm_focus_head_max_delta,
+        pytorch_decode_first_layer_linear_norm_max_delta,
+        pytorch_decode_first_layer_token_mixer_max_delta,
+        pytorch_decode_first_layer_post_attention_layernorm_max_delta,
+        pytorch_decode_first_layer_mlp_max_delta,
+        pytorch_decode_first_layer_max_delta,
+        pytorch_decode_final_hidden_max_delta,
+        pytorch_decode_final_norm_input_max_delta,
+        pytorch_decode_final_norm_mean_square_max_delta,
+        pytorch_decode_final_norm_rsqrt_max_delta,
+        pytorch_decode_final_norm_weighted_hidden_max_delta,
+        pytorch_decode_final_norm_output_max_delta,
+        pytorch_decode_output_projection_from_oracle_hidden_max_delta,
+        pytorch_decode_layer3_input_layernorm_max_delta,
+        pytorch_decode_layer3_input_layernorm_input_max_delta,
+        pytorch_decode_layer3_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer3_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer3_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer3_token_mixer_max_delta,
+        pytorch_decode_layer3_post_attention_layernorm_max_delta,
+        pytorch_decode_layer3_mlp_max_delta,
+        pytorch_decode_layer3_max_delta,
+        pytorch_decode_layer23_input_layernorm_max_delta,
+        pytorch_decode_layer23_input_layernorm_input_max_delta,
+        pytorch_decode_layer23_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer23_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer23_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer23_token_mixer_max_delta,
+        pytorch_decode_layer23_post_attention_layernorm_max_delta,
+        pytorch_decode_layer23_mlp_gate_proj_max_delta,
+        pytorch_decode_layer23_mlp_up_proj_max_delta,
+        pytorch_decode_layer23_mlp_activated_hidden_max_delta,
+        pytorch_decode_layer23_mlp_down_proj_max_delta,
+        pytorch_decode_layer23_mlp_max_delta,
+        pytorch_decode_layer23_max_delta,
+        pytorch_decode_layer15_input_layernorm_max_delta,
+        pytorch_decode_layer15_input_layernorm_input_max_delta,
+        pytorch_decode_layer15_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer15_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer15_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer15_token_mixer_max_delta,
+        pytorch_decode_layer15_post_attention_layernorm_max_delta,
+        pytorch_decode_layer15_mlp_max_delta,
+        pytorch_decode_layer15_max_delta,
+        pytorch_decode_layer16_input_layernorm_max_delta,
+        pytorch_decode_layer16_input_layernorm_input_max_delta,
+        pytorch_decode_layer16_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer16_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer16_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer16_token_mixer_max_delta,
+        pytorch_decode_layer16_post_attention_layernorm_max_delta,
+        pytorch_decode_layer16_mlp_max_delta,
+        pytorch_decode_layer16_max_delta,
+        pytorch_decode_layer17_input_layernorm_max_delta,
+        pytorch_decode_layer17_input_layernorm_input_max_delta,
+        pytorch_decode_layer17_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer17_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer17_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer17_token_mixer_max_delta,
+        pytorch_decode_layer17_post_attention_layernorm_max_delta,
+        pytorch_decode_layer17_mlp_max_delta,
+        pytorch_decode_layer17_max_delta,
+        pytorch_decode_layer18_input_layernorm_max_delta,
+        pytorch_decode_layer18_input_layernorm_input_max_delta,
+        pytorch_decode_layer18_input_layernorm_mean_square_max_delta,
+        pytorch_decode_layer18_input_layernorm_rsqrt_max_delta,
+        pytorch_decode_layer18_input_layernorm_weighted_hidden_max_delta,
+        pytorch_decode_layer18_token_mixer_max_delta,
+        pytorch_decode_layer18_post_attention_layernorm_max_delta,
+        pytorch_decode_layer18_mlp_max_delta,
+        pytorch_decode_layer18_max_delta,
+        pytorch_decode_layer15_mlp_from_oracle_input_max_delta,
+        pytorch_decode_layer23_mlp_from_oracle_input_max_delta,
+        pytorch_decode_decoder_layer_input_max_deltas,
+        pytorch_decode_decoder_layer_residual_growths,
+        decode_max_delta: max_decode_delta,
+        decode_input_hidden_max_delta: max_decode_input_hidden_delta,
+        decode_step_cache_max_delta: max_decode_step_cache_delta,
+        generated_text: generated_text.clone(),
+        hip_trace_candle_fallback: env_flag_truthy("DOTCACHE_HIP_TRACE_CANDLE_FALLBACK"),
+        hip_print_transfers: env_flag_truthy("DOTCACHE_QWEN35_PRINT_HIP_TRANSFERS"),
+        full_prefill_megakernel_requested: env_flag_truthy("CANDLE_QWEN35_FULL_PREFILL_MEGAKERNEL"),
+        hip_persistent_full_prefill_requested: env_flag_truthy(
+            "CANDLE_QWEN35_HIP_PERSISTENT_FULL_PREFILL",
+        ),
+    };
+    if let Some(record_json_path) = record_json_path.as_ref() {
+        std::fs::write(record_json_path, serde_json::to_string_pretty(&record)?)?;
+        eprintln!("run record written to {record_json_path}");
+    }
     println!("{generated_text}");
     eprintln!(
         "device={device_selector} device_only={} prompt_tokens={} generated_tokens={} cpu_load_ms={:.2} device_load_ms={:.2} cpu_prefill_ms={:.2} device_prefill_ms={:.2} cpu_decode_ms={:.2} device_decode_ms={:.2} prefill_max_delta={:.6} decode_max_delta={:.6}",
         device_only,
         prompt_ids.len(),
         generated_ids.len().saturating_sub(prompt_ids.len()),
-        cpu_load_elapsed.as_secs_f64() * 1000.0,
+        if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_load_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_load_elapsed.as_secs_f64() * 1000.0,
-        cpu_prefill_elapsed.as_secs_f64() * 1000.0,
+        if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_prefill_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_prefill_elapsed.as_secs_f64() * 1000.0,
-        cpu_decode_elapsed.as_secs_f64() * 1000.0,
+        if matches!(oracle_mode, OracleMode::Cpu) {
+            oracle_decode_elapsed.as_secs_f64() * 1000.0
+        } else {
+            f64::NAN
+        },
         device_decode_elapsed.as_secs_f64() * 1000.0,
         prefill_delta,
         max_decode_delta,

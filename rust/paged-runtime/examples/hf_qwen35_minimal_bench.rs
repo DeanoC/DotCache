@@ -2,7 +2,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use candle_core::{DType, Device, Tensor};
     use candle_core::IndexOp;
-    use dotcache_paged_runtime::{HfHubModelSource, MinimalQwen35KvCache, MinimalQwen35Runner};
+    use dotcache_paged_runtime::{HfHubModelSource, MinimalQwen35Runner};
     use serde::Serialize;
     use std::path::PathBuf;
     use std::time::Instant;
@@ -326,28 +326,25 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             (1, prompt_ids.len()),
             &Device::Cpu,
         )?;
-        let hidden_states = runner.hidden_states_from_input_ids(&input_ids)?;
+        let hidden_states = runner.hidden_states_from_input_ids_direct(&input_ids)?;
 
         let prefill_started = Instant::now();
-        let (mut logits, mut profile) = runner.model.forward_hidden_states_profiled(&hidden_states, 0)?;
+        let (mut logits, mut cache, mut profile) =
+            runner.prefill_from_hidden_states_profiled(&hidden_states)?;
         let prefill_millis = prefill_started.elapsed().as_secs_f64() * 1_000.0;
-        let mut cache: MinimalQwen35KvCache = runner.model.cache_state();
         let mut generated_ids = prompt_ids.to_vec();
 
         let decode_started = Instant::now();
-        let mut next_token = argmax_last_token(&logits)?;
+        let mut next_token = argmax_last_token(logits.tensor())?;
         for _ in 0..max_new_tokens {
             generated_ids.push(next_token);
             let decode_input = Tensor::from_vec(vec![next_token], (1, 1), &Device::Cpu)?;
-            let hidden_state_t = runner.hidden_states_from_input_ids(&decode_input)?;
-            let seqlen_offset = cache.sequence_length();
-            runner.model.restore_cache_state(&cache)?;
+            let hidden_state_t = runner.hidden_states_from_input_ids_direct(&decode_input)?;
             let (next_logits, step_profile) =
-                runner.model.forward_hidden_states_profiled(&hidden_state_t, seqlen_offset)?;
+                runner.decode_from_hidden_state_profiled(&hidden_state_t, &mut cache)?;
             logits = next_logits;
             profile.add_assign(&step_profile);
-            cache = runner.model.cache_state();
-            next_token = argmax_last_token(&logits)?;
+            next_token = argmax_last_token(logits.tensor())?;
         }
         let decode_millis = decode_started.elapsed().as_secs_f64() * 1_000.0;
         let total_millis = prefill_millis + decode_millis;
@@ -397,16 +394,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut warmup_millis = 0.0f64;
     for _ in 0..args.warmup_runs {
-        runner.model.clear_kv_cache();
+        runner.clear_kv_cache();
         let warmup_started = Instant::now();
         let _ = run_once(&mut runner, &tokenizer, &prompt_ids, args.max_new_tokens)?;
         warmup_millis += warmup_started.elapsed().as_secs_f64() * 1_000.0;
-        runner.model.clear_kv_cache();
+        runner.clear_kv_cache();
     }
 
-    runner.model.clear_kv_cache();
+    runner.clear_kv_cache();
     let run = run_once(&mut runner, &tokenizer, &prompt_ids, args.max_new_tokens)?;
-    runner.model.clear_kv_cache();
+    runner.clear_kv_cache();
 
     let prefill_tps = if run.timings.prefill_millis > 0.0 {
         prompt_ids.len() as f64 / (run.timings.prefill_millis / 1_000.0)

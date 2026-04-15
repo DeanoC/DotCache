@@ -39,6 +39,13 @@ pub(crate) fn zeros_state(device: &Device, dtype: DType, dims: &[usize]) -> Resu
     transport::zeros_state(dims.to_vec(), dtype, device)
 }
 
+pub(crate) fn copy_state_into_scratch(
+    src: &StateBuffer,
+    scratch: &StateBuffer,
+) -> Result<StateBuffer> {
+    transport::copy_state_into_scratch(src, scratch)
+}
+
 pub(crate) fn zeros_tensor(device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor> {
     transport::zeros(dims.to_vec(), dtype, device).map(|t| t.into_tensor())
 }
@@ -138,18 +145,20 @@ pub(crate) fn immutable_embedding_lookup(
     transport::immutable_embedding_lookup(embedding, input_ids).map(|t| t.into_tensor())
 }
 
-pub(crate) fn output_projection_tensor(
-    embedding: &ImmutableEmbedding,
-    hidden_states: &Tensor,
-) -> Result<Tensor> {
-    transport::output_projection(embedding, hidden_states).map(|t| t.into_tensor())
-}
-
 pub(crate) fn output_projection(
     embedding: &ImmutableEmbedding,
     hidden_states: &StateBuffer,
 ) -> Result<StateBuffer> {
     transport::output_projection_buffer(embedding, hidden_states)
+}
+
+pub(crate) fn output_projection_into_scratch(
+    embedding: &ImmutableEmbedding,
+    hidden_states: &StateBuffer,
+    scratch: &StateBuffer,
+) -> Result<StateBuffer> {
+    let output = output_projection(embedding, hidden_states)?;
+    copy_state_into_scratch(&output, scratch)
 }
 
 pub(crate) fn linear_forward(
@@ -158,6 +167,16 @@ pub(crate) fn linear_forward(
     bias: Option<&Tensor>,
 ) -> Result<StateBuffer> {
     transport::linear_forward(x, weight, bias)
+}
+
+pub(crate) fn linear_forward_into_scratch(
+    x: &StateBuffer,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+    scratch: &StateBuffer,
+) -> Result<StateBuffer> {
+    let output = linear_forward(x, weight, bias)?;
+    copy_state_into_scratch(&output, scratch)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -179,6 +198,45 @@ pub(crate) fn prepare_full_attention_inputs(
         q_and_gate,
         k_proj,
         v_proj,
+        b_sz,
+        q_len,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        q_norm_weight,
+        q_norm_eps,
+        k_norm_weight,
+        k_norm_eps,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_full_attention_inputs_into_scratch(
+    q_and_gate: &StateBuffer,
+    k_proj: &StateBuffer,
+    v_proj: &StateBuffer,
+    gate_scratch: &StateBuffer,
+    query_scratch: &StateBuffer,
+    key_scratch: &StateBuffer,
+    value_scratch: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_norm_weight: &Tensor,
+    q_norm_eps: f64,
+    k_norm_weight: &Tensor,
+    k_norm_eps: f64,
+) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+    transport::prepare_full_attention_inputs_into_scratch(
+        q_and_gate,
+        k_proj,
+        v_proj,
+        gate_scratch,
+        query_scratch,
+        key_scratch,
+        value_scratch,
         b_sz,
         q_len,
         num_heads,
@@ -280,10 +338,6 @@ pub(crate) fn value_decay(
     transport::value_decay_buffer(a, dt_bias, a_log_exp)
 }
 
-pub(crate) fn rope(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
-    transport::rope(xs, cos, sin)
-}
-
 pub(crate) fn full_attention_prefill(
     query: &Tensor,
     key: &Tensor,
@@ -304,13 +358,6 @@ pub(crate) fn full_attention_decode(
     seqlen_offset: usize,
 ) -> Result<StateBuffer> {
     transport::full_attention_decode_buffer(query, key, value, num_kv_groups, scale, seqlen_offset)
-}
-
-pub(crate) fn wrap_kv_cache(
-    key_states: Tensor,
-    value_states: Tensor,
-) -> Result<(StateBuffer, StateBuffer)> {
-    transport::wrap_kv_cache(key_states, value_states)
 }
 
 pub(crate) fn prepare_full_attention_output(
@@ -381,6 +428,18 @@ pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
     value_states: &StateBuffer,
 ) -> Result<(Tensor, Tensor, Tensor)> {
     transport::prepare_full_attention_kernel_inputs_with_buffer_kv(
+        query_states,
+        key_states,
+        value_states,
+    )
+}
+
+pub(crate) fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+    query_states: &StateBuffer,
+    key_states: &StateBuffer,
+    value_states: &StateBuffer,
+) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
+    transport::prepare_full_attention_kernel_input_buffers_with_buffer_kv(
         query_states,
         key_states,
         value_states,

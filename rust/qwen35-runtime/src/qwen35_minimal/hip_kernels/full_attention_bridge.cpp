@@ -1805,6 +1805,39 @@ int rms_norm_device(
     return 0;
 }
 
+template <typename T, bool ADD_UNIT_OFFSET>
+int fused_rms_norm_linear_device(
+    int device_ordinal,
+    int hidden_dim,
+    int out_dim,
+    float eps,
+    const void* hidden,
+    const void* norm_weight,
+    const void* proj_weight,
+    void* out
+) {
+    ScopedHipDevice scoped(device_ordinal);
+    constexpr int block = 256;
+    const size_t shared_bytes =
+        static_cast<size_t>(hidden_dim) * sizeof(float) + block * sizeof(float);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_fused_rms_norm_linear_kernel<T, ADD_UNIT_OFFSET>),
+        dim3(static_cast<unsigned int>(out_dim)),
+        dim3(block),
+        shared_bytes,
+        0,
+        hidden_dim,
+        out_dim,
+        eps,
+        static_cast<const T*>(hidden),
+        static_cast<const T*>(norm_weight),
+        static_cast<const T*>(proj_weight),
+        static_cast<T*>(out));
+    if (hipGetLastError() != hipSuccess) return 130;
+    if (hipDeviceSynchronize() != hipSuccess) return 131;
+    return 0;
+}
+
 template <typename T>
 int rms_norm_gated_device(
     int device_ordinal,
@@ -3967,6 +4000,83 @@ extern "C" int dotcache_qwen35_hip_rms_norm(
     }
 }
 
+extern "C" int dotcache_qwen35_hip_fused_rms_norm_linear(
+    int dtype,
+    size_t device_ordinal,
+    size_t hidden_dim,
+    size_t out_dim,
+    float eps,
+    int add_unit_offset,
+    const void* hidden,
+    const void* norm_weight,
+    const void* proj_weight,
+    void* out) {
+    switch (dtype) {
+    case 0:
+        return add_unit_offset
+            ? fused_rms_norm_linear_device<half, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out)
+            : fused_rms_norm_linear_device<half, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out);
+    case 1:
+        return add_unit_offset
+            ? fused_rms_norm_linear_device<float, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out)
+            : fused_rms_norm_linear_device<float, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out);
+    case 2:
+        return add_unit_offset
+            ? fused_rms_norm_linear_device<hip_bfloat16, true>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out)
+            : fused_rms_norm_linear_device<hip_bfloat16, false>(
+                  static_cast<int>(device_ordinal),
+                  static_cast<int>(hidden_dim),
+                  static_cast<int>(out_dim),
+                  eps,
+                  hidden,
+                  norm_weight,
+                  proj_weight,
+                  out);
+    default:
+        return 132;
+    }
+}
+
 extern "C" int dotcache_qwen35_hip_rms_norm_gated(
     int dtype,
     size_t device_ordinal,
@@ -4010,5 +4120,358 @@ extern "C" int dotcache_qwen35_hip_rms_norm_gated(
             out);
     default:
         return 84;
+    }
+}
+
+template <typename T>
+int mlp_decode_megakernel_device(
+    int device_ordinal,
+    int hidden_dim,
+    int intermediate_size,
+    float norm_eps,
+    const void* hidden_in,
+    const void* norm_weight,
+    const void* gate_proj_w,
+    const void* up_proj_w,
+    const void* down_proj_w,
+    float* gate_up_scratch,
+    void* hidden_out,
+    unsigned int* row_counter
+) {
+    ScopedHipDevice scoped(device_ordinal);
+
+    hipDeviceProp_t props;
+    if (hipGetDeviceProperties(&props, device_ordinal) != hipSuccess) return 200;
+
+    const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
+    constexpr int block_size = 256;
+    const size_t shared_bytes =
+        static_cast<size_t>(hidden_dim) * sizeof(float) * 2 +  // hidden + normed
+        block_size * sizeof(float);                              // scratch
+
+    // --- Phase 1: RMSNorm + gate/up projections ---
+    unsigned int zero = 0;
+    if (hipMemcpy(row_counter, &zero, sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess)
+        return 201;
+    if (hipDeviceSynchronize() != hipSuccess) return 202;
+
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_mlp_decode_megakernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        shared_bytes,
+        0,
+        hidden_dim,
+        intermediate_size,
+        norm_eps,
+        static_cast<const T*>(hidden_in),
+        static_cast<const T*>(norm_weight),
+        static_cast<const T*>(gate_proj_w),
+        static_cast<const T*>(up_proj_w),
+        static_cast<const T*>(down_proj_w),
+        gate_up_scratch,
+        static_cast<T*>(hidden_out),
+        row_counter);
+    if (hipGetLastError() != hipSuccess) return 203;
+    if (hipDeviceSynchronize() != hipSuccess) return 204;
+
+    // --- Phase 2: SwiGLU activation ---
+    {
+        constexpr int swiglu_block = 256;
+        const unsigned int swiglu_grid =
+            static_cast<unsigned int>((intermediate_size + swiglu_block - 1) / swiglu_block);
+        hipLaunchKernelGGL(
+            HIP_KERNEL_NAME(dotcache_qwen35_mlp_swiglu_kernel<T>),
+            dim3(swiglu_grid),
+            dim3(swiglu_block),
+            0, 0,
+            intermediate_size,
+            gate_up_scratch);
+        if (hipGetLastError() != hipSuccess) return 205;
+        if (hipDeviceSynchronize() != hipSuccess) return 206;
+    }
+
+    // --- Phase 3: down_proj matvec ---
+    if (hipMemcpy(row_counter, &zero, sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess)
+        return 207;
+    if (hipDeviceSynchronize() != hipSuccess) return 208;
+
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_mlp_down_proj_kernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        block_size * sizeof(float),
+        0,
+        hidden_dim,
+        intermediate_size,
+        static_cast<const T*>(down_proj_w),
+        gate_up_scratch,
+        static_cast<T*>(hidden_out),
+        row_counter);
+    if (hipGetLastError() != hipSuccess) return 209;
+    if (hipDeviceSynchronize() != hipSuccess) return 210;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_mlp_decode_megakernel(
+    int dtype,
+    size_t device_ordinal,
+    size_t hidden_dim,
+    size_t intermediate_size,
+    float norm_eps,
+    const void* hidden_in,
+    const void* norm_weight,
+    const void* gate_proj_w,
+    const void* up_proj_w,
+    const void* down_proj_w,
+    float* gate_up_scratch,
+    void* hidden_out,
+    unsigned int* row_counter) {
+    switch (dtype) {
+    case 0:
+        return mlp_decode_megakernel_device<half>(
+            static_cast<int>(device_ordinal), static_cast<int>(hidden_dim),
+            static_cast<int>(intermediate_size), norm_eps, hidden_in, norm_weight,
+            gate_proj_w, up_proj_w, down_proj_w, gate_up_scratch, hidden_out, row_counter);
+    case 2:
+        return mlp_decode_megakernel_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal), static_cast<int>(hidden_dim),
+            static_cast<int>(intermediate_size), norm_eps, hidden_in, norm_weight,
+            gate_proj_w, up_proj_w, down_proj_w, gate_up_scratch, hidden_out, row_counter);
+    default:
+        return 205;
+    }
+}
+
+template <typename T>
+int norm_multi_proj_device(
+    int device_ordinal,
+    int hidden_dim,
+    int total_rows,
+    float norm_eps,
+    const void* hidden_in,
+    const void* norm_weight,
+    const Qwen35ProjectionDesc* proj_table,
+    int num_projections,
+    float* output,
+    unsigned int* row_counter
+) {
+    ScopedHipDevice scoped(device_ordinal);
+
+    hipDeviceProp_t props;
+    if (hipGetDeviceProperties(&props, device_ordinal) != hipSuccess) return 220;
+
+    const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
+    constexpr int block_size = 256;
+    const size_t shared_bytes =
+        static_cast<size_t>(hidden_dim) * sizeof(float) * 2 + block_size * sizeof(float);
+
+    unsigned int zero = 0;
+    if (hipMemcpy(row_counter, &zero, sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess)
+        return 221;
+    if (hipDeviceSynchronize() != hipSuccess) return 222;
+
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_norm_multi_proj_kernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        shared_bytes,
+        0,
+        hidden_dim,
+        total_rows,
+        norm_eps,
+        static_cast<const T*>(hidden_in),
+        static_cast<const T*>(norm_weight),
+        proj_table,
+        num_projections,
+        output,
+        row_counter);
+    if (hipGetLastError() != hipSuccess) return 223;
+    if (hipDeviceSynchronize() != hipSuccess) return 224;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_norm_multi_proj(
+    int dtype,
+    size_t device_ordinal,
+    size_t hidden_dim,
+    size_t total_rows,
+    float norm_eps,
+    const void* hidden_in,
+    const void* norm_weight,
+    const void* proj_table,       // Qwen35ProjectionDesc* on device
+    size_t num_projections,
+    float* output,
+    unsigned int* row_counter) {
+    switch (dtype) {
+    case 0:
+        return norm_multi_proj_device<half>(
+            static_cast<int>(device_ordinal), static_cast<int>(hidden_dim),
+            static_cast<int>(total_rows), norm_eps, hidden_in, norm_weight,
+            static_cast<const Qwen35ProjectionDesc*>(proj_table),
+            static_cast<int>(num_projections), output, row_counter);
+    case 2:
+        return norm_multi_proj_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal), static_cast<int>(hidden_dim),
+            static_cast<int>(total_rows), norm_eps, hidden_in, norm_weight,
+            static_cast<const Qwen35ProjectionDesc*>(proj_table),
+            static_cast<int>(num_projections), output, row_counter);
+    default:
+        return 225;
+    }
+}
+
+// Standalone work-stealing matvec: out[out_dim] = W[out_dim, in_dim] × input[in_dim]
+// Reuses the down_proj kernel pattern for arbitrary matvec.
+template <typename T>
+int standalone_matvec_device(
+    int device_ordinal,
+    int in_dim,
+    int out_dim,
+    const void* input,       // [in_dim] F32
+    const void* weight,      // [out_dim, in_dim] BF16
+    void* output,            // [out_dim] BF16
+    unsigned int* row_counter
+) {
+    ScopedHipDevice scoped(device_ordinal);
+
+    hipDeviceProp_t props;
+    if (hipGetDeviceProperties(&props, device_ordinal) != hipSuccess) return 230;
+
+    const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
+    constexpr int block_size = 256;
+
+    unsigned int zero = 0;
+    if (hipMemcpy(row_counter, &zero, sizeof(unsigned int), hipMemcpyHostToDevice) != hipSuccess)
+        return 231;
+    if (hipDeviceSynchronize() != hipSuccess) return 232;
+
+    const size_t shared_bytes = block_size * sizeof(float);
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_standalone_matvec_kernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        shared_bytes,
+        0,
+        out_dim,
+        in_dim,
+        static_cast<const T*>(weight),
+        static_cast<const T*>(input),
+        static_cast<T*>(output),
+        row_counter);
+    if (hipGetLastError() != hipSuccess) return 233;
+    if (hipDeviceSynchronize() != hipSuccess) return 234;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_standalone_matvec(
+    int dtype,
+    size_t device_ordinal,
+    size_t in_dim,
+    size_t out_dim,
+    const void* input,
+    const void* weight,
+    void* output,
+    unsigned int* row_counter) {
+    switch (dtype) {
+    case 0:
+        return standalone_matvec_device<half>(
+            static_cast<int>(device_ordinal), static_cast<int>(in_dim),
+            static_cast<int>(out_dim), input, weight, output, row_counter);
+    case 2:
+        return standalone_matvec_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal), static_cast<int>(in_dim),
+            static_cast<int>(out_dim), input, weight, output, row_counter);
+    default:
+        return 235;
+    }
+}
+
+template <typename T>
+int persistent_decode_device(
+    int device_ordinal,
+    int num_layers,
+    int hidden_dim,
+    int intermediate_size,
+    int seqlen_offset,
+    const void* layers,
+    void* hidden_io,
+    float* workspace,
+    unsigned int* counters,
+    unsigned int* barrier_counter,
+    unsigned int* barrier_flag,
+    const void* cos_table,
+    const void* sin_table,
+    int rotary_dim
+) {
+    ScopedHipDevice scoped(device_ordinal);
+
+    hipDeviceProp_t props;
+    if (hipGetDeviceProperties(&props, device_ordinal) != hipSuccess) return 250;
+
+    const int num_blocks = props.multiProcessorCount > 0 ? props.multiProcessorCount : 16;
+    constexpr int block_size = 256;
+    // LDS layout: [block_size] reduction scratch + [intermediate_size] input vector cache
+    const size_t shared_bytes = (block_size + intermediate_size) * sizeof(float);
+
+    // Barrier counters zeroed on first allocation by Rust PersistentDecodeCache.
+    // Grid barrier self-resets between uses (barrier_counter reset by last block,
+    // barrier_flag monotonically increments and wraps safely).
+
+    hipLaunchKernelGGL(
+        HIP_KERNEL_NAME(dotcache_qwen35_persistent_decode_kernel<T>),
+        dim3(static_cast<unsigned int>(num_blocks)),
+        dim3(block_size),
+        shared_bytes,
+        0,
+        num_layers,
+        hidden_dim,
+        intermediate_size,
+        seqlen_offset,
+        static_cast<const Qwen35DecodeLayerDesc*>(layers),
+        static_cast<T*>(hidden_io),
+        workspace,
+        counters,
+        barrier_counter,
+        barrier_flag,
+        static_cast<const T*>(cos_table),
+        static_cast<const T*>(sin_table),
+        rotary_dim);
+    hipError_t launch_err = hipGetLastError();
+    hipError_t sync_err = hipDeviceSynchronize();
+    if (launch_err != hipSuccess) return 254;
+    if (sync_err != hipSuccess) return 255;
+    return 0;
+}
+
+extern "C" int dotcache_qwen35_hip_persistent_decode(
+    int dtype,
+    size_t device_ordinal,
+    size_t num_layers,
+    size_t hidden_dim,
+    size_t intermediate_size,
+    size_t seqlen_offset,
+    const void* layers,
+    void* hidden_io,
+    float* workspace,
+    unsigned int* counters,
+    unsigned int* barrier_counter,
+    unsigned int* barrier_flag,
+    const void* cos_table,
+    const void* sin_table,
+    size_t rotary_dim) {
+    switch (dtype) {
+    case 2:
+        return persistent_decode_device<hip_bfloat16>(
+            static_cast<int>(device_ordinal),
+            static_cast<int>(num_layers),
+            static_cast<int>(hidden_dim),
+            static_cast<int>(intermediate_size),
+            static_cast<int>(seqlen_offset),
+            layers, hidden_io, workspace, counters,
+            barrier_counter, barrier_flag,
+            cos_table, sin_table, static_cast<int>(rotary_dim));
+    default:
+        return 256;
     }
 }

@@ -6,6 +6,51 @@
 #include <math.h>
 #include <stdint.h>
 
+// Weight descriptor for the persistent decode megakernel.
+// See qwen35-runtime copy for full documentation.
+struct Qwen35DecodeLayerDesc {
+    int layer_type;
+    int intermediate_size;
+    const void* input_norm_w;
+    float input_norm_eps;
+    const void* post_attn_norm_w;
+    float post_attn_norm_eps;
+    const void* gate_proj_w;
+    const void* up_proj_w;
+    const void* down_proj_w;
+    const void* qkv_proj_w;
+    int qkv_out_dim;
+    const void* z_proj_w;
+    int z_out_dim;
+    const void* b_proj_w;
+    const void* a_proj_w;
+    const void* conv1d_w;
+    int conv_kernel_size;
+    const void* linear_out_proj_w;
+    int linear_value_dim;
+    int linear_num_v_heads;
+    int linear_head_k_dim;
+    int linear_head_v_dim;
+    void* conv_state;
+    void* recurrent_state;
+    const void* q_proj_w;
+    int q_out_dim;
+    const void* k_proj_w;
+    int k_out_dim;
+    const void* v_proj_w;
+    const void* o_proj_w;
+    int attn_head_dim;
+    int attn_num_heads;
+    int attn_num_kv_heads;
+    const void* q_norm_w;
+    const void* k_norm_w;
+    float q_norm_eps;
+    float k_norm_eps;
+    void* kv_cache_k;
+    void* kv_cache_v;
+    int kv_len;
+};
+
 template <typename T>
 __device__ inline float dotcache_qwen35_to_float(T value);
 
@@ -2075,6 +2120,78 @@ __global__ void dotcache_qwen35_rms_norm_kernel(
         const float weight_val = dotcache_qwen35_to_float(weight[col]) + (ADD_UNIT_OFFSET ? 1.0f : 0.0f);
         const float x = dotcache_qwen35_to_float(row_in[col]);
         row_out[col] = dotcache_qwen35_from_float<T>(x * shared_inv_rms * weight_val);
+    }
+}
+
+// Fused RMSNorm + Matrix-Vector Product kernel for single-token decode.
+// See qwen35-runtime copy for full documentation.
+template <typename T, bool ADD_UNIT_OFFSET>
+__global__ void dotcache_qwen35_fused_rms_norm_linear_kernel(
+    int hidden_dim,
+    int out_dim,
+    float eps,
+    const T* __restrict__ hidden,
+    const T* __restrict__ norm_weight,
+    const T* __restrict__ proj_weight,
+    T* __restrict__ out
+) {
+    const int out_row = blockIdx.x;
+    if (out_row >= out_dim) return;
+
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+
+    extern __shared__ float shared_mem[];
+    float* shared_normed = shared_mem;
+    float* shared_scratch = shared_mem + hidden_dim;
+
+    float partial_sq = 0.0f;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        const float x = dotcache_qwen35_to_float(hidden[col]);
+        partial_sq += x * x;
+    }
+    shared_scratch[tid] = partial_sq;
+    __syncthreads();
+
+    for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_scratch[tid] += shared_scratch[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    __shared__ float shared_inv_rms;
+    if (tid == 0) {
+        shared_inv_rms = rsqrtf(shared_scratch[0] / static_cast<float>(hidden_dim) + eps);
+    }
+    __syncthreads();
+
+    const float inv_rms = shared_inv_rms;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        const float x = dotcache_qwen35_to_float(hidden[col]);
+        const float w = dotcache_qwen35_to_float(norm_weight[col]) + (ADD_UNIT_OFFSET ? 1.0f : 0.0f);
+        shared_normed[col] = x * inv_rms * w;
+    }
+    __syncthreads();
+
+    const T* w_row = proj_weight + static_cast<size_t>(out_row) * static_cast<size_t>(hidden_dim);
+
+    float partial_dot = 0.0f;
+    for (int col = tid; col < hidden_dim; col += block_size) {
+        partial_dot += dotcache_qwen35_to_float(w_row[col]) * shared_normed[col];
+    }
+    shared_scratch[tid] = partial_dot;
+    __syncthreads();
+
+    for (int stride = block_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_scratch[tid] += shared_scratch[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        out[out_row] = dotcache_qwen35_from_float<T>(shared_scratch[0]);
     }
 }
 

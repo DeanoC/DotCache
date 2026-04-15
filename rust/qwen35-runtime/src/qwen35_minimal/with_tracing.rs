@@ -1,7 +1,7 @@
 use candle_core::{Module, Result, Tensor};
 use super::backend_buffer_api;
 use super::backend_ops;
-use super::model::StateBuffer;
+use super::types::StateBuffer;
 #[cfg(any(feature = "hf", test))]
 use super::builder::WeightBuilder;
 #[cfg(any(feature = "hf", test))]
@@ -9,21 +9,13 @@ use candle_nn::Init;
 
 #[derive(Clone, Debug)]
 pub struct Linear {
-    weight: Tensor,
+    pub(super) weight: Tensor,
     bias: Option<Tensor>,
 }
 
 impl Linear {
     pub fn new(weight: Tensor, bias: Option<Tensor>) -> Self {
         Self { weight, bias }
-    }
-
-    pub fn weight(&self) -> &Tensor {
-        &self.weight
-    }
-
-    pub fn bias(&self) -> Option<&Tensor> {
-        self.bias.as_ref()
     }
 }
 
@@ -39,6 +31,19 @@ impl Linear {
             x,
             &self.weight,
             self.bias.as_ref(),
+        )
+    }
+
+    pub fn forward_buffer_into_scratch(
+        &self,
+        x: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        backend_buffer_api::for_device(x.device()).linear_forward_into_scratch(
+            x,
+            &self.weight,
+            self.bias.as_ref(),
+            scratch,
         )
     }
 }

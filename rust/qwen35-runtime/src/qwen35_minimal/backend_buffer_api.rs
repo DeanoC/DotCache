@@ -1,7 +1,8 @@
 use candle_core::{D, DType, Device, Result, Tensor};
 
 use super::{backend_ops, ops};
-use super::model::{ImmutableEmbedding, StateBuffer};
+use super::model::ImmutableEmbedding;
+use super::types::StateBuffer;
 use crate::backends;
 
 fn repeat_heads_impl(xs: &Tensor, n_rep: usize) -> Result<Tensor> {
@@ -26,8 +27,26 @@ fn repeat_kv_impl(xs: &Tensor, repeats: usize) -> Result<Tensor> {
 pub(super) trait Qwen35BackendBufferApi: Sync {
     fn tensor_to_buffer(&self, xs: Tensor) -> Result<StateBuffer>;
     fn zeros_state(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<StateBuffer>;
+    fn copy_state_into_scratch(
+        &self,
+        src: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
     fn zeros_tensor(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor>;
     fn reshape_tensor_to_buffer(&self, xs: &Tensor, dims: &[usize]) -> Result<StateBuffer>;
+    fn reshape_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dims: &[usize],
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
+    fn transpose_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dim1: usize,
+        dim2: usize,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
     fn narrow_tensor_to_buffer(
         &self,
         xs: &Tensor,
@@ -86,15 +105,16 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         embedding: &ImmutableEmbedding,
         input_ids: &Tensor,
     ) -> Result<Tensor>;
-    fn output_projection_tensor(
-        &self,
-        embedding: &ImmutableEmbedding,
-        hidden_states: &Tensor,
-    ) -> Result<Tensor>;
     fn output_projection(
         &self,
         embedding: &ImmutableEmbedding,
         hidden_states: &StateBuffer,
+    ) -> Result<StateBuffer>;
+    fn output_projection_into_scratch(
+        &self,
+        embedding: &ImmutableEmbedding,
+        hidden_states: &StateBuffer,
+        scratch: &StateBuffer,
     ) -> Result<StateBuffer>;
     fn linear_forward(
         &self,
@@ -102,12 +122,39 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         weight: &Tensor,
         bias: Option<&Tensor>,
     ) -> Result<StateBuffer>;
+    fn linear_forward_into_scratch(
+        &self,
+        x: &StateBuffer,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer>;
     #[allow(clippy::too_many_arguments)]
     fn prepare_full_attention_inputs(
         &self,
         q_and_gate: &StateBuffer,
         k_proj: &StateBuffer,
         v_proj: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+        q_norm_weight: &Tensor,
+        q_norm_eps: f64,
+        k_norm_weight: &Tensor,
+        k_norm_eps: f64,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)>;
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_full_attention_inputs_into_scratch(
+        &self,
+        q_and_gate: &StateBuffer,
+        k_proj: &StateBuffer,
+        v_proj: &StateBuffer,
+        gate_scratch: &StateBuffer,
+        query_scratch: &StateBuffer,
+        key_scratch: &StateBuffer,
+        value_scratch: &StateBuffer,
         b_sz: usize,
         q_len: usize,
         num_heads: usize,
@@ -186,11 +233,6 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         scale: f32,
         seqlen_offset: usize,
     ) -> Result<StateBuffer>;
-    fn wrap_kv_cache(
-        &self,
-        key_states: Tensor,
-        value_states: Tensor,
-    ) -> Result<(StateBuffer, StateBuffer)>;
     #[allow(clippy::too_many_arguments)]
     fn prepare_full_attention_output(
         &self,
@@ -236,6 +278,12 @@ pub(super) trait Qwen35BackendBufferApi: Sync {
         key_states: &StateBuffer,
         value_states: &StateBuffer,
     ) -> Result<(Tensor, Tensor, Tensor)>;
+    fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+        &self,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer)>;
     fn materialize_full_attention_dense_inputs(
         &self,
         query_states: &Tensor,
@@ -455,6 +503,27 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             backends::cpu::zeros_state(device, dtype, dims)
         }
     }
+    fn copy_state_into_scratch(
+        &self,
+        src: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        if src.dtype() != scratch.dtype() {
+            candle_core::bail!(
+                "scratch dtype mismatch: src={:?} scratch={:?}",
+                src.dtype(),
+                scratch.dtype(),
+            );
+        }
+        if src.tensor().dims() != scratch.tensor().dims() {
+            candle_core::bail!(
+                "scratch shape mismatch: src={:?} scratch={:?}",
+                src.tensor().dims(),
+                scratch.tensor().dims(),
+            );
+        }
+        Ok(src.clone())
+    }
     fn zeros_tensor(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor> {
         if device.is_cuda() {
             backends::cuda::zeros_tensor(device, dtype, dims)
@@ -472,6 +541,25 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         } else {
             backends::cpu::reshape_tensor_to_buffer(xs, dims)
         }
+    }
+    fn reshape_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dims: &[usize],
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.reshape_tensor_to_buffer(xs, dims)?;
+        self.copy_state_into_scratch(&output, scratch)
+    }
+    fn transpose_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dim1: usize,
+        dim2: usize,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.tensor_to_buffer(xs.transpose(dim1, dim2)?)?;
+        self.copy_state_into_scratch(&output, scratch)
     }
     fn narrow_tensor_to_buffer(
         &self,
@@ -656,19 +744,21 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
     ) -> Result<Tensor> {
         backend_ops::immutable_embedding_lookup(embedding, input_ids)
     }
-    fn output_projection_tensor(
-        &self,
-        embedding: &ImmutableEmbedding,
-        hidden_states: &Tensor,
-    ) -> Result<Tensor> {
-        backend_ops::output_projection(embedding, hidden_states)
-    }
     fn output_projection(
         &self,
         embedding: &ImmutableEmbedding,
         hidden_states: &StateBuffer,
     ) -> Result<StateBuffer> {
         backend_ops::output_projection_buffer(embedding, hidden_states)
+    }
+    fn output_projection_into_scratch(
+        &self,
+        embedding: &ImmutableEmbedding,
+        hidden_states: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.output_projection(embedding, hidden_states)?;
+        self.copy_state_into_scratch(&output, scratch)
     }
     fn linear_forward(
         &self,
@@ -677,6 +767,16 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
         bias: Option<&Tensor>,
     ) -> Result<StateBuffer> {
         StateBuffer::from_tensor(backend_ops::linear_forward(x.tensor(), weight, bias)?)
+    }
+    fn linear_forward_into_scratch(
+        &self,
+        x: &StateBuffer,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.linear_forward(x, weight, bias)?;
+        self.copy_state_into_scratch(&output, scratch)
     }
     fn prepare_full_attention_inputs(
         &self,
@@ -729,6 +829,46 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             StateBuffer::from_tensor(gate)?,
             StateBuffer::from_tensor(key_states)?,
             StateBuffer::from_tensor(value_states)?,
+        ))
+    }
+    fn prepare_full_attention_inputs_into_scratch(
+        &self,
+        q_and_gate: &StateBuffer,
+        k_proj: &StateBuffer,
+        v_proj: &StateBuffer,
+        gate_scratch: &StateBuffer,
+        query_scratch: &StateBuffer,
+        key_scratch: &StateBuffer,
+        value_scratch: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+        q_norm_weight: &Tensor,
+        q_norm_eps: f64,
+        k_norm_weight: &Tensor,
+        k_norm_eps: f64,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+        let (query_states, gate, key_states, value_states) = self.prepare_full_attention_inputs(
+            q_and_gate,
+            k_proj,
+            v_proj,
+            b_sz,
+            q_len,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            q_norm_weight,
+            q_norm_eps,
+            k_norm_weight,
+            k_norm_eps,
+        )?;
+        Ok((
+            self.copy_state_into_scratch(&query_states, query_scratch)?,
+            self.copy_state_into_scratch(&gate, gate_scratch)?,
+            self.copy_state_into_scratch(&key_states, key_scratch)?,
+            self.copy_state_into_scratch(&value_states, value_scratch)?,
         ))
     }
     fn prepare_linear_attention_inputs(
@@ -897,13 +1037,6 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             seqlen_offset,
         )
     }
-    fn wrap_kv_cache(
-        &self,
-        key_states: Tensor,
-        value_states: Tensor,
-    ) -> Result<(StateBuffer, StateBuffer)> {
-        Ok((StateBuffer::from_tensor(key_states)?, StateBuffer::from_tensor(value_states)?))
-    }
     fn prepare_full_attention_output(
         &self,
         attn_output: &Tensor,
@@ -991,6 +1124,24 @@ impl Qwen35BackendBufferApi for GenericBackendBufferApi {
             key_states.tensor(),
             value_states.tensor(),
         )
+    }
+    fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+        &self,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
+        let (query_states, key_states, value_states) =
+            self.prepare_full_attention_kernel_inputs_with_buffer_kv(
+                query_states,
+                key_states,
+                value_states,
+            )?;
+        Ok((
+            StateBuffer::from_tensor(query_states)?,
+            StateBuffer::from_tensor(key_states)?,
+            StateBuffer::from_tensor(value_states)?,
+        ))
     }
     fn materialize_full_attention_dense_inputs(
         &self,
@@ -1339,11 +1490,37 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
     fn zeros_state(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<StateBuffer> {
         backends::hip::zeros_state(device, dtype, dims)
     }
+    fn copy_state_into_scratch(
+        &self,
+        src: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        backends::hip::copy_state_into_scratch(src, scratch)
+    }
     fn zeros_tensor(&self, device: &Device, dtype: DType, dims: &[usize]) -> Result<Tensor> {
         backends::hip::zeros_tensor(device, dtype, dims)
     }
     fn reshape_tensor_to_buffer(&self, xs: &Tensor, dims: &[usize]) -> Result<StateBuffer> {
         backends::hip::reshape_tensor_to_buffer(xs, dims)
+    }
+    fn reshape_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dims: &[usize],
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.reshape_tensor_to_buffer(xs, dims)?;
+        self.copy_state_into_scratch(&output, scratch)
+    }
+    fn transpose_tensor_to_buffer_into_scratch(
+        &self,
+        xs: &Tensor,
+        dim1: usize,
+        dim2: usize,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        let output = self.tensor_to_buffer(xs.transpose(dim1, dim2)?)?;
+        self.copy_state_into_scratch(&output, scratch)
     }
     fn narrow_tensor_to_buffer(
         &self,
@@ -1438,19 +1615,20 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
     ) -> Result<Tensor> {
         backends::hip::immutable_embedding_lookup(embedding, input_ids)
     }
-    fn output_projection_tensor(
-        &self,
-        embedding: &ImmutableEmbedding,
-        hidden_states: &Tensor,
-    ) -> Result<Tensor> {
-        backends::hip::output_projection_tensor(embedding, hidden_states)
-    }
     fn output_projection(
         &self,
         embedding: &ImmutableEmbedding,
         hidden_states: &StateBuffer,
     ) -> Result<StateBuffer> {
         backends::hip::output_projection(embedding, hidden_states)
+    }
+    fn output_projection_into_scratch(
+        &self,
+        embedding: &ImmutableEmbedding,
+        hidden_states: &StateBuffer,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        backends::hip::output_projection_into_scratch(embedding, hidden_states, scratch)
     }
     fn linear_forward(
         &self,
@@ -1459,6 +1637,15 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         bias: Option<&Tensor>,
     ) -> Result<StateBuffer> {
         backends::hip::linear_forward(x, weight, bias)
+    }
+    fn linear_forward_into_scratch(
+        &self,
+        x: &StateBuffer,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        scratch: &StateBuffer,
+    ) -> Result<StateBuffer> {
+        backends::hip::linear_forward_into_scratch(x, weight, bias, scratch)
     }
     fn prepare_full_attention_inputs(
         &self,
@@ -1474,11 +1661,49 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         q_norm_eps: f64,
         k_norm_weight: &Tensor,
         k_norm_eps: f64,
-    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+        ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
         backends::hip::prepare_full_attention_inputs(
             q_and_gate,
             k_proj,
             v_proj,
+            b_sz,
+            q_len,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            q_norm_weight,
+            q_norm_eps,
+            k_norm_weight,
+            k_norm_eps,
+        )
+    }
+    fn prepare_full_attention_inputs_into_scratch(
+        &self,
+        q_and_gate: &StateBuffer,
+        k_proj: &StateBuffer,
+        v_proj: &StateBuffer,
+        gate_scratch: &StateBuffer,
+        query_scratch: &StateBuffer,
+        key_scratch: &StateBuffer,
+        value_scratch: &StateBuffer,
+        b_sz: usize,
+        q_len: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+        q_norm_weight: &Tensor,
+        q_norm_eps: f64,
+        k_norm_weight: &Tensor,
+        k_norm_eps: f64,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+        backends::hip::prepare_full_attention_inputs_into_scratch(
+            q_and_gate,
+            k_proj,
+            v_proj,
+            gate_scratch,
+            query_scratch,
+            key_scratch,
+            value_scratch,
             b_sz,
             q_len,
             num_heads,
@@ -1609,13 +1834,6 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
             seqlen_offset,
         )
     }
-    fn wrap_kv_cache(
-        &self,
-        key_states: Tensor,
-        value_states: Tensor,
-    ) -> Result<(StateBuffer, StateBuffer)> {
-        backends::hip::wrap_kv_cache(key_states, value_states)
-    }
     fn prepare_full_attention_output(
         &self,
         attn_output: &Tensor,
@@ -1685,6 +1903,18 @@ impl Qwen35BackendBufferApi for HipBackendBufferApi {
         value_states: &StateBuffer,
     ) -> Result<(Tensor, Tensor, Tensor)> {
         backends::hip::prepare_full_attention_kernel_inputs_with_buffer_kv(
+            query_states,
+            key_states,
+            value_states,
+        )
+    }
+    fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+        &self,
+        query_states: &StateBuffer,
+        key_states: &StateBuffer,
+        value_states: &StateBuffer,
+    ) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
+        backends::hip::prepare_full_attention_kernel_input_buffers_with_buffer_kv(
             query_states,
             key_states,
             value_states,

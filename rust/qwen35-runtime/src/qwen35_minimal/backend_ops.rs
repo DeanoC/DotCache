@@ -38,13 +38,6 @@ pub(crate) fn immutable_embedding_lookup(
     embedding.fallback_forward(indexes)
 }
 
-pub(crate) fn output_projection(
-    embedding: &ImmutableEmbedding,
-    hidden_states: &Tensor,
-) -> Result<Tensor> {
-    immutable_output_projection(embedding, hidden_states)
-}
-
 pub(crate) fn output_projection_buffer(
     embedding: &ImmutableEmbedding,
     hidden_states: &StateBuffer,

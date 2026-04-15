@@ -17,7 +17,7 @@ use memmap2::Mmap;
 use safetensors::SafeTensors;
 use serde::{Deserialize, Serialize};
 
-const PACKAGE_SCHEMA_VERSION: u32 = 1;
+const PACKAGE_SCHEMA_VERSION: u32 = 2;
 const PACKAGE_ALIGNMENT: u64 = 4096;
 const MANIFEST_FILENAME: &str = "manifest.json";
 const WEIGHTS_FILENAME: &str = "weights.bin";
@@ -73,8 +73,102 @@ pub struct PackageKey {
     pub model_id: String,
     pub revision: String,
     pub target: TargetSpec,
+    pub package_profile: PreparedPackageProfile,
     pub schema_version: u32,
     pub converter_version: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedPackageProfile {
+    StandardPrepared,
+    HipDirectGfx11V1,
+    HipDirectRdna35V1,
+}
+
+impl PreparedPackageProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StandardPrepared => "standard-prepared",
+            Self::HipDirectGfx11V1 => "hip-direct-gfx11-v5",
+            Self::HipDirectRdna35V1 => "hip-direct-rdna35-v5",
+        }
+    }
+
+    pub fn qwen35_hip_direct_for_target(target: &TargetSpec) -> Option<Self> {
+        if target.backend != BackendKind::Hip {
+            return None;
+        }
+        if target.family.starts_with("gfx115") {
+            return Some(Self::HipDirectRdna35V1);
+        }
+        if target.family.starts_with("gfx11") {
+            return Some(Self::HipDirectGfx11V1);
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectLayerEntry {
+    pub layer_idx: usize,
+    pub layer_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectPhaseEntry {
+    pub layer_type: String,
+    pub start_layer_idx: usize,
+    pub end_layer_idx: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectWorkspaceEntry {
+    pub name: String,
+    pub dtype: PreparedDType,
+    pub dims: Vec<usize>,
+    pub layout: TensorLayoutTag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectTensorBinding {
+    pub name: String,
+    pub tensor_name: String,
+    pub layout: TensorLayoutTag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectLayerBindings {
+    pub layer_idx: usize,
+    pub layer_type: String,
+    pub tensors: Vec<PreparedQwen35DirectTensorBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectStateLayoutEntry {
+    pub name: String,
+    pub layer_idx: Option<usize>,
+    pub dtype: PreparedDType,
+    pub dims: Vec<usize>,
+    pub layout: TensorLayoutTag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedQwen35DirectMetadata {
+    pub profile: PreparedPackageProfile,
+    pub vocab_size: usize,
+    pub hidden_size: usize,
+    pub num_hidden_layers: usize,
+    pub max_position_embeddings: usize,
+    pub activation_dtype: PreparedDType,
+    pub global_tensors: Vec<PreparedQwen35DirectTensorBinding>,
+    pub layers: Vec<PreparedQwen35DirectLayerEntry>,
+    pub layer_bindings: Vec<PreparedQwen35DirectLayerBindings>,
+    pub decode_phases: Vec<PreparedQwen35DirectPhaseEntry>,
+    pub workspace: Vec<PreparedQwen35DirectWorkspaceEntry>,
+    pub state_layouts: Vec<PreparedQwen35DirectStateLayoutEntry>,
+    pub full_attention_layer_ids: Vec<usize>,
+    pub linear_attention_layer_ids: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,8 +254,11 @@ pub struct PreparedPackageManifest {
     pub revision: String,
     pub target_backend: String,
     pub target_family: String,
+    pub package_profile: PreparedPackageProfile,
     pub config_filename: String,
     pub tokenizer_filename: String,
+    #[serde(default)]
+    pub qwen35_direct: Option<PreparedQwen35DirectMetadata>,
     pub tensors: Vec<PreparedTensorEntry>,
 }
 
@@ -358,13 +455,17 @@ impl PreparedPackage {
         model_id: &str,
         device: &Device,
         converter: &C,
+        package_profile: PreparedPackageProfile,
     ) -> Result<Self> {
         let target = detect_target_spec(device)?;
-        if let Some(alias) = read_alias(converter.model_family(), model_id, &target)? {
+        if let Some(alias) =
+            read_alias(converter.model_family(), model_id, &target, package_profile)?
+        {
             if alias.package_root.exists() {
                 let package = Self::open(&alias.package_root)?;
                 if package.manifest.schema_version == PACKAGE_SCHEMA_VERSION
                     && package.manifest.converter_version == converter.converter_version()
+                    && package.manifest.package_profile == package_profile
                 {
                     return Ok(package);
                 }
@@ -378,6 +479,7 @@ impl PreparedPackage {
             model_id: artifacts.model_id.clone(),
             revision: artifacts.revision.clone(),
             target: target.clone(),
+            package_profile,
             schema_version: PACKAGE_SCHEMA_VERSION,
             converter_version: converter.converter_version(),
         };
@@ -391,6 +493,7 @@ impl PreparedPackage {
             converter.model_family(),
             &artifacts.model_id,
             &target,
+            package_profile,
             &PreparedPackageAlias {
                 revision: artifacts.revision.clone(),
                 package_root: package_root.clone(),
@@ -400,7 +503,25 @@ impl PreparedPackage {
     }
 
     pub fn resolve_or_build_qwen35_minimal(model_id: &str, device: &Device) -> Result<Self> {
-        Self::resolve_or_build(model_id, device, &Qwen35MinimalConverter)
+        Self::resolve_or_build(
+            model_id,
+            device,
+            &Qwen35MinimalConverter::standard(),
+            PreparedPackageProfile::StandardPrepared,
+        )
+    }
+
+    pub fn resolve_or_build_qwen35_minimal_with_profile(
+        model_id: &str,
+        device: &Device,
+        package_profile: PreparedPackageProfile,
+    ) -> Result<Self> {
+        Self::resolve_or_build(
+            model_id,
+            device,
+            &Qwen35MinimalConverter::with_profile(package_profile),
+            package_profile,
+        )
     }
 
     pub fn open(root: &Path) -> Result<Self> {
@@ -457,6 +578,19 @@ impl PreparedPackage {
 
     pub fn config_path(&self) -> PathBuf {
         self.root.join(&self.manifest.config_filename)
+    }
+
+    pub fn target_spec(&self) -> TargetSpec {
+        TargetSpec {
+            backend: match self.manifest.target_backend.as_str() {
+                "cpu" => BackendKind::Cpu,
+                "hip" => BackendKind::Hip,
+                "cuda" => BackendKind::Cuda,
+                "metal" => BackendKind::Metal,
+                _ => BackendKind::Cpu,
+            },
+            family: self.manifest.target_family.clone(),
+        }
     }
 
     pub fn stats(&self) -> Result<PreparedPackageStats> {
@@ -523,12 +657,13 @@ impl PreparedPackage {
     }
 
     pub fn immutable_handle(&self, name: &str) -> Result<ImmutableWeightHandle> {
-        let tensor_idx = *self.tensor_index.get(name).ok_or_else(|| {
-            ModelStoreError::External {
+        let tensor_idx = *self
+            .tensor_index
+            .get(name)
+            .ok_or_else(|| ModelStoreError::External {
                 context: "model-store",
                 message: format!("missing tensor {name} in prepared package"),
-            }
-        })?;
+            })?;
         Ok(ImmutableWeightHandle {
             package: Arc::new(self.clone()),
             tensor_idx,
@@ -651,10 +786,7 @@ impl CandleWeightProvider {
 
     pub fn get(&self, name: &str) -> candle_core::Result<Tensor> {
         let full_name = self.full_name(name);
-        let started = self
-            .load_stats
-            .as_ref()
-            .map(|_| std::time::Instant::now());
+        let started = self.load_stats.as_ref().map(|_| std::time::Instant::now());
         let (tensor, byte_len) = self
             .package
             .load_tensor_with_byte_len(&full_name, &self.device)
@@ -821,6 +953,86 @@ impl HfModelWeightIndex {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct Qwen35MinimalPackageConfig {
+    text_config: Qwen35MinimalPackageTextConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Qwen35MinimalPackageTextConfig {
+    vocab_size: usize,
+    hidden_size: usize,
+    #[serde(default = "default_qwen35_num_attention_heads")]
+    num_attention_heads: usize,
+    #[serde(default = "default_qwen35_num_key_value_heads")]
+    num_key_value_heads: usize,
+    num_hidden_layers: usize,
+    max_position_embeddings: usize,
+    #[serde(default = "default_qwen35_head_dim")]
+    head_dim: usize,
+    #[serde(default = "default_qwen35_linear_conv_kernel_dim")]
+    linear_conv_kernel_dim: usize,
+    #[serde(default = "default_qwen35_linear_key_head_dim")]
+    linear_key_head_dim: usize,
+    #[serde(default = "default_qwen35_linear_value_head_dim")]
+    linear_value_head_dim: usize,
+    #[serde(default = "default_qwen35_linear_num_key_heads")]
+    linear_num_key_heads: usize,
+    #[serde(default = "default_qwen35_linear_num_value_heads")]
+    linear_num_value_heads: usize,
+    #[serde(default)]
+    layer_types: Vec<String>,
+}
+
+const fn default_qwen35_head_dim() -> usize {
+    128
+}
+
+const fn default_qwen35_num_attention_heads() -> usize {
+    8
+}
+
+const fn default_qwen35_num_key_value_heads() -> usize {
+    2
+}
+
+const fn default_qwen35_linear_conv_kernel_dim() -> usize {
+    4
+}
+
+const fn default_qwen35_linear_key_head_dim() -> usize {
+    64
+}
+
+const fn default_qwen35_linear_value_head_dim() -> usize {
+    128
+}
+
+const fn default_qwen35_linear_num_key_heads() -> usize {
+    4
+}
+
+const fn default_qwen35_linear_num_value_heads() -> usize {
+    8
+}
+
+impl Qwen35MinimalPackageTextConfig {
+    fn normalized_layer_types(&self) -> Vec<String> {
+        if !self.layer_types.is_empty() {
+            return self.layer_types.clone();
+        }
+        (0..self.num_hidden_layers)
+            .map(|idx| {
+                if (idx + 1) % 4 == 0 {
+                    "full_attention".to_string()
+                } else {
+                    "linear_attention".to_string()
+                }
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug)]
 pub struct HfHubModelSource {
     api: Api,
@@ -922,7 +1134,21 @@ impl HfHubModelSource {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Qwen35MinimalConverter;
+pub struct Qwen35MinimalConverter {
+    package_profile: PreparedPackageProfile,
+}
+
+impl Qwen35MinimalConverter {
+    pub const fn standard() -> Self {
+        Self {
+            package_profile: PreparedPackageProfile::StandardPrepared,
+        }
+    }
+
+    pub const fn with_profile(package_profile: PreparedPackageProfile) -> Self {
+        Self { package_profile }
+    }
+}
 
 impl ModelFamilyConverter for Qwen35MinimalConverter {
     fn model_family(&self) -> &'static str {
@@ -930,7 +1156,7 @@ impl ModelFamilyConverter for Qwen35MinimalConverter {
     }
 
     fn converter_version(&self) -> u32 {
-        4
+        5
     }
 
     fn build_package(
@@ -939,7 +1165,13 @@ impl ModelFamilyConverter for Qwen35MinimalConverter {
         target: &TargetSpec,
         package_root: &Path,
     ) -> Result<()> {
-        build_qwen35_minimal_package(artifacts, target, package_root, self.converter_version())
+        build_qwen35_minimal_package(
+            artifacts,
+            target,
+            package_root,
+            self.converter_version(),
+            self.package_profile,
+        )
     }
 }
 
@@ -948,6 +1180,7 @@ fn build_qwen35_minimal_package(
     target: &TargetSpec,
     package_root: &Path,
     converter_version: u32,
+    package_profile: PreparedPackageProfile,
 ) -> Result<()> {
     let temp_root = temp_package_dir(package_root)?;
     fs::create_dir_all(&temp_root).map_err(|err| ModelStoreError::External {
@@ -977,6 +1210,25 @@ fn build_qwen35_minimal_package(
             temp_root.join(TOKENIZER_FILENAME).display()
         ),
     })?;
+
+    let config: Qwen35MinimalPackageConfig =
+        serde_json::from_slice(&fs::read(&artifacts.config_path).map_err(|err| {
+            ModelStoreError::External {
+                context: "model-store",
+                message: format!(
+                    "failed to read config {}: {err}",
+                    artifacts.config_path.display()
+                ),
+            }
+        })?)
+        .map_err(|err| ModelStoreError::External {
+            context: "model-store",
+            message: format!(
+                "failed to parse qwen35 config {}: {err}",
+                artifacts.config_path.display()
+            ),
+        })?;
+    let direct_metadata = maybe_qwen35_direct_metadata(&config, package_profile);
 
     let mut tensors = Vec::new();
     let weights_path = temp_root.join(WEIGHTS_FILENAME);
@@ -1063,8 +1315,10 @@ fn build_qwen35_minimal_package(
         revision: artifacts.revision.clone(),
         target_backend: target.backend.as_str().to_string(),
         target_family: target.family.clone(),
+        package_profile,
         config_filename: CONFIG_FILENAME.to_string(),
         tokenizer_filename: TOKENIZER_FILENAME.to_string(),
+        qwen35_direct: direct_metadata,
         tensors,
     };
     fs::write(
@@ -1092,6 +1346,372 @@ fn build_qwen35_minimal_package(
 
 fn qwen35_minimal_keeps_tensor(name: &str) -> bool {
     name.starts_with("model.language_model.") || name == "lm_head.weight"
+}
+
+fn qwen35_direct_global_tensors() -> Vec<PreparedQwen35DirectTensorBinding> {
+    vec![
+        PreparedQwen35DirectTensorBinding {
+            name: "embed_tokens".to_string(),
+            tensor_name: "model.language_model.embed_tokens.weight".to_string(),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "final_norm".to_string(),
+            tensor_name: "model.language_model.norm.weight".to_string(),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "lm_head".to_string(),
+            tensor_name: "lm_head.weight".to_string(),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+    ]
+}
+
+fn qwen35_direct_layer_bindings(
+    layer_idx: usize,
+    layer_type: &str,
+) -> PreparedQwen35DirectLayerBindings {
+    let layer_prefix = format!("model.language_model.layers.{layer_idx}");
+    let mut tensors = vec![
+        PreparedQwen35DirectTensorBinding {
+            name: "input_layernorm".to_string(),
+            tensor_name: format!("{layer_prefix}.input_layernorm.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "post_attention_layernorm".to_string(),
+            tensor_name: format!("{layer_prefix}.post_attention_layernorm.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "mlp_gate_proj".to_string(),
+            tensor_name: format!("{layer_prefix}.mlp.gate_proj.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "mlp_up_proj".to_string(),
+            tensor_name: format!("{layer_prefix}.mlp.up_proj.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectTensorBinding {
+            name: "mlp_down_proj".to_string(),
+            tensor_name: format!("{layer_prefix}.mlp.down_proj.weight"),
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+    ];
+    match layer_type {
+        "linear_attention" => {
+            let linear_prefix = format!("{layer_prefix}.linear_attn");
+            tensors.extend([
+                PreparedQwen35DirectTensorBinding {
+                    name: "in_proj_qkv".to_string(),
+                    tensor_name: format!("{linear_prefix}.in_proj_qkv.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "in_proj_z".to_string(),
+                    tensor_name: format!("{linear_prefix}.in_proj_z.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "in_proj_b".to_string(),
+                    tensor_name: format!("{linear_prefix}.in_proj_b.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "in_proj_a".to_string(),
+                    tensor_name: format!("{linear_prefix}.in_proj_a.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "conv1d".to_string(),
+                    tensor_name: format!(
+                        "{linear_prefix}.conv1d.weight.__dotcache_depthwise_squeezed"
+                    ),
+                    layout: TensorLayoutTag::DepthwiseConvSqueezed,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "dt_bias".to_string(),
+                    tensor_name: format!(
+                        "{linear_prefix}.dt_bias.__dotcache_head_bias_reshaped"
+                    ),
+                    layout: TensorLayoutTag::HeadBiasReshaped,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "a_log".to_string(),
+                    tensor_name: format!(
+                        "{linear_prefix}.A_log.__dotcache_head_exp_reshaped"
+                    ),
+                    layout: TensorLayoutTag::HeadExpReshaped,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "norm".to_string(),
+                    tensor_name: format!("{linear_prefix}.norm.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "out_proj".to_string(),
+                    tensor_name: format!("{linear_prefix}.out_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+            ]);
+        }
+        "full_attention" => {
+            let attention_prefix = format!("{layer_prefix}.self_attn");
+            tensors.extend([
+                PreparedQwen35DirectTensorBinding {
+                    name: "q_proj".to_string(),
+                    tensor_name: format!("{attention_prefix}.q_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "k_proj".to_string(),
+                    tensor_name: format!("{attention_prefix}.k_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "v_proj".to_string(),
+                    tensor_name: format!("{attention_prefix}.v_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "o_proj".to_string(),
+                    tensor_name: format!("{attention_prefix}.o_proj.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "q_norm".to_string(),
+                    tensor_name: format!("{attention_prefix}.q_norm.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+                PreparedQwen35DirectTensorBinding {
+                    name: "k_norm".to_string(),
+                    tensor_name: format!("{attention_prefix}.k_norm.weight"),
+                    layout: TensorLayoutTag::StandardContiguous,
+                },
+            ]);
+        }
+        _ => {}
+    }
+    PreparedQwen35DirectLayerBindings {
+        layer_idx,
+        layer_type: layer_type.to_string(),
+        tensors,
+    }
+}
+
+fn maybe_qwen35_direct_metadata(
+    config: &Qwen35MinimalPackageConfig,
+    package_profile: PreparedPackageProfile,
+) -> Option<PreparedQwen35DirectMetadata> {
+    if package_profile == PreparedPackageProfile::StandardPrepared {
+        return None;
+    }
+    let layer_types = config.text_config.normalized_layer_types();
+    let mut layers = Vec::with_capacity(layer_types.len());
+    let mut layer_bindings = Vec::with_capacity(layer_types.len());
+    let mut full_attention_layer_ids = Vec::new();
+    let mut linear_attention_layer_ids = Vec::new();
+    for (layer_idx, layer_type) in layer_types.iter().cloned().enumerate() {
+        match layer_type.as_str() {
+            "full_attention" => full_attention_layer_ids.push(layer_idx),
+            "linear_attention" => linear_attention_layer_ids.push(layer_idx),
+            _ => {}
+        }
+        layer_bindings.push(qwen35_direct_layer_bindings(layer_idx, &layer_type));
+        layers.push(PreparedQwen35DirectLayerEntry {
+            layer_idx,
+            layer_type,
+        });
+    }
+    let mut decode_phases = Vec::new();
+    let mut start_layer_idx = 0usize;
+    while start_layer_idx < layer_types.len() {
+        let layer_type = layer_types[start_layer_idx].clone();
+        let mut end_layer_idx = start_layer_idx + 1;
+        while end_layer_idx < layer_types.len() && layer_types[end_layer_idx] == layer_type {
+            end_layer_idx += 1;
+        }
+        decode_phases.push(PreparedQwen35DirectPhaseEntry {
+            layer_type,
+            start_layer_idx,
+            end_layer_idx,
+        });
+        start_layer_idx = end_layer_idx;
+    }
+    let activation_dtype = PreparedDType::BF16;
+    let global_tensors = qwen35_direct_global_tensors();
+    let workspace = vec![
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "decode_hidden_ping".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.hidden_size],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "decode_hidden_pong".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.hidden_size],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "decode_logits".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.vocab_size],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "full_attention_gate".to_string(),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                1,
+                config.text_config.num_attention_heads * config.text_config.head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "full_attention_qkv".to_string(),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.num_attention_heads,
+                1,
+                config.text_config.head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "full_attention_key".to_string(),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.num_key_value_heads,
+                1,
+                config.text_config.head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "full_attention_value".to_string(),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.num_key_value_heads,
+                1,
+                config.text_config.head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "linear_mixed_qkv".to_string(),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.linear_num_key_heads * config.text_config.linear_key_head_dim
+                    * 2
+                    + config.text_config.linear_num_value_heads
+                        * config.text_config.linear_value_head_dim,
+                1,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "linear_z".to_string(),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                1,
+                config.text_config.linear_num_value_heads,
+                config.text_config.linear_value_head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "linear_beta_raw".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.linear_num_value_heads],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+        PreparedQwen35DirectWorkspaceEntry {
+            name: "linear_a".to_string(),
+            dtype: activation_dtype,
+            dims: vec![1, 1, config.text_config.linear_num_value_heads],
+            layout: TensorLayoutTag::StandardContiguous,
+        },
+    ];
+    let linear_conv_dim = config.text_config.linear_num_key_heads * config.text_config.linear_key_head_dim
+        * 2
+        + config.text_config.linear_num_value_heads * config.text_config.linear_value_head_dim;
+    let mut state_layouts = Vec::new();
+    for &layer_idx in linear_attention_layer_ids.iter() {
+        state_layouts.push(PreparedQwen35DirectStateLayoutEntry {
+            name: "linear_conv_state".to_string(),
+            layer_idx: Some(layer_idx),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                linear_conv_dim,
+                config.text_config.linear_conv_kernel_dim.saturating_sub(1),
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        });
+        state_layouts.push(PreparedQwen35DirectStateLayoutEntry {
+            name: "linear_recurrent_state".to_string(),
+            layer_idx: Some(layer_idx),
+            dtype: PreparedDType::F32,
+            dims: vec![
+                1,
+                config.text_config.linear_num_value_heads,
+                config.text_config.linear_key_head_dim,
+                config.text_config.linear_value_head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        });
+    }
+    for &layer_idx in full_attention_layer_ids.iter() {
+        state_layouts.push(PreparedQwen35DirectStateLayoutEntry {
+            name: "full_attention_k_cache".to_string(),
+            layer_idx: Some(layer_idx),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.num_key_value_heads,
+                config.text_config.max_position_embeddings,
+                config.text_config.head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        });
+        state_layouts.push(PreparedQwen35DirectStateLayoutEntry {
+            name: "full_attention_v_cache".to_string(),
+            layer_idx: Some(layer_idx),
+            dtype: activation_dtype,
+            dims: vec![
+                1,
+                config.text_config.num_key_value_heads,
+                config.text_config.max_position_embeddings,
+                config.text_config.head_dim,
+            ],
+            layout: TensorLayoutTag::StandardContiguous,
+        });
+    }
+    Some(PreparedQwen35DirectMetadata {
+        profile: package_profile,
+        vocab_size: config.text_config.vocab_size,
+        hidden_size: config.text_config.hidden_size,
+        num_hidden_layers: config.text_config.num_hidden_layers,
+        max_position_embeddings: config.text_config.max_position_embeddings,
+        activation_dtype,
+        global_tensors,
+        layers,
+        layer_bindings,
+        decode_phases,
+        workspace,
+        state_layouts,
+        full_attention_layer_ids,
+        linear_attention_layer_ids,
+    })
 }
 
 fn write_tensor_entry(
@@ -1375,15 +1995,22 @@ fn package_root(key: &PackageKey) -> Result<PathBuf> {
         .join(sanitize_path_component(&key.model_id))
         .join(sanitize_path_component(&key.revision))
         .join(format!("converter-v{}", key.converter_version))
+        .join(key.package_profile.as_str())
         .join(key.target.backend.as_str())
         .join(&key.target.family))
 }
 
-fn package_alias_path(model_family: &str, model_id: &str, target: &TargetSpec) -> Result<PathBuf> {
+fn package_alias_path(
+    model_family: &str,
+    model_id: &str,
+    target: &TargetSpec,
+    package_profile: PreparedPackageProfile,
+) -> Result<PathBuf> {
     Ok(package_cache_root()?
         .join(model_family)
         .join(sanitize_path_component(model_id))
         .join("aliases")
+        .join(package_profile.as_str())
         .join(target.backend.as_str())
         .join(&target.family)
         .join("active.json"))
@@ -1418,8 +2045,9 @@ fn read_alias(
     model_family: &str,
     model_id: &str,
     target: &TargetSpec,
+    package_profile: PreparedPackageProfile,
 ) -> Result<Option<PreparedPackageAlias>> {
-    let path = package_alias_path(model_family, model_id, target)?;
+    let path = package_alias_path(model_family, model_id, target, package_profile)?;
     if !path.exists() {
         return Ok(None);
     }
@@ -1438,9 +2066,10 @@ fn write_alias(
     model_family: &str,
     model_id: &str,
     target: &TargetSpec,
+    package_profile: PreparedPackageProfile,
     alias: &PreparedPackageAlias,
 ) -> Result<()> {
-    let path = package_alias_path(model_family, model_id, target)?;
+    let path = package_alias_path(model_family, model_id, target, package_profile)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| ModelStoreError::External {
             context: "model-store",
@@ -1512,6 +2141,7 @@ pub type PreparedModelManifest = PreparedPackageManifest;
 pub type PreparedPackageSummary = PreparedPackageStats;
 pub type PreparedTensorLayout = TensorLayoutTag;
 pub type ModelTarget = TargetSpec;
+pub type ModelPackageProfile = PreparedPackageProfile;
 
 #[cfg(test)]
 mod tests {
@@ -1556,10 +2186,13 @@ mod tests {
             &[0u8; 8 * 1 * 4 * std::mem::size_of::<half::f16>()],
         )
         .unwrap();
-        let prepared =
-            maybe_prepack_qwen35_tensor("layer.linear_attn.conv1d.weight", &view, PreparedDType::F16)
-                .unwrap()
-                .expect("conv1d weight should be prepacked");
+        let prepared = maybe_prepack_qwen35_tensor(
+            "layer.linear_attn.conv1d.weight",
+            &view,
+            PreparedDType::F16,
+        )
+        .unwrap()
+        .expect("conv1d weight should be prepacked");
         assert!(prepared.replaces_raw);
         assert_eq!(prepared.layout, TensorLayoutTag::DepthwiseConvSqueezed);
         assert_eq!(prepared.shape, vec![8, 4]);
@@ -1570,9 +2203,85 @@ mod tests {
         assert!(qwen35_minimal_keeps_tensor(
             "model.language_model.layers.0.self_attn.q_proj.weight"
         ));
-        assert!(qwen35_minimal_keeps_tensor("model.language_model.embed_tokens.weight"));
+        assert!(qwen35_minimal_keeps_tensor(
+            "model.language_model.embed_tokens.weight"
+        ));
         assert!(qwen35_minimal_keeps_tensor("lm_head.weight"));
-        assert!(!qwen35_minimal_keeps_tensor("model.visual.patch_embed.proj.weight"));
+        assert!(!qwen35_minimal_keeps_tensor(
+            "model.visual.patch_embed.proj.weight"
+        ));
         assert!(!qwen35_minimal_keeps_tensor("mtp.layers.0.weight"));
+    }
+
+    #[test]
+    fn qwen35_direct_profile_prefers_rdna35_for_gfx115() {
+        let target = TargetSpec {
+            backend: BackendKind::Hip,
+            family: "gfx1151".to_string(),
+        };
+        assert_eq!(
+            PreparedPackageProfile::qwen35_hip_direct_for_target(&target),
+            Some(PreparedPackageProfile::HipDirectRdna35V1)
+        );
+    }
+
+    #[test]
+    fn qwen35_direct_metadata_normalizes_default_layer_schedule() {
+        let config = Qwen35MinimalPackageConfig {
+            text_config: Qwen35MinimalPackageTextConfig {
+                vocab_size: 151_936,
+                hidden_size: 1024,
+                num_attention_heads: 8,
+                num_key_value_heads: 2,
+                num_hidden_layers: 24,
+                max_position_embeddings: 32_768,
+                head_dim: 128,
+                linear_conv_kernel_dim: 4,
+                linear_key_head_dim: 64,
+                linear_value_head_dim: 128,
+                linear_num_key_heads: 4,
+                linear_num_value_heads: 8,
+                layer_types: Vec::new(),
+            },
+        };
+        let metadata =
+            maybe_qwen35_direct_metadata(&config, PreparedPackageProfile::HipDirectGfx11V1)
+                .expect("direct metadata should exist");
+        assert_eq!(metadata.layers.len(), 24);
+        assert_eq!(metadata.activation_dtype, PreparedDType::BF16);
+        assert_eq!(metadata.linear_attention_layer_ids.len(), 18);
+        assert_eq!(metadata.full_attention_layer_ids.len(), 6);
+        assert_eq!(metadata.decode_phases.len(), 12);
+        assert_eq!(metadata.decode_phases[0].layer_type, "linear_attention");
+        assert_eq!(metadata.decode_phases[0].start_layer_idx, 0);
+        assert_eq!(metadata.decode_phases[0].end_layer_idx, 3);
+        assert_eq!(metadata.global_tensors.len(), 3);
+        assert_eq!(metadata.global_tensors[0].tensor_name, "model.language_model.embed_tokens.weight");
+        assert_eq!(metadata.layer_bindings.len(), 24);
+        assert_eq!(metadata.layer_bindings[0].layer_type, "linear_attention");
+        assert!(metadata.layer_bindings[0]
+            .tensors
+            .iter()
+            .any(|entry| entry.tensor_name.ends_with("token_mixer.in_proj_qkv.weight")));
+        assert_eq!(metadata.layer_bindings[3].layer_type, "full_attention");
+        assert!(metadata.layer_bindings[3]
+            .tensors
+            .iter()
+            .any(|entry| entry.tensor_name.ends_with("token_mixer.q_proj.weight")));
+        assert_eq!(metadata.workspace.len(), 11);
+        assert_eq!(metadata.workspace[0].name, "decode_hidden_ping");
+        assert_eq!(metadata.workspace[3].name, "full_attention_gate");
+        assert_eq!(metadata.workspace[4].name, "full_attention_qkv");
+        assert_eq!(metadata.workspace[5].name, "full_attention_key");
+        assert_eq!(metadata.workspace[6].name, "full_attention_value");
+        assert_eq!(metadata.workspace[7].name, "linear_mixed_qkv");
+        assert_eq!(metadata.workspace[8].name, "linear_z");
+        assert_eq!(metadata.workspace[9].name, "linear_beta_raw");
+        assert_eq!(metadata.workspace[10].name, "linear_a");
+        assert_eq!(metadata.state_layouts.len(), 48);
+        assert_eq!(
+            metadata.full_attention_layer_ids,
+            vec![3, 7, 11, 15, 19, 23]
+        );
     }
 }

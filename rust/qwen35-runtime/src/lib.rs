@@ -10,8 +10,8 @@ use std::fmt::{Display, Formatter};
 
 pub use dotcache_model_store::{
     adapters::candle::CandleWeightProvider, ImmutableWeightHandle, PreparedDType,
-    PreparedPackageSummary, PreparedTensorEncoding, PreparedTensorEntry, WeightLoadStats,
-    WeightProvider, WeightView,
+    PreparedPackageProfile, PreparedPackageSummary, PreparedQwen35DirectMetadata,
+    PreparedTensorEncoding, PreparedTensorEntry, WeightLoadStats, WeightProvider, WeightView,
 };
 pub use dotcache_runtime_core::{
     backend_kind_for_device, BackendKind, BufferMutability, BufferViewDesc, ImmutableBufferView,
@@ -22,13 +22,15 @@ pub use dotcache_runtime_core::{
 pub use hf::{HfHubModelSource, HfModelArtifacts, HfModelWeightIndex};
 #[cfg(feature = "qwen35-minimal")]
 pub use qwen35_minimal_impl::{
-    MinimalQwen35Config, MinimalQwen35KvCache, MinimalQwen35LinearAttentionBenchResult,
+    MinimalQwen35Config, MinimalQwen35DirectRuntime, MinimalQwen35DirectRuntimeProfile,
+    MinimalQwen35DecoderLayerTrace, MinimalQwen35KvCache, MinimalQwen35LinearAttentionBenchResult,
     MinimalQwen35LinearAttentionLayerSpec, MinimalQwen35LinearAttentionTrace,
-    MinimalQwen35LoadMode, MinimalQwen35LoadTrace, MinimalQwen35NativeCacheState,
+    MinimalQwen35LoadMode, MinimalQwen35LoadTrace, MinimalQwen35MlpTrace,
+    MinimalQwen35NativeCacheState,
     MinimalQwen35NativeFullAttentionCacheState, MinimalQwen35NativeLayerCacheState,
-    MinimalQwen35NativeLinearAttentionCacheState, MinimalQwen35Runner, MinimalQwen35StateBuffer,
-    MinimalQwen35Weights,
-    MinimalQwen35TextConfig, ModelForCausalLM,
+    MinimalQwen35NativeLinearAttentionCacheState, MinimalQwen35Runner,
+    MinimalQwen35RuntimeProfile, MinimalQwen35StateBuffer, MinimalQwen35TextConfig,
+    MinimalQwen35Weights, DecodeLayerDesc, ModelForCausalLM,
 };
 #[cfg(feature = "qwen35-minimal")]
 pub type Qwen35Runtime = MinimalQwen35Runner;
@@ -112,9 +114,9 @@ impl From<hf_hub::api::sync::ApiError> for RuntimeError {
 pub mod model_package {
     pub use dotcache_model_store::{
         BackendKind, CandleWeightProvider, ImmutableWeightHandle, ModelFamilyConverter,
-        ModelStoreError, PackageKey, PreparedDType, PreparedPackageSummary,
-        PreparedTensorEncoding, PreparedTensorEntry, TargetSpec, WeightLoadStats, WeightProvider,
-        WeightView,
+        ModelPackageProfile, ModelStoreError, PackageKey, PreparedDType, PreparedPackageProfile,
+        PreparedPackageSummary, PreparedQwen35DirectMetadata, PreparedTensorEncoding,
+        PreparedTensorEntry, TargetSpec, WeightLoadStats, WeightProvider, WeightView,
     };
     pub use dotcache_model_store::{
         ModelTarget, PreparedModelManifest as ModelManifest, PreparedModelPackage as ModelPackage,

@@ -276,24 +276,6 @@ pub mod ffi {
             out: *mut c_void,
         ) -> c_int;
 
-        pub fn dotcache_qwen35_hip_linear_stateful_conv_value_decay(
-            dtype: c_int,
-            device_ordinal: usize,
-            batch_size: usize,
-            conv_dim: usize,
-            seq_len: usize,
-            state_len: usize,
-            kernel_size: usize,
-            num_heads: usize,
-            mixed_qkv: *const c_void,
-            prev_state: *const c_void,
-            weights: *const c_void,
-            a: *const c_void,
-            dt_bias: *const c_void,
-            a_log_exp: *const c_void,
-            out: *mut c_void,
-        ) -> c_int;
-
         pub fn dotcache_qwen35_hip_linear_stateful_conv_value_decay_with_state(
             dtype: c_int,
             device_ordinal: usize,
@@ -571,6 +553,78 @@ pub mod ffi {
             hidden: *const c_void,
             gate: *const c_void,
             weight: *const c_void,
+            out: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_persistent_decode(
+            dtype: c_int,
+            device_ordinal: usize,
+            num_layers: usize,
+            hidden_dim: usize,
+            intermediate_size: usize,
+            seqlen_offset: usize,
+            layers: *const c_void,           // Qwen35DecodeLayerDesc* on device
+            hidden_io: *mut c_void,          // [hidden_dim] BF16 in/out
+            workspace: *mut c_void,          // F32 scratch workspace
+            counters: *mut c_void,           // [4] atomic counters
+            barrier_counter: *mut c_void,    // atomic barrier counter
+            barrier_flag: *mut c_void,       // atomic barrier flag
+            cos_table: *const c_void,        // [max_pos, rotary_dim/2] BF16 RoPE cos
+            sin_table: *const c_void,        // [max_pos, rotary_dim/2] BF16 RoPE sin
+            rotary_dim: usize,               // partial rotary dimension
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_standalone_matvec(
+            dtype: c_int,
+            device_ordinal: usize,
+            in_dim: usize,
+            out_dim: usize,
+            input: *const c_void,       // [in_dim] BF16
+            weight: *const c_void,      // [out_dim, in_dim] BF16
+            output: *mut c_void,        // [out_dim] BF16
+            row_counter: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_norm_multi_proj(
+            dtype: c_int,
+            device_ordinal: usize,
+            hidden_dim: usize,
+            total_rows: usize,
+            norm_eps: f32,
+            hidden_in: *const c_void,
+            norm_weight: *const c_void,
+            proj_table: *const c_void,       // Qwen35ProjectionDesc* on device
+            num_projections: usize,
+            output: *mut c_void,             // F32 output [total_rows]
+            row_counter: *mut c_void,
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_mlp_decode_megakernel(
+            dtype: c_int,
+            device_ordinal: usize,
+            hidden_dim: usize,
+            intermediate_size: usize,
+            norm_eps: f32,
+            hidden_in: *const c_void,
+            norm_weight: *const c_void,
+            gate_proj_w: *const c_void,
+            up_proj_w: *const c_void,
+            down_proj_w: *const c_void,
+            gate_up_scratch: *mut c_void,   // F32 scratch [intermediate_size * 2]
+            hidden_out: *mut c_void,
+            row_counter: *mut c_void,       // atomic counter (single uint)
+        ) -> c_int;
+
+        pub fn dotcache_qwen35_hip_fused_rms_norm_linear(
+            dtype: c_int,
+            device_ordinal: usize,
+            hidden_dim: usize,
+            out_dim: usize,
+            eps: f32,
+            add_unit_offset: c_int,
+            hidden: *const c_void,
+            norm_weight: *const c_void,
+            proj_weight: *const c_void,
             out: *mut c_void,
         ) -> c_int;
 

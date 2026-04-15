@@ -282,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .collect::<Vec<_>>();
         let input_ids = candle_core::Tensor::new(ids, &Device::Cpu)?.reshape((1, encoded.len()))?;
         let prefill_started = Instant::now();
-        let hidden_states = runner.hidden_states_from_input_ids(&input_ids)?;
+        let hidden_states = runner.hidden_states_from_input_ids_direct(&input_ids)?;
         let _ = runner.prefill_from_hidden_states(&hidden_states)?;
         Some(prefill_started.elapsed().as_secs_f64() * 1000.0)
     };

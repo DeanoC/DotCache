@@ -118,9 +118,6 @@ pub(crate) enum HipNativeExpr {
     Exp {
         source: Arc<HipNativeBuffer>,
     },
-    Log {
-        source: Arc<HipNativeBuffer>,
-    },
     BroadcastAdd {
         lhs: Arc<HipNativeBuffer>,
         rhs: Arc<HipNativeBuffer>,
@@ -157,9 +154,6 @@ pub(crate) enum HipNativeExpr {
         value: f64,
     },
     Recip {
-        source: Arc<HipNativeBuffer>,
-    },
-    Sqrt {
         source: Arc<HipNativeBuffer>,
     },
     L2Norm {
@@ -3532,10 +3526,6 @@ impl HipNativeBuffer {
                 .try_materialize_device_buffer()?
                 .map(|buffer| buffer.exp())
                 .transpose(),
-            HipNativeExpr::Log { source } => source
-                .try_materialize_device_buffer()?
-                .map(|buffer| buffer.log())
-                .transpose(),
             HipNativeExpr::BroadcastAdd { lhs, rhs } => {
                 let (Some(lhs), Some(rhs)) = (
                     lhs.try_materialize_device_buffer()?,
@@ -3596,10 +3586,6 @@ impl HipNativeBuffer {
                 .try_materialize_device_buffer()?
                 .map(|buffer| buffer.recip())
                 .transpose(),
-            HipNativeExpr::Sqrt { source } => source
-                .try_materialize_device_buffer()?
-                .map(|buffer| buffer.sqrt())
-                .transpose(),
             HipNativeExpr::L2Norm { source, eps } => source
                 .try_materialize_device_buffer()?
                 .map(|buffer| buffer.l2norm(*eps))
@@ -3619,14 +3605,12 @@ impl HipNativeBuffer {
             | HipNativeExpr::Transpose { source, .. }
             | HipNativeExpr::Cast { source, .. }
             | HipNativeExpr::Exp { source }
-            | HipNativeExpr::Log { source }
             | HipNativeExpr::MaxKeepdim { source, .. }
             | HipNativeExpr::SumKeepdim { source, .. }
             | HipNativeExpr::Neg { source }
             | HipNativeExpr::AddScalar { source, .. }
             | HipNativeExpr::MulScalar { source, .. }
             | HipNativeExpr::Recip { source }
-            | HipNativeExpr::Sqrt { source }
             | HipNativeExpr::L2Norm { source, .. } => source.is_host_graph(),
             HipNativeExpr::Concat { sources, .. } => sources.iter().all(|s| s.is_host_graph()),
             HipNativeExpr::BroadcastAdd { lhs, rhs }
@@ -4385,17 +4369,6 @@ impl HipNativeBuffer {
         }
     }
 
-    pub(crate) fn log(source: Arc<HipNativeBuffer>) -> Self {
-        Self {
-            expr: HipNativeExpr::Log {
-                source: source.clone(),
-            },
-            shape: source.shape.clone(),
-            dtype: source.dtype,
-            device: source.device.clone(),
-        }
-    }
-
     fn broadcast_shape(lhs: &[usize], rhs: &[usize], op: &'static str) -> Result<Vec<usize>> {
         Ok(Shape::from(lhs.to_vec())
             .broadcast_shape_binary_op(&Shape::from(rhs.to_vec()), op)?
@@ -4516,17 +4489,6 @@ impl HipNativeBuffer {
     pub(crate) fn recip(source: Arc<HipNativeBuffer>) -> Self {
         Self {
             expr: HipNativeExpr::Recip {
-                source: source.clone(),
-            },
-            shape: source.shape.clone(),
-            dtype: source.dtype,
-            device: source.device.clone(),
-        }
-    }
-
-    pub(crate) fn sqrt(source: Arc<HipNativeBuffer>) -> Self {
-        Self {
-            expr: HipNativeExpr::Sqrt {
                 source: source.clone(),
             },
             shape: source.shape.clone(),
@@ -4657,13 +4619,6 @@ impl HipNativeBuffer {
                     source.materialize()?.exp()
                 }
             }
-            HipNativeExpr::Log { source } => {
-                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
-                    Ok(buffer.log()?.into_tensor())
-                } else {
-                    source.materialize()?.log()
-                }
-            }
             HipNativeExpr::BroadcastAdd { lhs, rhs } => {
                 if let (HipNativeExpr::DeviceBuffer(lhs), HipNativeExpr::DeviceBuffer(rhs)) =
                     (&lhs.expr, &rhs.expr)
@@ -4734,13 +4689,6 @@ impl HipNativeBuffer {
                     Ok(buffer.recip()?.into_tensor())
                 } else {
                     source.materialize()?.recip()
-                }
-            }
-            HipNativeExpr::Sqrt { source } => {
-                if let HipNativeExpr::DeviceBuffer(buffer) = &source.expr {
-                    Ok(buffer.sqrt()?.into_tensor())
-                } else {
-                    source.materialize()?.sqrt()
                 }
             }
             HipNativeExpr::L2Norm { source, eps } => {
@@ -4981,15 +4929,6 @@ impl HipStorage {
         ))))
     }
 
-    pub(crate) fn log(&self) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
-            return Ok(Self::from_device_buffer(buffer.log()?));
-        }
-        Ok(Self::from_native_buffer(HipNativeBuffer::log(Arc::new(
-            self.0.clone(),
-        ))))
-    }
-
     pub(crate) fn max_keepdim(&self, dim: candle_core::D) -> Result<Self> {
         let dim_index = dim.to_index(&Shape::from(self.shape()), "hip-native-max-keepdim")?;
         if let Some(buffer) = self.0.direct_materialized_device_buffer() {
@@ -5043,15 +4982,6 @@ impl HipStorage {
             return Ok(Self::from_device_buffer(buffer.recip()?));
         }
         Ok(Self::from_native_buffer(HipNativeBuffer::recip(Arc::new(
-            self.0.clone(),
-        ))))
-    }
-
-    pub(crate) fn sqrt(&self) -> Result<Self> {
-        if let Some(buffer) = self.0.direct_materialized_device_buffer() {
-            return Ok(Self::from_device_buffer(buffer.sqrt()?));
-        }
-        Ok(Self::from_native_buffer(HipNativeBuffer::sqrt(Arc::new(
             self.0.clone(),
         ))))
     }
@@ -5140,15 +5070,6 @@ impl HipStorage {
 pub(crate) struct HipTensor(pub(crate) HipStorage);
 
 impl HipTensor {
-    pub(crate) fn from_host_buffer(buffer: HipHostBuffer) -> Self {
-        Self(HipStorage::from_native_buffer(HipNativeBuffer {
-            expr: HipNativeExpr::HostBytes { bytes: buffer.bytes },
-            shape: buffer.shape,
-            dtype: buffer.dtype,
-            device: buffer.device,
-        }))
-    }
-
     pub(crate) fn from_device_buffer(buffer: HipDeviceBuffer) -> Self {
         Self(HipStorage::from_device_buffer(buffer))
     }
@@ -5244,10 +5165,6 @@ impl HipTensor {
         Ok(Self(self.0.exp()?))
     }
 
-    pub(crate) fn log(&self) -> Result<Self> {
-        Ok(Self(self.0.log()?))
-    }
-
     pub(crate) fn max_keepdim(&self, dim: candle_core::D) -> Result<Self> {
         Ok(Self(self.0.max_keepdim(dim)?))
     }
@@ -5267,10 +5184,6 @@ impl HipTensor {
     #[cfg(test)]
     pub(crate) fn recip(&self) -> Result<Self> {
         Ok(Self(self.0.recip()?))
-    }
-
-    pub(crate) fn sqrt(&self) -> Result<Self> {
-        Ok(Self(self.0.sqrt()?))
     }
 
     pub(crate) fn l2norm(&self, eps: f64) -> Result<Self> {
@@ -5893,10 +5806,36 @@ pub(crate) fn unpack_chunk_fused(
     ))
 }
 
+/// Check if the matmul should use F32 precision to avoid BF16 GEMM rounding.
+/// Applied only for single-token decode steps (memory-bound, so F32 is free).
+/// This eliminates measurable BF16 rocBLAS vs hipblasLt rounding differences
+/// that otherwise accumulate across decoder layers.
+fn should_use_f32_matmul(x: &Tensor) -> bool {
+    let total_tokens = match *x.dims() {
+        [b1, b2, m, _] => b1 * b2 * m,
+        [bsize, m, _] => bsize * m,
+        _ => return false,
+    };
+    total_tokens == 1
+}
+
 fn linear_forward_matmul(
     x: &Tensor,
     weight: &Tensor,
 ) -> Result<Tensor> {
+    // For single-token decode, upcast to F32 to avoid BF16 GEMM rounding differences.
+    // This is essentially free for decode (memory-bound, not compute-bound).
+    let (x, weight, need_downcast) =
+        if should_use_f32_matmul(x) && x.dtype() != candle_core::DType::F32 {
+            let original_dtype = x.dtype();
+            (
+                x.to_dtype(candle_core::DType::F32)?,
+                weight.to_dtype(candle_core::DType::F32)?,
+                Some(original_dtype),
+            )
+        } else {
+            (x.clone(), weight.clone(), None)
+        };
     let projected = match *x.dims() {
         [b1, b2, m, k] => {
             if x.is_contiguous() {
@@ -5925,7 +5864,10 @@ fn linear_forward_matmul(
             x.matmul(&w)?
         }
     };
-    Ok(projected)
+    match need_downcast {
+        Some(dtype) => projected.to_dtype(dtype),
+        None => Ok(projected),
+    }
 }
 
 fn linear_forward_hip(
@@ -12912,7 +12854,7 @@ fn prepare_full_attention_inputs_tensors_hip(
         let q_and_gate = q_and_gate.reshape(vec![b_sz, q_len, num_heads, head_dim * 2])?;
         let last_dim = q_and_gate.dims().len() - 1;
         let query_states = rms_norm_hip(
-            &HipTensor::from_device_buffer(q_and_gate.narrow(last_dim, 0, head_dim)?),
+            &HipTensor::from_device_buffer(q_and_gate.narrow(last_dim, 0, head_dim)?.contiguous()?),
             q_norm_weight,
             q_norm_eps,
             true,
@@ -12944,7 +12886,9 @@ fn prepare_full_attention_inputs_tensors_hip(
         head_dim * 2,
     ))?;
     let query_states = rms_norm_hip(
-        &q_and_gate.narrow(candle_core::D::Minus1, 0, head_dim)?,
+        &q_and_gate
+            .narrow(candle_core::D::Minus1, 0, head_dim)?
+            .contiguous()?,
         q_norm_weight,
         q_norm_eps,
         true,
@@ -13035,6 +12979,46 @@ pub(crate) fn prepare_full_attention_inputs(
         key_states.into_state_buffer()?,
         value_states.into_state_buffer()?,
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_full_attention_inputs_into_scratch(
+    q_and_gate: &StateBuffer,
+    k_proj: &StateBuffer,
+    v_proj: &StateBuffer,
+    gate_scratch: &StateBuffer,
+    query_scratch: &StateBuffer,
+    key_scratch: &StateBuffer,
+    value_scratch: &StateBuffer,
+    b_sz: usize,
+    q_len: usize,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    q_norm_weight: &Tensor,
+    q_norm_eps: f64,
+    k_norm_weight: &Tensor,
+    k_norm_eps: f64,
+) -> Result<(StateBuffer, StateBuffer, StateBuffer, StateBuffer)> {
+    let (query_states, gate, key_states, value_states) = prepare_full_attention_inputs_hip(
+        q_and_gate,
+        k_proj,
+        v_proj,
+        b_sz,
+        q_len,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        q_norm_weight,
+        q_norm_eps,
+        k_norm_weight,
+        k_norm_eps,
+    )?;
+    let query_states = copy_state_into_scratch(&query_states.into_state_buffer()?, query_scratch)?;
+    let gate = copy_state_into_scratch(&gate.into_state_buffer()?, gate_scratch)?;
+    let key_states = copy_state_into_scratch(&key_states.into_state_buffer()?, key_scratch)?;
+    let value_states = copy_state_into_scratch(&value_states.into_state_buffer()?, value_scratch)?;
+    Ok((query_states, gate, key_states, value_states))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -13485,38 +13469,6 @@ pub(crate) fn prepare_linear_attention_inputs(
     ))
 }
 
-fn wrap_kv_cache_hip(
-    key_states: Tensor,
-    value_states: Tensor,
-) -> Result<(HipTensor, HipTensor)> {
-    let key_states = HipTensor::from_scaffold_tensor(key_states);
-    let value_states = HipTensor::from_scaffold_tensor(value_states);
-    if let (Some(key_device), Some(value_device)) = (
-        key_states.0 .0.direct_device_buffer(),
-        value_states.0 .0.direct_device_buffer(),
-    ) {
-        return Ok((
-            HipTensor::from_device_buffer(key_device.clone()),
-            HipTensor::from_device_buffer(value_device.clone()),
-        ));
-    }
-    Ok((
-        key_states,
-        value_states,
-    ))
-}
-
-pub(crate) fn wrap_kv_cache(
-    key_states: Tensor,
-    value_states: Tensor,
-) -> Result<(StateBuffer, StateBuffer)> {
-    let (key_states, value_states) = wrap_kv_cache_hip(key_states, value_states)?;
-    Ok((
-        key_states.into_state_buffer()?,
-        value_states.into_state_buffer()?,
-    ))
-}
-
 fn prepare_full_attention_output_hip(
     attn_output_hip: &HipTensor,
     gate_hip: &HipTensor,
@@ -13739,6 +13691,42 @@ pub(crate) fn prepare_full_attention_kernel_inputs_with_buffer_kv(
     ))
 }
 
+pub(crate) fn prepare_full_attention_kernel_input_buffers_with_buffer_kv(
+    query_states: &StateBuffer,
+    key_states: &StateBuffer,
+    value_states: &StateBuffer,
+) -> Result<(StateBuffer, StateBuffer, StateBuffer)> {
+    let query_states = HipTensor::from_state_buffer(query_states);
+    let key_states = HipTensor::from_state_buffer(key_states);
+    let value_states = HipTensor::from_state_buffer(value_states);
+    let (query_states, key_states, value_states) = if let (
+        Some(query_device),
+        Some(key_device),
+        Some(value_device),
+    ) = (
+        query_states.0 .0.direct_materialized_device_buffer(),
+        key_states.0 .0.direct_materialized_device_buffer(),
+        value_states.0 .0.direct_materialized_device_buffer(),
+    ) {
+        (
+            HipTensor::from_device_buffer(query_device.contiguous()?),
+            HipTensor::from_device_buffer(key_device.contiguous()?),
+            HipTensor::from_device_buffer(value_device.contiguous()?),
+        )
+    } else {
+        (
+            query_states.contiguous()?,
+            key_states.contiguous()?,
+            value_states.contiguous()?,
+        )
+    };
+    Ok((
+        query_states.into_state_buffer()?,
+        key_states.into_state_buffer()?,
+        value_states.into_state_buffer()?,
+    ))
+}
+
 pub(crate) fn rope_buffer(xs: &StateBuffer, cos: &Tensor, sin: &Tensor) -> Result<StateBuffer> {
     rope_hip(&HipTensor::from_state_buffer(xs), cos, sin)?.into_state_buffer()
 }
@@ -13944,6 +13932,51 @@ pub(crate) fn zeros(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<H
 
 pub(crate) fn zeros_state(dims: Vec<usize>, dtype: DType, device: &Device) -> Result<StateBuffer> {
     zeros(dims, dtype, device)?.into_state_buffer()
+}
+
+pub(crate) fn copy_state_into_scratch(
+    src: &StateBuffer,
+    scratch: &StateBuffer,
+) -> Result<StateBuffer> {
+    if src.dtype() != scratch.dtype() {
+        candle_core::bail!(
+            "HIP scratch dtype mismatch: src={:?} scratch={:?}",
+            src.dtype(),
+            scratch.dtype(),
+        );
+    }
+    if src.tensor().dims() != scratch.tensor().dims() {
+        candle_core::bail!(
+            "HIP scratch shape mismatch: src={:?} scratch={:?}",
+            src.tensor().dims(),
+            scratch.tensor().dims(),
+        );
+    }
+    let src_hip = HipTensor::from_state_buffer(src);
+    let scratch_hip = HipTensor::from_state_buffer(scratch);
+    if let (Some(src_buffer), Some(dst_buffer)) = (
+        src_hip.0 .0.direct_materialized_device_buffer(),
+        scratch_hip.0 .0.direct_materialized_device_buffer(),
+    ) {
+        if let (
+            Some((src_ordinal, src_dtype, src_shape, src_ptr)),
+            Some((dst_ordinal, dst_dtype, dst_shape, dst_ptr)),
+        ) = (
+            src_buffer.standard_contiguous_launch_spec()?,
+            dst_buffer.standard_contiguous_launch_spec()?,
+        ) {
+            if src_ordinal == dst_ordinal && src_dtype == dst_dtype && src_shape == dst_shape {
+                hip::copy_device_to_device(
+                    dst_ordinal,
+                    dst_ptr as *mut c_void,
+                    src_ptr,
+                    HipNativeBuffer::byte_len(&src_shape, src_dtype),
+                )?;
+                return scratch_hip.into_state_buffer();
+            }
+        }
+    }
+    Ok(src.clone())
 }
 
 #[cfg(test)]
@@ -16764,10 +16797,6 @@ fn rope_hip(xs: &HipTensor, cos: &Tensor, sin: &Tensor) -> Result<HipTensor> {
     let y1 = x0.broadcast_mul(&sin)?.broadcast_add(&x1.broadcast_mul(&cos)?)?;
     HipTensor::cat(&[&y0, &y1], y0.rank() - 1)?
         .reshape((b_sz, n_head, seq_len, n_embd))
-}
-
-pub(crate) fn rope(xs: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
-    rope_hip(&HipTensor::from_scaffold_tensor(xs.clone()), cos, sin).map(|t| t.into_tensor())
 }
 
 pub(crate) fn linear_prefill_conv(
