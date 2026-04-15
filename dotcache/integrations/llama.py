@@ -15,6 +15,26 @@ from ..page_cache import PreparedPageCache
 from ..page_oracle import PageTraceRecord, save_page_trace
 from ..tracing import ExecutionTrace
 
+# Certified attention imports (lazy — only needed when mode == "certified")
+_certified_attention_imported = False
+certified_attention_layer = None
+TieredKeyCacheLayer = None
+create_tiered_cache_from_model = None
+
+
+def _ensure_certified_imports():
+    global _certified_attention_imported, certified_attention_layer
+    global TieredKeyCacheLayer, create_tiered_cache_from_model
+    if _certified_attention_imported:
+        return
+    from ..kernels.certified_attention import certified_attention_layer as _cal
+    from ..kernels.tiered_kv_cache import TieredKeyCacheLayer as _tkcl
+    from ..kernels.tiered_kv_cache import create_tiered_cache_from_model as _ctcfm
+    certified_attention_layer = _cal
+    TieredKeyCacheLayer = _tkcl
+    create_tiered_cache_from_model = _ctcfm
+    _certified_attention_imported = True
+
 
 def transformers_available() -> bool:
     try:
@@ -41,7 +61,7 @@ else:  # pragma: no cover - exercised in environments without transformers
     AutoTokenizer = None
 
 
-AttentionMode = Literal["dense", "dotcache"]
+AttentionMode = Literal["dense", "dotcache", "certified"]
 
 
 @dataclass(slots=True)
@@ -56,6 +76,41 @@ class LlamaReplayRecord:
     output_states: np.ndarray
     cache_source_layer_id: int | None = None
     gate_states: np.ndarray | None = None
+
+
+@dataclass
+class CertifiedAttentionState:
+    """Runtime state for certified attention mode."""
+    tiered_caches: dict  # layer_id → TieredKeyCacheLayer
+    layer_epsilons: dict[int, float]  # per-layer epsilon overrides
+    default_epsilon: float = 1e-4
+    block_size: int = 16
+    collect_stats: bool = True  # set False during timed runs to avoid GPU syncs
+    step_stats: list = None  # per-step stats accumulator
+
+    def __post_init__(self):
+        if self.step_stats is None:
+            self.step_stats = []
+
+    def clear_step_stats(self) -> list[dict]:
+        stats = self.step_stats
+        self.step_stats = []
+        return stats
+
+    def aggregate_step_stats(self) -> dict:
+        """Aggregate stats across all layers for the current step."""
+        if not self.step_stats:
+            return {"skip_rate": 0.0, "total_blocks": 0, "skipped_blocks": 0}
+        total = sum(s["total_blocks"] for s in self.step_stats)
+        skipped = sum(s["skipped_blocks"] for s in self.step_stats)
+        return {
+            "skip_rate": skipped / total if total > 0 else 0.0,
+            "total_blocks": total,
+            "skipped_blocks": skipped,
+            "per_layer_skip_rate": {
+                s["layer"]: s["skip_rate"] for s in self.step_stats
+            },
+        }
 
 
 @dataclass(slots=True)
@@ -345,6 +400,12 @@ class DotCacheLlamaAttention(nn.Module):
                 cache_position=cache_position,
                 **kwargs,
             )
+        if self.adapter.mode == "certified":
+            return self._forward_certified(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                cache_position=cache_position,
+            )
         return self._forward_dotcache(
             hidden_states,
             position_embeddings=position_embeddings,
@@ -368,6 +429,64 @@ class DotCacheLlamaAttention(nn.Module):
         value_states = self.base_attention.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         cos, sin = position_embeddings
         return llama_mod.apply_rotary_pos_emb(query_states, key_states, cos, sin), value_states
+
+    def _project_q_only(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
+    ) -> torch.Tensor:
+        """Project only Q (skip K/V projection since KV is in tiered cache)."""
+        if position_embeddings is None:
+            raise ValueError("position_embeddings are required for the Llama attention path")
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.base_attention.head_dim)
+        query_states = self.base_attention.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        # Apply RoPE to Q only (K doesn't need it — already applied during prefill)
+        cos, sin = position_embeddings
+        # RoPE: apply_rotary_pos_emb returns (q_rotated, k_rotated) — we only need q
+        query_states = llama_mod.apply_rotary_pos_emb(query_states, query_states, cos, sin)[0]
+        return query_states
+
+    def _forward_certified(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        cache_position: torch.LongTensor | None = None,
+    ) -> tuple[torch.Tensor, None]:
+        """Certified attention: fused INT8 scoring + selective attend via Triton kernels."""
+        if tuple(hidden_states.shape[:2]) != (1, 1):
+            raise ValueError("Certified decode mode only supports batch=1 and query_len=1")
+
+        cert_state = self.adapter.certified_state
+        cache = cert_state.tiered_caches.get(self.layer_idx)
+        if cache is None:
+            raise ValueError(f"No tiered cache for layer {self.layer_idx}")
+
+        # Project Q only (K/V already in tiered cache)
+        query_states = self._project_q_only(hidden_states, position_embeddings)
+        # query_states: [1, num_q_heads, 1, head_dim]
+        q_all = query_states[0, :, 0, :].to(torch.float32)  # [num_q, head_dim]
+
+        # Certified attention: Phase 1 (INT8 score+certify) + Phase 2 (selective attend)
+        epsilon = cert_state.layer_epsilons.get(self.layer_idx, cert_state.default_epsilon)
+        gqa_group = self.config.num_attention_heads // self.config.num_key_value_heads
+        q_scale = float(self.base_attention.scaling)
+
+        collect = cert_state.collect_stats
+        context_states, stats = certified_attention_layer(
+            cache, q_all, gqa_group, q_scale, block_epsilon=epsilon,
+            collect_stats=collect,
+        )
+
+        # Accumulate stats (only if collection enabled)
+        if collect and stats:
+            cert_state.step_stats.append({"layer": self.layer_idx, **stats})
+
+        # Output projection
+        context_tensor = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
+        projected_output = self.base_attention.o_proj(context_tensor.reshape(1, 1, -1).contiguous())
+
+        return projected_output, None
 
     def _forward_dense_with_capture(
         self,
@@ -551,6 +670,7 @@ class LlamaDotCacheModelAdapter:
         self.output_projection_ms_total = 0.0
         self.layer_runtime_profiles = [LlamaLayerRuntimeProfile(layer_id=layer_id) for layer_id in range(model.config.num_hidden_layers)]
         self._current_token_index_override: int | None = None
+        self.certified_state: CertifiedAttentionState | None = None
         self._install_wrappers()
 
     @property
@@ -564,7 +684,40 @@ class LlamaDotCacheModelAdapter:
             self._wrappers.append(wrapper)
 
     def set_mode(self, mode: AttentionMode) -> None:
+        if mode == "certified" and self.certified_state is None:
+            raise ValueError("Must call load_certified_cache() before setting mode to 'certified'")
         self.mode = mode
+
+    def load_certified_cache(
+        self,
+        past_key_values,
+        *,
+        layer_epsilons: dict[int, float] | None = None,
+        default_epsilon: float = 1e-4,
+        block_size: int = 16,
+    ) -> None:
+        """Build tiered caches from prefill KV and prepare for certified decode.
+
+        Args:
+            past_key_values: HF DynamicCache from prefill
+            layer_epsilons: per-layer epsilon overrides (e.g. {0: 1e-3, 31: 1e-5})
+            default_epsilon: fallback epsilon for layers not in layer_epsilons
+            block_size: tokens per block for INT8 quantisation
+        """
+        _ensure_certified_imports()
+        layer_ids = list(range(self.model.config.num_hidden_layers))
+        tiered_caches = create_tiered_cache_from_model(
+            past_key_values, layer_ids, block_size=block_size,
+        )
+        # Pre-compute dequantised keys and float32 values to avoid per-call allocation
+        for cache in tiered_caches.values():
+            cache.precompute_dequant()
+        self.certified_state = CertifiedAttentionState(
+            tiered_caches=tiered_caches,
+            layer_epsilons=layer_epsilons or {},
+            default_epsilon=default_epsilon,
+            block_size=block_size,
+        )
 
     def set_capture(self, enabled: bool) -> None:
         self.capture_enabled = bool(enabled)
@@ -606,6 +759,7 @@ class LlamaDotCacheModelAdapter:
         self.capture_step_index = -1
         self.active_trace = None
         self._current_token_index_override = None
+        self.certified_state = None
         self.reset_runtime_metrics()
 
     def reconfigure(self, dotcache_config: DotCacheConfig, *, backend: str | None = None) -> None:

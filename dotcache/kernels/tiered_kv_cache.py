@@ -42,6 +42,10 @@ class TieredKeyCacheLayer:
     # Pre-allocated VRAM buffer for page-in (avoid allocation on critical path)
     _pagein_buffer: torch.Tensor | None = None  # [max_pagein_blocks * block_size, head_dim] fp16 cuda
 
+    # Pre-computed dequantised keys and float32 values (avoid per-call allocation)
+    _keys_deq_f32: torch.Tensor | None = None   # [kv_heads, N, head_dim] float32, cuda
+    _values_f32: torch.Tensor | None = None      # [kv_heads, N, d_v] float32, cuda
+
     @classmethod
     def from_fp16_cache(
         cls,
@@ -114,6 +118,15 @@ class TieredKeyCacheLayer:
             _pagein_buffer=pagein_buffer,
         )
 
+    def precompute_dequant(self) -> None:
+        """Pre-compute dequantised keys and float32 values to avoid per-call allocation."""
+        self._keys_deq_f32 = (
+            self.keys_int8.to(torch.float32).reshape(
+                self.kv_heads, self.num_blocks, self.block_size, self.head_dim
+            ) * self.keys_scale[:, :, None, None]
+        ).reshape(self.kv_heads, self.num_tokens, self.head_dim).contiguous()
+        self._values_f32 = self.values_fp16.to(torch.float32).contiguous()
+
     def vram_bytes(self) -> int:
         """Total VRAM usage."""
         total = self.keys_int8.nelement() * 1      # INT8
@@ -122,6 +135,10 @@ class TieredKeyCacheLayer:
         total += self.values_fp16.nelement() * 2    # float16
         if self._pagein_buffer is not None:
             total += self._pagein_buffer.nelement() * 2
+        if self._keys_deq_f32 is not None:
+            total += self._keys_deq_f32.nelement() * 4
+        if self._values_f32 is not None:
+            total += self._values_f32.nelement() * 4
         return total
 
     def cpu_bytes(self) -> int:

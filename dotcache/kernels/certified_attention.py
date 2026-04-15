@@ -23,6 +23,7 @@ def certified_attention_layer(
     gqa_group: int,
     q_scale: float = None,
     block_epsilon: float = 0.001,
+    collect_stats: bool = True,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -59,15 +60,21 @@ def certified_attention_layer(
     # Since we're reading K anyway for the attend pass, using fp32 keys from
     # the INT8 dequant is fine — the error is bounded by the correction factor.
 
-    # For selective attend, we need FP16 keys. Reconstruct from INT8:
-    keys_deq = cache.keys_int8.to(torch.float32).reshape(
-        cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim
-    ) * cache.keys_scale[:, :, None, None]
-    keys_deq_flat = keys_deq.reshape(cache.kv_heads, cache.num_tokens, cache.head_dim)
+    # Use pre-computed dequant buffers if available, else compute on the fly
+    if cache._keys_deq_f32 is not None:
+        keys_deq_flat = cache._keys_deq_f32
+    else:
+        keys_deq_flat = (
+            cache.keys_int8.to(torch.float32).reshape(
+                cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim
+            ) * cache.keys_scale[:, :, None, None]
+        ).reshape(cache.kv_heads, cache.num_tokens, cache.head_dim)
+
+    values_f32 = cache._values_f32 if cache._values_f32 is not None else cache.values_fp16.to(torch.float32)
 
     output = selective_attend_multihead(
         keys_packed=keys_deq_flat,
-        values_packed=cache.values_fp16.to(torch.float32),
+        values_packed=values_f32,
         q_all=q_all,
         skip_mask_i32=skip_mask.to(torch.int32),
         gqa_group=gqa_group,
@@ -75,16 +82,18 @@ def certified_attention_layer(
         q_scale=q_scale,
     )
 
-    # Stats
-    total_blocks = num_q_heads * cache.num_blocks
-    skipped = skip_mask.sum().item()
-    stats = {
-        "total_blocks": total_blocks,
-        "skipped_blocks": int(skipped),
-        "skip_rate": float(skipped) / float(total_blocks),
-        "attended_blocks": total_blocks - int(skipped),
-        "per_head_skip": [int(skip_mask[h].sum().item()) for h in range(num_q_heads)],
-    }
+    # Stats (optional — skip_mask.sum().item() is a GPU sync point)
+    if collect_stats:
+        total_blocks = num_q_heads * cache.num_blocks
+        skipped = skip_mask.sum().item()
+        stats = {
+            "total_blocks": total_blocks,
+            "skipped_blocks": int(skipped),
+            "skip_rate": float(skipped) / float(total_blocks),
+            "attended_blocks": total_blocks - int(skipped),
+        }
+    else:
+        stats = {}
 
     return output, stats
 

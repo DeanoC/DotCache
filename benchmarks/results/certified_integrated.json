@@ -1,0 +1,36 @@
+[
+  {
+    "prompt": "hetero_8k",
+    "context": "8K",
+    "gen_steps": 32,
+    "token_match": "1/32",
+    "dense_ms": 578.8638450903818,
+    "dense_ms_per_step": 18.08949515907443,
+    "certified_ms": 936.2903910223395,
+    "certified_ms_per_step": 29.25907471944811,
+    "speedup": -0.617462204564098,
+    "skip_rate_mean": 0.5129642486572266,
+    "tiered_vram_mb": 2962.2272,
+    "tiered_cpu_mb": 536.870912,
+    "peak_vram_gb": 19.032452096,
+    "dense_text": "orch()\n    if not torch.is_tensor(values):\n        raise TypeError(\"values must ",
+    "certified_text": " noqa\n    # type:  # pragma:  # pragma:  # pragma: Any\n    # pragma:  # noqa:  #"
+  },
+  {
+    "prompt": "code_8k",
+    "context": "8K",
+    "gen_steps": 32,
+    "token_match": "2/32",
+    "dense_ms": 481.3514599809423,
+    "dense_ms_per_step": 15.042233124404447,
+    "certified_ms": 889.0870519680902,
+    "certified_ms_per_step": 27.78397037400282,
+    "speedup": -0.8470642054420922,
+    "skip_rate_mean": 0.4154473563569682,
+    "tiered_vram_mb": 2367.997952,
+    "tiered_cpu_mb": 428.867584,
+    "peak_vram_gb": 18.460921344,
+    "dense_text": " # pragma: no cover\n        if self._current_token_index_override is not None:\n ",
+    "certified_text": "_cache_position: torch_cache_position: torch_device: torch.LongTensor = self_att"
+  }
+]
