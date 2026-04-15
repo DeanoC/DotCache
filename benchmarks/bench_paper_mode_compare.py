@@ -154,6 +154,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--optional-top-k",
+        type=int,
+        default=None,
+        metavar="K",
+        help=(
+            "Override full_attention_optional_top_k for all lanes.  Controls how "
+            "many optional blocks are selected beyond mandatory sink/recent blocks. "
+            "Set to a fraction of total blocks (e.g., blocks/2) to test certified "
+            "early exit.  Default: use serving config value (128)."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -172,6 +184,7 @@ def parse_args() -> argparse.Namespace:
 
 _EXECUTION_STRATEGY_OVERRIDE: str | None = None
 _MAX_K_COMP_ERROR_OVERRIDE: float | None = None
+_OPTIONAL_TOP_K_OVERRIDE: int | None = None
 
 
 def _build_serving_config_for_lane(lane: dict[str, Any]) -> PersistentServingConfig:
@@ -184,6 +197,8 @@ def _build_serving_config_for_lane(lane: dict[str, Any]) -> PersistentServingCon
         config.full_attention_mixed_mode_execution_strategy = _EXECUTION_STRATEGY_OVERRIDE
     if _MAX_K_COMP_ERROR_OVERRIDE is not None:
         config.full_attention_mixed_mode_execution_max_k_comp_error = _MAX_K_COMP_ERROR_OVERRIDE
+    if _OPTIONAL_TOP_K_OVERRIDE is not None:
+        config.full_attention_optional_top_k = _OPTIONAL_TOP_K_OVERRIDE
     return config
 
 
@@ -748,6 +763,8 @@ def main() -> None:
         _EXECUTION_STRATEGY_OVERRIDE = str(args.execution_strategy)
     if args.max_k_comp_error is not None:
         _MAX_K_COMP_ERROR_OVERRIDE = float(args.max_k_comp_error)
+    if args.optional_top_k is not None:
+        _OPTIONAL_TOP_K_OVERRIDE = int(args.optional_top_k)
 
     active_lanes = (
         [lane for lane in _LANES if lane["name"] in args.lanes]
