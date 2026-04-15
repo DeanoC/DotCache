@@ -205,7 +205,7 @@ def _sum_by_layer(result: dict[str, Any], key: str) -> float:
 
 
 def _sum_by_layer_int(result: dict[str, Any], key: str) -> int:
-    return int(sum(int(v) for v in result.get(key, {}).values()))
+    return int(sum(int(v) for v in result.get(key, {}).values() if v is not None))
 
 
 def _run_one_case(
@@ -283,6 +283,22 @@ def _run_one_case(
         "bound_spherical_frac": float(sph_count) / float(total_count) if total_count > 0 else 0.0,
         "bound_interval_frac": float(int_count) / float(total_count) if total_count > 0 else 0.0,
         "bound_ellipsoidal_frac": float(ellip_count) / float(total_count) if total_count > 0 else 0.0,
+        # Certificate bound values (per-layer aggregates)
+        "beta_upper_by_layer": result.get("persistent_full_attention_last_beta_upper_by_layer", {}),
+        "delta_upper_by_layer": result.get("persistent_full_attention_last_delta_upper_by_layer", {}),
+        "first_cert_stop_blocks_by_layer": result.get(
+            "persistent_full_attention_last_first_certified_stop_block_count_by_layer", {}
+        ),
+        "certified_can_stop_by_layer": result.get(
+            "persistent_full_attention_last_certified_can_stop_by_layer", {}
+        ),
+        # Fallback counts
+        "fallback_process_more_count": _sum_by_layer_int(
+            result, "persistent_full_attention_fallback_process_more_count_by_layer"
+        ),
+        "dense_fallback_count": _sum_by_layer_int(
+            result, "persistent_full_attention_dense_fallback_count_by_layer"
+        ),
     }
 
     bound_str = ""
