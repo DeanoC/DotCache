@@ -742,7 +742,7 @@ def main() -> None:
     global _EXECUTION_STRATEGY_OVERRIDE
     args = parse_args()
     if not transformers_available():
-        raise SystemExit("bench_qwen35_bound_mode_compare.py requires the optional transformers dependencies")
+        raise SystemExit("bench_paper_mode_compare.py requires the optional transformers dependencies")
 
     if args.execution_strategy is not None:
         _EXECUTION_STRATEGY_OVERRIDE = str(args.execution_strategy)

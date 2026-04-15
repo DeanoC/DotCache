@@ -636,27 +636,37 @@ def main() -> None:
                 all_records.extend(case_lane_recs)
     else:
         # Single-process path (default).
+        # Warmup: prime Triton JIT / CUDA kernel caches for every (lane, context_length)
+        # combination BEFORE any timed runs.  A single warmup at the first case's
+        # length is insufficient — each context length triggers different block
+        # iteration patterns and potentially new kernel compilations.
+        if warmup_steps > 0 and cases:
+            unique_lengths = sorted(set(int(c["target_length"]) for c in cases))
+            _wu_device = next(persistent_model.parameters()).device
+            print(f"\n--- Warmup: {len(active_lanes)} lanes × {len(unique_lengths)} lengths ---")
+            for lane in active_lanes:
+                wu_config = _build_serving_config(lane)
+                for length in unique_lengths:
+                    wu_case = next(c for c in cases if int(c["target_length"]) == length)
+                    _wu_ids, _wu_mask = _build_prompt_text_inputs(
+                        persistent_tokenizer,
+                        device=_wu_device,
+                        prompt_text=Path(wu_case["prompt_file"]).read_text(encoding="utf-8"),
+                        prompt_length=length,
+                    )
+                    run_qwen35_attention_subset_persistent_serving_harness(
+                        persistent_model,
+                        persistent_adapter,
+                        input_ids=_wu_ids,
+                        attention_mask=_wu_mask,
+                        decode_steps=warmup_steps,
+                        persistent_serving_config=wu_config,
+                    )
+                    del _wu_ids, _wu_mask
+            print("  Warmup complete.\n")
+
         for lane in active_lanes:
             print(f"\n--- Lane: {lane['label']} ---")
-            # Warmup: throwaway run before timing to prime Triton JIT / CUDA kernel caches.
-            if warmup_steps > 0 and cases:
-                first_case = cases[0]
-                _wu_device = next(persistent_model.parameters()).device
-                _wu_ids, _wu_mask = _build_prompt_text_inputs(
-                    persistent_tokenizer,
-                    device=_wu_device,
-                    prompt_text=Path(first_case["prompt_file"]).read_text(encoding="utf-8"),
-                    prompt_length=int(first_case["target_length"]),
-                )
-                run_qwen35_attention_subset_persistent_serving_harness(
-                    persistent_model,
-                    persistent_adapter,
-                    input_ids=_wu_ids,
-                    attention_mask=_wu_mask,
-                    decode_steps=warmup_steps,
-                    persistent_serving_config=_build_serving_config(lane),
-                )
-                del _wu_ids, _wu_mask
             for case in cases:
                 rec = _run_one_case(
                     case=case,

@@ -171,8 +171,8 @@ Two optimisations were applied:
 
 | File | Description |
 |---|---|
-| `benchmarks/bench_qwen35_bound_mode_compare.py` | 3-lane mode comparison benchmark |
-| `benchmarks/bench_qwen35_bound_context_scaling.py` | Context-length scaling benchmark (1K–32K) |
+| `benchmarks/bench_paper_mode_compare.py` | 3-lane mode comparison benchmark |
+| `benchmarks/bench_paper_context_scaling.py` | Context-length scaling benchmark (1K–32K) |
 | `benchmarks/results/qwen35_bound_mode_compare_20260414_mps/` | MPS mode-compare results |
 | `benchmarks/results/qwen35_bound_winners_20260414_mps/` | MPS bound winner fraction data |
 | `benchmarks/results/qwen35_bound_context_scaling_20260414_mps/` | MPS context scaling |

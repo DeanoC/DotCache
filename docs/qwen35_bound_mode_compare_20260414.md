@@ -92,6 +92,6 @@ the Python-level head loop), or on CUDA where kernel launch overhead is lower.
 
 ## Artefacts
 
-- Benchmark script: `benchmarks/bench_qwen35_bound_mode_compare.py`
+- Benchmark script: `benchmarks/bench_paper_mode_compare.py`
 - JSON results: `benchmarks/results/qwen35_bound_mode_compare_20260414_mps/qwen35_bound_mode_compare.json`
 - MD results: `benchmarks/results/qwen35_bound_mode_compare_20260414_mps/qwen35_bound_mode_compare.md`

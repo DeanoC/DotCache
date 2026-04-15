@@ -173,8 +173,8 @@ with context) is confirmed.
 
 | File | Description |
 |---|---|
-| `benchmarks/bench_qwen35_bound_mode_compare.py` | 3-lane mode comparison script |
-| `benchmarks/bench_qwen35_bound_context_scaling.py` | Context-length scaling script |
+| `benchmarks/bench_paper_mode_compare.py` | 3-lane mode comparison script |
+| `benchmarks/bench_paper_context_scaling.py` | Context-length scaling script |
 | `benchmarks/results/qwen35_bound_mode_compare_20260414_cuda/` | Mode comparison JSON + MD |
 | `benchmarks/results/qwen35_bound_context_scaling_20260414_cuda/` | Context scaling JSON + MD (1K–32K, all complete) |
 | `docs/qwen35_bound_mode_compare_20260414.md` | MPS mode comparison results |
