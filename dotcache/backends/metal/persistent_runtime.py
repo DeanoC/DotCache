@@ -2220,9 +2220,13 @@ def _resolve_block_score_inputs(
     upper_bounds = torch.full((num_blocks,), float("-inf"), dtype=torch.float32, device=query_tensor.device)
     # Bound winner counters: accumulated across all q_heads, counts how many
     # (block, q_head) evaluations each method provided the tightest upper bound.
-    _spherical_active = 0
-    _interval_active = 0
-    _ellipsoidal_active = 0
+    # Use GPU tensor accumulators so .item() is deferred to the return statement
+    # rather than called n_q_heads times per counter per layer.  On CUDA this
+    # eliminates 3 × n_q_heads GPU→CPU synchronisations per layer call.
+    _dev = query_tensor.device
+    _spherical_active_t = torch.zeros(1, dtype=torch.int64, device=_dev)
+    _interval_active_t = torch.zeros(1, dtype=torch.int64, device=_dev)
+    _ellipsoidal_active_t = torch.zeros(1, dtype=torch.int64, device=_dev)
     block_indices = torch.arange(max(num_blocks, 1), dtype=torch.float32, device=query_tensor.device)
 
     # Device-aware dispatch for bound computation:
@@ -2383,14 +2387,14 @@ def _resolve_block_score_inputs(
             if upper_I is not None:
                 interval_wins = upper_I <= upper_after_spherical
                 spherical_mask = spherical_mask & ~interval_wins
-                _interval_active += int(interval_wins.sum().item())
+                _interval_active_t.add_(interval_wins.sum())
             if upper_E is not None:
                 ellipsoidal_wins = upper_E <= upper_after_spherical
                 if upper_I is not None:
                     ellipsoidal_wins = ellipsoidal_wins & (upper_E <= upper_I)
                 spherical_mask = spherical_mask & ~ellipsoidal_wins
-                _ellipsoidal_active += int(ellipsoidal_wins.sum().item())
-            _spherical_active += int(spherical_mask.sum().item())
+                _ellipsoidal_active_t.add_(ellipsoidal_wins.sum())
+            _spherical_active_t.add_(spherical_mask.sum())
         normalized_value_norm = value_norm / value_norm.max().clamp_min(1e-6)
         priority = center_sim
         priority = priority + prev_weight * state.block_prev_attention_ema.to(device=query_tensor.device, dtype=torch.float32)
@@ -2451,10 +2455,11 @@ def _resolve_block_score_inputs(
                 exact_max = max(exact_max, float(logits.max().item()))
             if math.isfinite(exact_max):
                 upper_bounds[int(block_id)] = min(float(upper_bounds[int(block_id)].item()), float(exact_max))
+    # Single .item() call per counter: deferred from inside the q_head loop.
     return priority_scores, upper_bounds, {
-        "spherical": _spherical_active,
-        "interval": _interval_active,
-        "ellipsoidal": _ellipsoidal_active,
+        "spherical": int(_spherical_active_t.item()),
+        "interval": int(_interval_active_t.item()),
+        "ellipsoidal": int(_ellipsoidal_active_t.item()),
     }
 
 
@@ -2978,8 +2983,15 @@ def _select_optional_block_ids(
                 (time.perf_counter() - selection_start) * 1000.0
             )
         return result
-    priority_values = priority_scores.detach().to(device="cpu", dtype=torch.float32).numpy()
-    upper_values = upper_bounds.detach().to(device="cpu", dtype=torch.float32).numpy()
+    # Batch the two float32 GPU→CPU transfers into a single PCIe round trip.
+    # Individual .to("cpu") calls each issue a separate DMA + sync; stacking
+    # them first lets CUDA schedule one contiguous transfer.
+    _scores_stacked = torch.stack([
+        priority_scores.detach().float(),
+        upper_bounds.detach().float(),
+    ]).to(device="cpu")
+    priority_values = _scores_stacked[0].numpy()
+    upper_values = _scores_stacked[1].numpy()
     region_values = (
         region_ids.detach().to(device="cpu", dtype=torch.int64).numpy()
         if hasattr(region_ids, "detach")

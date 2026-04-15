@@ -34,6 +34,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
+import os
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import sys
 from typing import Any
@@ -146,6 +149,18 @@ def parse_args() -> argparse.Namespace:
             "in each lane.  Primes Triton JIT compilation and CUDA kernel caches so "
             "the timed run is not polluted by cold-start overhead.  "
             "Default: 1.  Set to 0 to skip (e.g. on MPS where JIT is not an issue)."
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Number of parallel worker processes.  Each worker loads the model "
+            "independently and processes a subset of cases.  Improves GPU utilisation "
+            "by overlapping Python overhead across workers.  Requires ~1.6 GB VRAM "
+            "per worker (Qwen3.5-0.8B float16).  Default: 1."
         ),
     )
     return parser.parse_args()
@@ -417,6 +432,74 @@ def _render_markdown(
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Multi-process worker infrastructure
+# ---------------------------------------------------------------------------
+_CS_WORKER_STATE: dict[str, Any] = {}
+
+
+def _cs_worker_init(
+    model_id: str,
+    device: str,
+    backend: str,
+    torch_dtype: str,
+    first_lane: dict[str, Any],
+) -> None:
+    """Initialiser: load model once per worker process."""
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    _repo = str(Path(__file__).resolve().parents[1])
+    if _repo not in sys.path:
+        sys.path.insert(0, _repo)
+
+    from dotcache.integrations.qwen35 import (
+        Qwen35AttentionSubsetDotCacheModelAdapter,
+        load_qwen35_text_only_from_pretrained,
+    )
+    from benchmarks.bench_qwen35_persistent_real_mixed_probe import (
+        real_mixed_probe_dotcache_config,
+    )
+
+    model, tokenizer = load_qwen35_text_only_from_pretrained(
+        model_id, device=device, torch_dtype=torch_dtype
+    )
+    dotcache_config = real_mixed_probe_dotcache_config()
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=dotcache_config,
+        persistent_serving_config=_build_serving_config(first_lane),
+        backend=backend,
+    )
+    _CS_WORKER_STATE["model"] = model
+    _CS_WORKER_STATE["tokenizer"] = tokenizer
+    _CS_WORKER_STATE["adapter"] = adapter
+    print(f"[cs-worker pid={os.getpid()}] model loaded on {device}", flush=True)
+
+
+def _cs_worker_run_case(
+    args_tuple: tuple[Any, ...],
+) -> list[dict[str, Any]]:
+    """Run all lanes for a single case record.  Returns a list of result dicts."""
+    (case, dense_ids, decode_steps, lane_dicts) = args_tuple
+
+    model = _CS_WORKER_STATE["model"]
+    tokenizer = _CS_WORKER_STATE["tokenizer"]
+    adapter = _CS_WORKER_STATE["adapter"]
+
+    records: list[dict[str, Any]] = []
+    for lane in lane_dicts:
+        rec = _run_one_case(
+            case=case,
+            lane=lane,
+            model=model,
+            tokenizer=tokenizer,
+            adapter=adapter,
+            dense_ids=dense_ids,
+            decode_steps=decode_steps,
+        )
+        records.append(rec)
+    return records
+
+
 def main() -> None:
     args = parse_args()
     if not transformers_available():
@@ -504,41 +587,71 @@ def main() -> None:
         except Exception:
             pass
 
-    # Per-lane serving runs
+    # Per-lane/case serving runs
     warmup_steps = int(args.warmup_steps)
+    n_workers = max(1, int(args.workers))
     all_records: list[dict[str, Any]] = []
-    for lane in active_lanes:
-        print(f"\n--- Lane: {lane['label']} ---")
-        # Warmup: throwaway run before timing to prime Triton JIT / CUDA kernel caches.
-        if warmup_steps > 0 and cases:
-            first_case = cases[0]
-            _wu_device = next(persistent_model.parameters()).device
-            _wu_ids, _wu_mask = _build_prompt_text_inputs(
-                persistent_tokenizer,
-                device=_wu_device,
-                prompt_text=Path(first_case["prompt_file"]).read_text(encoding="utf-8"),
-                prompt_length=int(first_case["target_length"]),
-            )
-            run_qwen35_attention_subset_persistent_serving_harness(
-                persistent_model,
-                persistent_adapter,
-                input_ids=_wu_ids,
-                attention_mask=_wu_mask,
-                decode_steps=warmup_steps,
-                persistent_serving_config=_build_serving_config(lane),
-            )
-            del _wu_ids, _wu_mask
-        for case in cases:
-            rec = _run_one_case(
-                case=case,
-                lane=lane,
-                model=persistent_model,
-                tokenizer=persistent_tokenizer,
-                adapter=persistent_adapter,
-                dense_ids=dense_ids_by_case.get(case["case_tag"], []),
-                decode_steps=int(args.decode_steps),
-            )
-            all_records.append(rec)
+
+    if n_workers > 1:
+        # Multi-process path: dispatch (case, lane) pairs across workers.
+        # Each worker loads the model once, then processes its task list.
+        # Tasks are ordered lane-inner so results come back case-ordered per lane.
+        worker_tasks = [
+            (case, dense_ids_by_case.get(case["case_tag"], []), int(args.decode_steps), active_lanes)
+            for case in cases
+        ]
+        print(
+            f"\n--- Parallel serving runs ({len(worker_tasks)} case×all-lanes tasks, "
+            f"{n_workers} workers) ---"
+        )
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            mp_context=mp.get_context("spawn"),
+            initializer=_cs_worker_init,
+            initargs=(
+                str(args.model_id),
+                str(args.device),
+                str(args.backend),
+                str(args.torch_dtype),
+                active_lanes[0],
+            ),
+        ) as pool:
+            for case_lane_recs in pool.map(_cs_worker_run_case, worker_tasks):
+                all_records.extend(case_lane_recs)
+    else:
+        # Single-process path (default).
+        for lane in active_lanes:
+            print(f"\n--- Lane: {lane['label']} ---")
+            # Warmup: throwaway run before timing to prime Triton JIT / CUDA kernel caches.
+            if warmup_steps > 0 and cases:
+                first_case = cases[0]
+                _wu_device = next(persistent_model.parameters()).device
+                _wu_ids, _wu_mask = _build_prompt_text_inputs(
+                    persistent_tokenizer,
+                    device=_wu_device,
+                    prompt_text=Path(first_case["prompt_file"]).read_text(encoding="utf-8"),
+                    prompt_length=int(first_case["target_length"]),
+                )
+                run_qwen35_attention_subset_persistent_serving_harness(
+                    persistent_model,
+                    persistent_adapter,
+                    input_ids=_wu_ids,
+                    attention_mask=_wu_mask,
+                    decode_steps=warmup_steps,
+                    persistent_serving_config=_build_serving_config(lane),
+                )
+                del _wu_ids, _wu_mask
+            for case in cases:
+                rec = _run_one_case(
+                    case=case,
+                    lane=lane,
+                    model=persistent_model,
+                    tokenizer=persistent_tokenizer,
+                    adapter=persistent_adapter,
+                    dense_ids=dense_ids_by_case.get(case["case_tag"], []),
+                    decode_steps=int(args.decode_steps),
+                )
+                all_records.append(rec)
 
     # Summary tables
     print("\n=== Interval win rate and speedup by context length ===")

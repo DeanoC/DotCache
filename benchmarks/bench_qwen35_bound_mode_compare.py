@@ -29,6 +29,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
+import os
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import sys
 from typing import Any
@@ -126,6 +129,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-json", default=None)
     parser.add_argument("--output-md", default=None)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Number of parallel worker processes for case dispatch.  Each worker "
+            "loads the model independently and processes a subset of cases "
+            "concurrently on the GPU.  With N workers, GPU utilisation improves "
+            "because each worker's Python overhead can overlap with another "
+            "worker's GPU kernels.  Requires enough VRAM for N model instances "
+            "(Qwen3.5-0.8B at float16 ~1.6 GB each).  Default: 1."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -540,6 +557,106 @@ def _render_markdown(
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Multi-process worker infrastructure
+# ---------------------------------------------------------------------------
+# Worker state is stored in a process-local dict so the model is loaded once
+# per worker process rather than once per task.
+_WORKER_STATE: dict[str, Any] = {}
+
+
+def _worker_init(
+    model_id: str,
+    device: str,
+    backend: str,
+    torch_dtype: str,
+    lane_dicts: list[dict[str, Any]],
+) -> None:
+    """Initialiser called once when each worker process starts.
+
+    Loads the persistent model + adapter and caches them in ``_WORKER_STATE``
+    so subsequent ``_worker_run_case`` calls reuse the same in-memory model.
+    """
+    import os as _os
+    _os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    # Ensure the repo root is on the path inside the spawned process.
+    _repo = str(Path(__file__).resolve().parents[1])
+    if _repo not in sys.path:
+        sys.path.insert(0, _repo)
+
+    from dotcache.integrations.qwen35 import (
+        Qwen35AttentionSubsetDotCacheModelAdapter,
+        load_qwen35_text_only_from_pretrained,
+    )
+    from benchmarks.bench_qwen35_persistent_real_mixed_probe import (
+        real_mixed_probe_dotcache_config,
+    )
+
+    model, tokenizer = load_qwen35_text_only_from_pretrained(
+        model_id, device=device, torch_dtype=torch_dtype
+    )
+    dotcache_config = real_mixed_probe_dotcache_config()
+    first_lane = lane_dicts[0]
+    adapter = Qwen35AttentionSubsetDotCacheModelAdapter(
+        model=model,
+        dotcache_config=dotcache_config,
+        persistent_serving_config=_build_serving_config_for_lane(first_lane),
+        backend=backend,
+    )
+    _WORKER_STATE["model"] = model
+    _WORKER_STATE["tokenizer"] = tokenizer
+    _WORKER_STATE["adapter"] = adapter
+    print(
+        f"[worker pid={_os.getpid()}] model loaded on {device}",
+        flush=True,
+    )
+
+
+def _worker_run_case(
+    args_tuple: tuple[Any, ...],
+) -> dict[str, dict[str, Any]]:
+    """Run all lanes for a single case.  Called once per prompt_record by the pool.
+
+    Returns a dict ``{lane_name: result_record}`` exactly like
+    ``_run_all_lanes_for_case`` but is safe to call in a spawned subprocess
+    because it uses only process-local (non-shared) model state.
+    """
+    (
+        prompt_record,
+        dense_reference_ids,
+        decode_steps,
+        warmup_steps,
+        lane_dicts,
+    ) = args_tuple
+
+    from pathlib import Path as _Path
+
+    model = _WORKER_STATE["model"]
+    tokenizer = _WORKER_STATE["tokenizer"]
+    adapter = _WORKER_STATE["adapter"]
+    device = next(model.parameters()).device
+
+    prompt_text = _Path(str(prompt_record["prompt_file_path"])).read_text(encoding="utf-8")
+    input_ids, attention_mask = _build_prompt_text_inputs(
+        tokenizer,
+        device=device,
+        prompt_text=prompt_text,
+        prompt_length=int(prompt_record.get("prompt_length", 0)),
+    )
+    case_tag = str(prompt_record["case_tag"])
+    return _run_all_lanes_for_case(
+        lanes=lane_dicts,
+        model=model,
+        adapter=adapter,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        decode_steps=decode_steps,
+        warmup_steps=warmup_steps,
+        dense_reference_ids=dense_reference_ids,
+        case_tag=case_tag,
+    )
+
+
 def main() -> None:
     args = parse_args()
     if not transformers_available():
@@ -611,36 +728,75 @@ def main() -> None:
 
     # Step 2: Per-lane serving runs
     use_shared_prefill = not bool(args.no_shared_prefill)
-    print(f"\n--- Lane runs (shared_prefill={use_shared_prefill}, warmup_steps={args.warmup_steps}) ---")
+    n_workers = max(1, int(args.workers))
+    print(
+        f"\n--- Lane runs (shared_prefill={use_shared_prefill}, "
+        f"warmup_steps={args.warmup_steps}, workers={n_workers}) ---"
+    )
     lane_records: dict[str, list[dict[str, Any]]] = {lane["name"]: [] for lane in active_lanes}
 
     if use_shared_prefill:
         # All lanes share a single prefill per case — avoids (N_lanes-1) redundant
         # O(N²) prefill passes per case.
-        for prompt_record in prompt_records:
-            case_tag = str(prompt_record["case_tag"])
-            prompt_text = Path(str(prompt_record["prompt_file_path"])).read_text(encoding="utf-8")
-            device = next(persistent_model.parameters()).device
-            input_ids, attention_mask = _build_prompt_text_inputs(
-                persistent_tokenizer,
-                device=device,
-                prompt_text=prompt_text,
-                prompt_length=int(prompt_record.get("prompt_length", 0)),
+        if n_workers > 1:
+            # Multi-process path: each worker loads the model independently and
+            # processes its subset of cases.  Workers run concurrently so their
+            # Python-side overhead can overlap with other workers' GPU kernels,
+            # improving overall GPU utilisation.
+            print(
+                f"  Dispatching {len(prompt_records)} cases to {n_workers} workers …"
             )
-            print(f"\n[case: {case_tag}]")
-            case_lane_results = _run_all_lanes_for_case(
-                lanes=active_lanes,
-                model=persistent_model,
-                adapter=persistent_adapter,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                decode_steps=int(args.decode_steps),
-                warmup_steps=int(args.warmup_steps),
-                dense_reference_ids=dense_results_by_case.get(case_tag, []),
-                case_tag=case_tag,
-            )
-            for lane in active_lanes:
-                lane_records[lane["name"]].append(case_lane_results[lane["name"]])
+            worker_tasks = [
+                (
+                    pr,
+                    dense_results_by_case.get(str(pr["case_tag"]), []),
+                    int(args.decode_steps),
+                    int(args.warmup_steps),
+                    active_lanes,
+                )
+                for pr in prompt_records
+            ]
+            with ProcessPoolExecutor(
+                max_workers=n_workers,
+                mp_context=mp.get_context("spawn"),
+                initializer=_worker_init,
+                initargs=(
+                    str(args.model_id),
+                    str(args.device),
+                    str(args.backend),
+                    str(args.torch_dtype),
+                    active_lanes,
+                ),
+            ) as pool:
+                for case_lane_results in pool.map(_worker_run_case, worker_tasks):
+                    for lane in active_lanes:
+                        lane_records[lane["name"]].append(case_lane_results[lane["name"]])
+        else:
+            # Single-process path (default).
+            for prompt_record in prompt_records:
+                case_tag = str(prompt_record["case_tag"])
+                prompt_text = Path(str(prompt_record["prompt_file_path"])).read_text(encoding="utf-8")
+                device = next(persistent_model.parameters()).device
+                input_ids, attention_mask = _build_prompt_text_inputs(
+                    persistent_tokenizer,
+                    device=device,
+                    prompt_text=prompt_text,
+                    prompt_length=int(prompt_record.get("prompt_length", 0)),
+                )
+                print(f"\n[case: {case_tag}]")
+                case_lane_results = _run_all_lanes_for_case(
+                    lanes=active_lanes,
+                    model=persistent_model,
+                    adapter=persistent_adapter,
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    decode_steps=int(args.decode_steps),
+                    warmup_steps=int(args.warmup_steps),
+                    dense_reference_ids=dense_results_by_case.get(case_tag, []),
+                    case_tag=case_tag,
+                )
+                for lane in active_lanes:
+                    lane_records[lane["name"]].append(case_lane_results[lane["name"]])
     else:
         # Original per-lane runner (--no-shared-prefill)
         _warmup_done: list[bool] = [False]
