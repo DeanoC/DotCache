@@ -1269,8 +1269,6 @@ impl TextModel {
     /// Build DecodeLayerDesc array from model layers (called once per forward pass).
     #[cfg(feature = "qwen35-minimal-hip")]
     fn build_layer_descs(&mut self, seqlen_offset: usize) -> Result<Vec<super::DecodeLayerDesc>> {
-        use std::ptr;
-
         let mut descs = Vec::with_capacity(self.layers.len());
         for layer in &mut self.layers {
             let mut d = super::DecodeLayerDesc::default();
@@ -1369,7 +1367,10 @@ impl TextModel {
 
         // Ensure KV cache has room for position seqlen_offset
         // (standard path grows by concatenation; persistent kernel writes at seqlen_offset)
-        for layer in &mut self.layers {
+        // Only grow KV caches for layers within the persistent range; otherwise the
+        // standard path sees corrupted KV state (zero-filled positions it didn't write).
+        for (i, layer) in self.layers.iter_mut().enumerate() {
+            if i >= num_layers { break; }
             if let LayerKind::Full(fa) = &mut layer.token_mixer {
                 fa.ensure_kv_cache_capacity(seqlen_offset, hidden.device(), hidden.tensor().dtype())?;
             }
@@ -1499,9 +1500,11 @@ impl TextModel {
         }
 
         // After kernel: trim KV cache to actual filled length (seqlen_offset + 1)
-        // so that sequence_length() returns the correct value
+        // so that sequence_length() returns the correct value.
+        // Only trim layers within the persistent range.
         let filled = seqlen_offset + 1;
-        for layer in &mut self.layers {
+        for (i, layer) in self.layers.iter_mut().enumerate() {
+            if i >= num_layers { break; }
             if let LayerKind::Full(fa) = &mut layer.token_mixer {
                 fa.trim_kv_cache_to(filled)?;
             }
@@ -1518,9 +1521,6 @@ impl TextModel {
         let device = hidden_states.device();
         let (b_size, seq_len, _) = hidden_states.dims3()?;
         let mut profile = RuntimeProfile::default();
-        #[cfg(feature = "qwen35-minimal-hip")]
-        eprintln!("[fhsp] seq={seq_len} off={seqlen_offset} hip={} persist={}", device.is_hip(), seqlen_offset > 0 && self.use_persistent_decode(device, seq_len));
-
         // Try persistent decode kernel for single-token decode
         // Requires seqlen_offset > 0 (need initialized KV/conv/recurrent state from prefill)
         // Persistent decode: process first N layers in GPU kernel, rest via standard path
@@ -1530,20 +1530,16 @@ impl TextModel {
             let n = std::env::var("CANDLE_QWEN35_PERSISTENT_LAYERS")
                 .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(total).min(total);
             if n > 0 {
-                let t0 = std::time::Instant::now();
                 match self.persistent_decode_forward(hidden_states, seqlen_offset) {
                     Ok(result) => {
                         if n == total {
-                            let t_k = t0.elapsed().as_secs_f64() * 1000.0;
                             let normed = self.norm.forward_buffer(&result)?;
-                            eprintln!("[persistent] layers={t_k:.0}ms norm={:.0}ms seq={seqlen_offset}",
-                                t0.elapsed().as_secs_f64() * 1000.0 - t_k);
                             return Ok((normed, profile));
                         }
                         Some((result, n))
                     }
                     Err(e) => {
-                        eprintln!("[persistent] fallback: {e}");
+                        eprintln!("[persistent decode] fallback to standard path: {e}");
                         None
                     }
                 }
@@ -1571,7 +1567,10 @@ impl TextModel {
             } else {
                 None
             };
-            let (next_xs, layer_profile) = layer.forward_profiled(&xs, mask, seqlen_offset)?;
+            let mut no_external = None;
+            let (next_xs, layer_profile) = layer.forward_profiled_with_external(
+                layer_idx, &xs, mask, seqlen_offset, &mut no_external,
+            )?;
             profile.add_assign(&layer_profile);
             xs = next_xs;
         }

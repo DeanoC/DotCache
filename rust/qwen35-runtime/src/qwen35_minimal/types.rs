@@ -457,6 +457,9 @@ pub trait ExternalFullAttention {
 #[derive(Debug, Clone, Default)]
 pub struct FullAttentionCacheState {
     pub kv_cache: Option<(StateBuffer, StateBuffer)>,
+    /// Actual filled KV length when using pre-allocated cache (persistent decode).
+    /// None means the tensor dim IS the filled length (standard path).
+    pub persistent_kv_filled: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -658,8 +661,12 @@ impl CacheState {
         for layer in &self.layers {
             if let LayerCacheState::Full(FullAttentionCacheState {
                 kv_cache: Some((key, _)),
+                persistent_kv_filled,
             }) = layer
             {
+                if let Some(filled) = persistent_kv_filled {
+                    return *filled;
+                }
                 if let Ok((_, _, seq_len, _)) = key.tensor().dims4() {
                     return seq_len;
                 }

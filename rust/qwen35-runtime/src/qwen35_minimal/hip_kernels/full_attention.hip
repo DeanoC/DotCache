@@ -3243,7 +3243,6 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                 const float scale = 1.0f / sqrtf(static_cast<float>(hd));
                 const int rotary_dim = hd / 4;          // 64 (partial_rotary_factor=0.25)
                 const int kv_len = L.kv_len + 1;       // includes this new token
-
                 // q_f32 layout: [nh * hd * 2] = per head: [query(hd) | gate(hd)]
 
                 // Step B: QK-norm — RMSNorm per head on head_dim
@@ -3337,6 +3336,17 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                     __syncthreads();
                 }
 
+                // Save gate values before attention overwrites proj_buf.
+                // Gate is at q_f32[h*hd*2 + hd .. h*hd*2 + 2*hd-1] for each head.
+                // Attention writes to proj_buf[0..nh*hd-1] which overlaps gates.
+                float* saved_gate = attn_scratch;  // [2048] scratch
+                for (int i = tid; i < nh * hd; i += bs) {
+                    const int h = i / hd;
+                    const int d = i % hd;
+                    saved_gate[i] = q_f32[h * hd * 2 + hd + d];
+                }
+                __syncthreads();
+
                 // Step E: Parallel attention — Flash-style online softmax
                 // All 256 threads cooperate per head: parallel Q·K reduction,
                 // each thread accumulates one V dimension with running max/sum.
@@ -3394,12 +3404,10 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
                 }
 
                 // Step F: Gate — attn_flat[nh*hd] * sigmoid(gate[nh*hd])
-                // gate is in q_f32 at offset hd from each head's Q block
+                // Gate was saved to saved_gate before attention overwrote proj_buf.
                 // Output: gated_output[nh*hd = 2048] stored back in attn_flat
                 for (int i = tid; i < nh * hd; i += bs) {
-                    const int h = i / hd;
-                    const int d = i % hd;
-                    float gate_val = q_f32[h * hd * 2 + hd + d];  // gate portion
+                    float gate_val = saved_gate[i];
                     float sigmoid_gate = 1.0f / (1.0f + expf(-gate_val));
                     attn_flat[i] *= sigmoid_gate;
                 }
@@ -3754,7 +3762,6 @@ __global__ void dotcache_qwen35_persistent_decode_kernel(
         }
 
         // Residual add for token mixer is fused into o_proj/out_proj above.
-
         // === Post-attention RMSNorm (block 0 only) ===
         if (blockIdx.x == 0) {
             block_rms_norm_global<T>(normed, hidden_f32,

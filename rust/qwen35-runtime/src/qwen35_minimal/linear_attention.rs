@@ -3390,12 +3390,6 @@ impl GatedDeltaNet {
     ) -> Result<(StateBuffer, RuntimeProfile)> {
         let (output, recurrent_state, profile) =
             self.forward_profiled_with_state_buffer(hidden_states, attention_mask)?;
-        if std::env::var("CANDLE_QWEN35_PERSISTENT_DECODE").as_deref() == Ok("1") {
-            eprintln!("[linear_attn] recurrent_state dtype={:?} shape={:?}", recurrent_state.tensor().dtype(), recurrent_state.tensor().shape());
-            if let Some(ref cs) = self.conv_state {
-                eprintln!("[linear_attn] conv_state dtype={:?} shape={:?}", cs.tensor().dtype(), cs.tensor().shape());
-            }
-        }
         self.recurrent_state = Some(recurrent_state);
         Ok((output, profile))
     }

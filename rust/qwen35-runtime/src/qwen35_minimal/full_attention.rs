@@ -66,11 +66,13 @@ impl FullAttention {
     pub(super) fn cache_state(&self) -> FullAttentionCacheState {
         FullAttentionCacheState {
             kv_cache: self.kv_cache.clone(),
+            persistent_kv_filled: self.persistent_kv_filled,
         }
     }
 
     pub(super) fn restore_cache_state(&mut self, state: &FullAttentionCacheState) {
         self.kv_cache = state.kv_cache.clone();
+        self.persistent_kv_filled = state.persistent_kv_filled;
     }
 
     /// Output projection using the work-stealing megakernel when available,
@@ -864,16 +866,15 @@ impl FullAttention {
     pub(super) fn rotary_emb(&self) -> &RotaryEmbedding { &self.rotary_emb }
 
     /// Ensure the KV cache has room for position `seqlen_offset`.
-    /// Pre-allocates in chunks of 256 and returns the actual filled length.
+    /// Pre-allocates in chunks of 256 to avoid per-token GPU allocation.
     #[cfg(feature = "qwen35-minimal-hip")]
     pub(super) fn ensure_kv_cache_capacity(
         &mut self, seqlen_offset: usize, device: &Device, dtype: DType,
     ) -> Result<()> {
         use candle::Tensor;
+        const CHUNK: usize = 256;
         let needed = seqlen_offset + 1;
         if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
-            eprintln!("[kv_cap] shape={:?} rank={} needed={needed} seqlen_offset={seqlen_offset}",
-                k_cache.tensor().shape(), k_cache.tensor().rank());
             // KV cache is [batch, num_kv_heads, seq_len, head_dim] (4D) or [nkv, seq, hd] (3D)
             let (seq_dim, current_cap) = if k_cache.tensor().rank() == 4 {
                 (2, k_cache.tensor().dim(2)?)
@@ -881,7 +882,9 @@ impl FullAttention {
                 (1, k_cache.tensor().dim(1)?)
             };
             if current_cap >= needed { return Ok(()); }
-            let grow = needed - current_cap;
+            // Round up to next chunk boundary to amortize allocations
+            let new_cap = ((needed + CHUNK - 1) / CHUNK) * CHUNK;
+            let grow = new_cap - current_cap;
             // Create zero padding with same shape except seq_dim = grow
             let mut k_shape: Vec<usize> = k_cache.tensor().dims().to_vec();
             let mut v_shape: Vec<usize> = v_cache.tensor().dims().to_vec();
@@ -900,19 +903,11 @@ impl FullAttention {
         Ok(())
     }
 
-    /// Trim KV cache to `len` positions by narrowing. The underlying allocation
-    /// stays large (pre-allocated) but the tensor view reflects the filled portion.
+    /// Record the filled KV length without narrowing the pre-allocated tensor.
+    /// The kernel uses `kv_len` (filled) and `kv_max_t` (capacity) from the descriptor.
     #[cfg(feature = "qwen35-minimal-hip")]
     pub(super) fn trim_kv_cache_to(&mut self, len: usize) -> Result<()> {
-        if let Some((ref k_cache, ref v_cache)) = self.kv_cache {
-            let seq_dim = if k_cache.tensor().rank() == 4 { 2 } else { 1 };
-            let current_len = k_cache.tensor().dim(seq_dim)?;
-            if current_len > len {
-                let new_k = k_cache.narrow(seq_dim, 0, len)?;
-                let new_v = v_cache.narrow(seq_dim, 0, len)?;
-                self.kv_cache = Some((new_k, new_v));
-            }
-        }
+        self.persistent_kv_filled = Some(len);
         Ok(())
     }
 
@@ -920,11 +915,12 @@ impl FullAttention {
     /// With pre-allocated cache, the tensor dim exceeds the filled length.
     #[cfg(feature = "qwen35-minimal-hip")]
     pub(super) fn kv_filled_len(&self) -> usize {
+        if let Some(filled) = self.persistent_kv_filled {
+            return filled;
+        }
         if let Some((ref k_cache, _)) = self.kv_cache {
-            // The kv_len field in the descriptor tracks the actual filled length
-            // For now, use the tensor dim (grows by 1 each step in standard path,
-            // or by chunk in persistent path)
-            k_cache.tensor().dims3().map(|(_, t, _)| t).unwrap_or(0)
+            let seq_dim = if k_cache.tensor().rank() == 4 { 2 } else { 1 };
+            k_cache.tensor().dim(seq_dim).unwrap_or(0)
         } else {
             0
         }
@@ -1345,7 +1341,7 @@ impl FullAttention {
         v_proj_out: &StateBuffer,
         attention_mask: Option<&Tensor>,
         seqlen_offset: usize,
-        layer_id: usize,
+        _layer_id: usize,
         external_full_attention: &mut Option<&mut dyn ExternalFullAttention>,
         hidden_dtype: DType,
     ) -> Result<(StateBuffer, RuntimeProfile)> {
@@ -1969,5 +1965,6 @@ impl FullAttention {
 
     pub(super) fn clear_kv_cache(&mut self) {
         self.kv_cache = None;
+        self.persistent_kv_filled = None;
     }
 }
