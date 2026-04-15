@@ -120,10 +120,55 @@ def certified_attention_layer(
         block_epsilon=block_epsilon,
     )
 
+    # Top-K FP16 key fallback: replace INT8 keys with FP16 originals for the
+    # highest-scoring blocks. This eliminates the INT8 key quantisation error
+    # on the blocks that contribute most attention mass (the "needle" blocks).
+    # Cost: one CPU→GPU page-in per KV head for K blocks (~3μs at K=4).
+    top_k_fp16 = 4
+    if top_k_fp16 > 0 and cache.keys_fp16_cpu is not None:
+        # Build a mixed key tensor: INT8 dequant for most blocks, FP16 for top-K
+        keys_mixed = (
+            cache.keys_int8.to(torch.float32).reshape(
+                cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim
+            ) * cache.keys_scale[:, :, None, None]
+        )
+        keys_fp16_bl = cache.keys_fp16_cpu.to(
+            dtype=torch.float32, device=cache.keys_int8.device,
+        ).reshape(cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim)
+
+        for qh in range(num_q_heads):
+            kv = qh // gqa_group
+            topk_idx = m_b[qh].topk(min(top_k_fp16, cache.num_blocks)).indices
+            keys_mixed[kv, topk_idx] = keys_fp16_bl[kv, topk_idx]
+
+        keys_for_attend = keys_mixed.reshape(cache.kv_heads, cache.num_tokens, cache.head_dim)
+        del keys_mixed, keys_fp16_bl
+        use_mixed_keys = True
+    else:
+        use_mixed_keys = False
+
     # Phase 2: Select V format and run attention
     v_format = "fp16"  # default
 
-    if cache.values_int4_packed is not None:
+    if use_mixed_keys:
+        # Use mixed INT8+FP16 keys with appropriate values
+        if cache.values_int4_packed is not None:
+            values_for_attend = cache.dequantise_int4_values().to(torch.float16)
+        elif cache.values_fp16 is not None:
+            values_for_attend = cache.values_fp16
+        else:
+            values_for_attend = cache.values_fp16_cpu.to(device=cache.keys_int8.device)
+        output = selective_attend_multihead(
+            keys_packed=keys_for_attend,
+            values_packed=values_for_attend.to(torch.float32),
+            q_all=q_all,
+            skip_mask_i32=skip_mask.to(torch.int32),
+            gqa_group=gqa_group,
+            block_size=cache.block_size,
+            q_scale=q_scale,
+        )
+        del keys_for_attend
+    elif cache.values_int4_packed is not None:
         # Runtime V-format decision based on mass partition
         if collect_stats:
             rho = compute_tier2_residual_mass(m_b, S_b, skip_mask)
