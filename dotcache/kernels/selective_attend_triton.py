@@ -2,6 +2,10 @@
 
 Multi-head version processes all Q heads in one kernel launch, with each
 program handling one Q head. Skip mask is per-head.
+
+Two variants:
+  - Float32 keys (original): takes pre-dequantised K
+  - INT8 keys (new): takes K_int8 + per-block K_scale, dequantises in-register
 """
 from __future__ import annotations
 
@@ -90,6 +94,148 @@ def _multihead_selective_attend_kernel(
         safe_l = tl.where(l > 0.0, l, 1.0)
         output = acc / safe_l
         tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
+
+
+# ─── INT8 variant: dequantise keys in-register ────────────────────────
+
+@triton.jit
+def _multihead_selective_attend_int8_kernel(
+    # Data — INT8 keys + scale
+    K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous
+    K_scale_ptr,     # [num_kv_heads, num_blocks] float32
+    V_ptr,           # [num_kv_heads * N, d_v] float16 contiguous
+    Q_ptr,           # [num_q_heads, head_dim] float32
+    Skip_ptr,        # [num_q_heads, num_blocks] int32
+    Out_ptr,         # [num_q_heads, d_v] float32
+    # Layout
+    N: tl.constexpr,
+    stride_k: tl.constexpr,     # head_dim
+    stride_v: tl.constexpr,     # d_v
+    num_blocks: tl.constexpr,
+    block_size: tl.constexpr,
+    head_dim: tl.constexpr,
+    d_v: tl.constexpr,
+    q_scale: tl.constexpr,
+    num_q_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr,
+    gqa_group: tl.constexpr,
+    # Tiles
+    TILE_D: tl.constexpr,
+    TILE_V: tl.constexpr,
+):
+    """One program per Q head. Loads INT8 keys, dequantises in-register."""
+    qh = tl.program_id(0)
+    valid = qh < num_q_heads
+    if valid:
+        kvh = qh // gqa_group
+        kv_base = kvh * N
+
+        t_offs = tl.arange(0, block_size)
+        d_offs = tl.arange(0, TILE_D)
+        v_offs = tl.arange(0, TILE_V)
+        v_mask = v_offs < d_v
+
+        # Online softmax state
+        m = tl.full((), float("-inf"), dtype=tl.float32)
+        l = tl.full((), 0.0, dtype=tl.float32)
+        acc = tl.zeros((TILE_V,), dtype=tl.float32)
+
+        for bid in range(num_blocks):
+            skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
+            if skip_val == 0:  # attend this block
+                base_tok = kv_base + bid * block_size
+
+                # Load per-block dequant scale
+                k_scale = tl.load(K_scale_ptr + kvh * num_blocks + bid)
+
+                # Score: q · (K_int8 * scale) for block_size tokens
+                scores = tl.zeros((block_size,), dtype=tl.float32)
+                row_ptrs = K_int8_ptr + (base_tok + t_offs) * stride_k
+                for d_start in range(0, head_dim, TILE_D):
+                    d_off = d_start + d_offs
+                    dm = d_off < head_dim
+                    q_tile = tl.load(Q_ptr + qh * head_dim + d_off, mask=dm, other=0.0).to(tl.float32)
+                    k_ptrs = row_ptrs[:, None] + d_off[None, :]
+                    # Load INT8, cast to float32, multiply by scale — all in-register
+                    k_int8_tile = tl.load(k_ptrs, mask=dm[None, :], other=0)
+                    k_tile = k_int8_tile.to(tl.float32) * k_scale
+                    scores += tl.sum(k_tile * q_tile[None, :], axis=1)
+                scores = scores * q_scale
+
+                # Online softmax update
+                block_max = tl.max(scores)
+                new_m = tl.maximum(m, block_max)
+                alpha = tl.exp(m - new_m)
+                acc = acc * alpha
+                l = l * alpha
+                weights = tl.exp(scores - new_m)
+                l += tl.sum(weights)
+
+                # V accumulation (FP16 values → float32)
+                v_row_ptrs = V_ptr + (base_tok + t_offs) * stride_v
+                v_off = v_offs
+                vm = v_off < d_v
+                v_ptrs = v_row_ptrs[:, None] + v_off[None, :]
+                v_tile = tl.load(v_ptrs, mask=vm[None, :], other=0).to(tl.float32)
+                w_v = tl.sum(weights[:, None] * v_tile, axis=0)
+                acc += w_v
+                m = new_m
+
+        # Normalise and store
+        safe_l = tl.where(l > 0.0, l, 1.0)
+        output = acc / safe_l
+        tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
+
+
+def selective_attend_multihead_int8(
+    keys_int8: torch.Tensor,      # [num_kv_heads, N, head_dim] int8
+    keys_scale: torch.Tensor,     # [num_kv_heads, num_blocks] float32
+    values_fp16: torch.Tensor,    # [num_kv_heads, N, d_v] float16
+    q_all: torch.Tensor,          # [num_q_heads, head_dim] float32
+    skip_mask_i32: torch.Tensor,  # [num_q_heads, num_blocks] int32
+    gqa_group: int,
+    block_size: int = 16,
+    q_scale: float = 1.0,
+) -> torch.Tensor:
+    """Multi-head selective attention with INT8 keys, dequantised in-register.
+
+    Eliminates the need to materialise a float32 key tensor in VRAM.
+    Keys are loaded as INT8 and dequantised per-block inside the kernel.
+    Values are read as FP16 and cast to float32 in-register.
+
+    Returns [num_q_heads, d_v] float32.
+    """
+    num_kv_heads, N, head_dim = keys_int8.shape
+    d_v = values_fp16.shape[2]
+    num_q_heads = q_all.shape[0]
+    num_blocks = N // block_size
+    device = keys_int8.device
+
+    K_flat = keys_int8.reshape(num_kv_heads * N, head_dim).contiguous()
+    V_flat = values_fp16.reshape(num_kv_heads * N, d_v).contiguous()
+    output = torch.empty(num_q_heads, d_v, dtype=torch.float32, device=device)
+
+    TILE_D = triton.next_power_of_2(head_dim)
+    TILE_V = triton.next_power_of_2(d_v)
+
+    _multihead_selective_attend_int8_kernel[(num_q_heads,)](
+        K_flat, keys_scale.contiguous(), V_flat,
+        q_all.contiguous(), skip_mask_i32.contiguous(), output,
+        N=N,
+        stride_k=head_dim,
+        stride_v=d_v,
+        num_blocks=num_blocks,
+        block_size=block_size,
+        head_dim=head_dim,
+        d_v=d_v,
+        q_scale=q_scale,
+        num_q_heads=num_q_heads,
+        num_kv_heads=num_kv_heads,
+        gqa_group=gqa_group,
+        TILE_D=TILE_D,
+        TILE_V=TILE_V,
+    )
+    return output
 
 
 def selective_attend_multihead(

@@ -709,9 +709,7 @@ class LlamaDotCacheModelAdapter:
         tiered_caches = create_tiered_cache_from_model(
             past_key_values, layer_ids, block_size=block_size,
         )
-        # Pre-compute dequantised keys and float32 values to avoid per-call allocation
-        for cache in tiered_caches.values():
-            cache.precompute_dequant()
+        # INT8 attend kernel reads keys as INT8 + scale directly — no pre-dequant needed
         self.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
             layer_epsilons=layer_epsilons or {},

@@ -14,7 +14,10 @@ from typing import Any
 
 from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
 from dotcache.kernels.fused_score_certify import fused_score_certify_multihead
-from dotcache.kernels.selective_attend_triton import selective_attend_multihead
+from dotcache.kernels.selective_attend_triton import (
+    selective_attend_multihead,
+    selective_attend_multihead_int8,
+)
 
 
 def certified_attention_layer(
@@ -49,32 +52,13 @@ def certified_attention_layer(
     )
 
     # Phase 2: Multi-head selective attention
-    # Use the original FP16 keys from VRAM for attended blocks
-    # (we need FP16 for the actual attention computation, INT8 was just for scoring)
-    #
-    # For blocks that pass INT8 certification: score with INT8, attend with values only
-    # For blocks that fail certification: would page in FP16 from CPU
-    #
-    # Current implementation: use the INT8-dequantised keys for attended blocks.
-    # The dequantisation happens inside the selective attend kernel (from key_cache).
-    # Since we're reading K anyway for the attend pass, using fp32 keys from
-    # the INT8 dequant is fine — the error is bounded by the correction factor.
-
-    # Use pre-computed dequant buffers if available, else compute on the fly
-    if cache._keys_deq_f32 is not None:
-        keys_deq_flat = cache._keys_deq_f32
-    else:
-        keys_deq_flat = (
-            cache.keys_int8.to(torch.float32).reshape(
-                cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim
-            ) * cache.keys_scale[:, :, None, None]
-        ).reshape(cache.kv_heads, cache.num_tokens, cache.head_dim)
-
-    values_f32 = cache._values_f32 if cache._values_f32 is not None else cache.values_fp16.to(torch.float32)
-
-    output = selective_attend_multihead(
-        keys_packed=keys_deq_flat,
-        values_packed=values_f32,
+    # INT8 in-register dequant: reads INT8 keys + per-block scale directly,
+    # dequantises in register file. No float32 key tensor materialised in VRAM.
+    # Values read as FP16 and cast in-register.
+    output = selective_attend_multihead_int8(
+        keys_int8=cache.keys_int8,
+        keys_scale=cache.keys_scale,
+        values_fp16=cache.values_fp16,
         q_all=q_all,
         skip_mask_i32=skip_mask.to(torch.int32),
         gqa_group=gqa_group,
