@@ -1,9 +1,16 @@
-"""Fused INT8 block scoring + certification kernel.
+"""Fused INT8 score + block-reduce + certify: single kernel launch.
 
-Single Triton kernel scores all blocks, two-kernel pipeline certifies.
-The scoring kernel loads K_int8 as 2D [block_size, TILE_D] tiles and
-computes all 16 per-token dot products in parallel via tl.dot or
-vectorised element-wise multiply + reduce.
+One Triton kernel that:
+  1. Loads K_int8 tiles from global memory
+  2. Dequantises in registers
+  3. Computes q·K dot products via vectorised multiply-accumulate
+  4. Reduces per-block: m_b = max(scores), S_b = sum(exp(scores - m_b))
+  5. Writes m_b, S_b to global memory
+
+Then a tiny certification kernel (single launch, O(num_blocks) scalar ops)
+computes global max, total mass, and skip mask.
+
+Total: 2 kernel launches for the entire Phase 1 pipeline.
 """
 from __future__ import annotations
 
@@ -12,114 +19,117 @@ import triton
 import triton.language as tl
 
 
+# ---------------------------------------------------------------------------
+# Kernel 1: Fused matmul + block reduce (one launch, one program per block)
+# ---------------------------------------------------------------------------
 @triton.jit
-def _fused_score_reduce_kernel(
-    K_int8_ptr,
-    K_scale_ptr,
-    Q_ptr,
-    M_b_ptr,
-    S_b_ptr,
-    stride_k_n,       # K_int8 stride along token dim (= head_dim for contiguous)
+def _fused_matmul_reduce_kernel(
+    # Data
+    K_int8_ptr,      # [N, head_dim] int8 contiguous
+    K_scale_ptr,     # [num_blocks] float32
+    Q_ptr,           # [head_dim] float32
+    # Output
+    M_b_ptr,         # [num_blocks] float32
+    S_b_ptr,         # [num_blocks] float32
+    # Layout
+    stride_k_n: tl.constexpr,     # head_dim (K contiguous)
     head_dim: tl.constexpr,
-    block_size: tl.constexpr,
+    block_size: tl.constexpr,     # 16
     q_scale: tl.constexpr,
-    TILE_D: tl.constexpr,
+    num_blocks: tl.constexpr,
+    # Tuning
+    TILE_D: tl.constexpr,         # head_dim tile (power of 2, >= head_dim)
+    BPP: tl.constexpr,            # blocks per program
 ):
-    """One program per KV block. Vectorised across block_size tokens."""
-    block_id = tl.program_id(0)
-    k_scale = tl.load(K_scale_ptr + block_id).to(tl.float32)
-    base_row = block_id * block_size
+    """Each program handles BPP blocks, amortising launch overhead."""
+    pid = tl.program_id(0)
+    t_offs = tl.arange(0, block_size)  # [BS]
+    d_offs = tl.arange(0, TILE_D)     # [TD]
+    num_tiles = (head_dim + TILE_D - 1) // TILE_D
 
-    # scores[t] accumulates the dot product for each of block_size tokens
-    scores = tl.zeros((block_size,), dtype=tl.float32)
-    t_offsets = tl.arange(0, block_size)  # [block_size]
+    for local_b in range(BPP):
+        bid = pid * BPP + local_b
+        still_valid = bid < num_blocks
+        if still_valid:
+            base = bid * block_size
+            k_scale = tl.load(K_scale_ptr + bid).to(tl.float32)
+            scores = tl.zeros((block_size,), dtype=tl.float32)
+            row_ptrs = K_int8_ptr + (base + t_offs) * stride_k_n
 
-    for d_start in range(0, head_dim, TILE_D):
-        d_offsets = d_start + tl.arange(0, TILE_D)
-        d_mask = d_offsets < head_dim
+            for tile_idx in range(num_tiles):
+                d_start = tile_idx * TILE_D
+                d_off = d_start + d_offs
+                d_mask = d_off < head_dim
+                q_tile = tl.load(Q_ptr + d_off, mask=d_mask, other=0.0).to(tl.float32)
+                k_ptrs = row_ptrs[:, None] + d_off[None, :]
+                k_tile = tl.load(k_ptrs, mask=d_mask[None, :], other=0).to(tl.float32)
+                k_fp = k_tile * k_scale
+                scores += tl.sum(k_fp * q_tile[None, :], axis=1)
 
-        # q_tile: [TILE_D]
-        q_tile = tl.load(Q_ptr + d_offsets, mask=d_mask, other=0.0).to(tl.float32)
-
-        # K_tile: [block_size, TILE_D] — 2D load
-        # k_ptrs[t, d] = K_int8_ptr + (base_row + t) * stride_k_n + d_offsets[d]
-        k_ptrs = K_int8_ptr + (base_row + t_offsets[:, None]) * stride_k_n + d_offsets[None, :]
-        k_mask = d_mask[None, :]  # broadcast: [1, TILE_D] → [block_size, TILE_D]
-        k_tile = tl.load(k_ptrs, mask=k_mask, other=0).to(tl.float32)  # [block_size, TILE_D]
-
-        # Dequantise
-        k_fp = k_tile * k_scale  # [block_size, TILE_D]
-
-        # Per-token dot product: scores[t] += sum_d(k_fp[t, d] * q_tile[d])
-        partial = tl.sum(k_fp * q_tile[None, :], axis=1)  # [block_size]
-        scores += partial
-
-    scores = scores * q_scale
-
-    # Reduce: m_b = max, S_b = sum(exp(scores - m_b))
-    m_b = tl.max(scores)
-    s_b = tl.sum(tl.exp(scores - m_b))
-
-    tl.store(M_b_ptr + block_id, m_b)
-    tl.store(S_b_ptr + block_id, s_b)
+            scores = scores * q_scale
+            m_b = tl.max(scores)
+            s_b = tl.sum(tl.exp(scores - m_b))
+            tl.store(M_b_ptr + bid, m_b)
+            tl.store(S_b_ptr + bid, s_b)
 
 
+# ---------------------------------------------------------------------------
+# Kernel 2: Certify (single program, O(num_blocks) work, ~1-2μs)
+# ---------------------------------------------------------------------------
 @triton.jit
-def _certify_skip_kernel(
-    M_b_ptr,
-    S_b_ptr,
-    Corr_ptr,
-    Skip_ptr,
-    TotalMass_ptr,
-    MGlobal_ptr,
+def _certify_kernel(
+    M_b_ptr,          # [num_blocks] float32
+    S_b_ptr,          # [num_blocks] float32
+    Corr_ptr,         # [num_blocks] float32
+    Skip_ptr,         # [num_blocks] int32 output
     num_blocks: tl.constexpr,
     block_epsilon: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    TILE_N: tl.constexpr,
 ):
-    """Single program: global max → total mass → skip mask."""
     # Pass 1: global max
-    m_global = tl.full((), float("-inf"), dtype=tl.float32)
-    for start in range(0, num_blocks, BLOCK_N):
-        offs = start + tl.arange(0, BLOCK_N)
-        mask = offs < num_blocks
-        m_global = tl.maximum(m_global, tl.max(tl.load(M_b_ptr + offs, mask=mask, other=float("-inf"))))
-    tl.store(MGlobal_ptr, m_global)
+    m_g = tl.full((), float("-inf"), dtype=tl.float32)
+    for s in range(0, num_blocks, TILE_N):
+        o = s + tl.arange(0, TILE_N)
+        mk = o < num_blocks
+        m_g = tl.maximum(m_g, tl.max(tl.load(M_b_ptr + o, mask=mk, other=float("-inf"))))
 
     # Pass 2: total mass
-    total_mass = tl.full((), 0.0, dtype=tl.float32)
-    for start in range(0, num_blocks, BLOCK_N):
-        offs = start + tl.arange(0, BLOCK_N)
-        mask = offs < num_blocks
-        s = tl.load(S_b_ptr + offs, mask=mask, other=0.0)
-        m = tl.load(M_b_ptr + offs, mask=mask, other=float("-inf"))
-        c = tl.load(Corr_ptr + offs, mask=mask, other=1.0)
-        total_mass += tl.sum(tl.where(mask, s * c * tl.exp(m - m_global), 0.0))
-    tl.store(TotalMass_ptr, total_mass)
+    total = tl.full((), 0.0, dtype=tl.float32)
+    for s in range(0, num_blocks, TILE_N):
+        o = s + tl.arange(0, TILE_N)
+        mk = o < num_blocks
+        sb = tl.load(S_b_ptr + o, mask=mk, other=0.0)
+        mb = tl.load(M_b_ptr + o, mask=mk, other=float("-inf"))
+        cr = tl.load(Corr_ptr + o, mask=mk, other=1.0)
+        total += tl.sum(tl.where(mk, sb * cr * tl.exp(mb - m_g), 0.0))
 
     # Pass 3: skip mask
-    for start in range(0, num_blocks, BLOCK_N):
-        offs = start + tl.arange(0, BLOCK_N)
-        mask = offs < num_blocks
-        s = tl.load(S_b_ptr + offs, mask=mask, other=0.0)
-        m = tl.load(M_b_ptr + offs, mask=mask, other=float("-inf"))
-        c = tl.load(Corr_ptr + offs, mask=mask, other=1.0)
-        res = s * c * tl.exp(m - m_global)
-        skip = (res / total_mass) < block_epsilon
-        tl.store(Skip_ptr + offs, tl.where(mask, skip.to(tl.int32), 0), mask=mask)
+    for s in range(0, num_blocks, TILE_N):
+        o = s + tl.arange(0, TILE_N)
+        mk = o < num_blocks
+        sb = tl.load(S_b_ptr + o, mask=mk, other=0.0)
+        mb = tl.load(M_b_ptr + o, mask=mk, other=float("-inf"))
+        cr = tl.load(Corr_ptr + o, mask=mk, other=1.0)
+        res = sb * cr * tl.exp(mb - m_g)
+        skip = (res / total) < block_epsilon
+        tl.store(Skip_ptr + o, tl.where(mk, skip.to(tl.int32), 0), mask=mk)
 
 
+# ---------------------------------------------------------------------------
+# Python API
+# ---------------------------------------------------------------------------
 def fused_score_certify(
-    K_int8: torch.Tensor,
-    K_scale: torch.Tensor,
-    q: torch.Tensor,
-    correction: torch.Tensor,
+    K_int8: torch.Tensor,         # [N, head_dim] int8 contiguous
+    K_scale: torch.Tensor,        # [num_blocks] float32
+    q: torch.Tensor,              # [head_dim] float32
+    correction: torch.Tensor,     # [num_blocks] float32
     block_size: int = 16,
     q_scale: float = 1.0,
     block_epsilon: float = 0.001,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float, float]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fused INT8 scoring + certification.
 
-    Returns (m_b, S_b, skip_mask, m_global, total_mass).
+    Returns (m_b, S_b, skip_mask).
     """
     N, head_dim = K_int8.shape
     num_blocks = N // block_size
@@ -128,37 +138,42 @@ def fused_score_certify(
     m_b = torch.empty(num_blocks, dtype=torch.float32, device=device)
     S_b = torch.empty(num_blocks, dtype=torch.float32, device=device)
 
-    TILE_D = min(triton.next_power_of_2(head_dim), 128)
+    TILE_D = triton.next_power_of_2(head_dim)
 
-    _fused_score_reduce_kernel[(num_blocks,)](
+    # Fewer programs, more blocks per program → amortise launch overhead
+    # Target ~32 programs (one per SM on typical GPUs)
+    BPP = max(1, (num_blocks + 31) // 32)
+    n_progs = (num_blocks + BPP - 1) // BPP
+
+    _fused_matmul_reduce_kernel[(n_progs,)](
         K_int8, K_scale, q, m_b, S_b,
         stride_k_n=head_dim,
         head_dim=head_dim,
         block_size=block_size,
         q_scale=q_scale,
+        num_blocks=num_blocks,
         TILE_D=TILE_D,
+        BPP=BPP,
     )
 
+    # Kernel 2: certify — single program
     skip_i32 = torch.empty(num_blocks, dtype=torch.int32, device=device)
-    tm = torch.empty(1, dtype=torch.float32, device=device)
-    mg = torch.empty(1, dtype=torch.float32, device=device)
-    BLOCK_N = min(triton.next_power_of_2(num_blocks), 1024)
-
-    _certify_skip_kernel[(1,)](
-        m_b, S_b, correction, skip_i32, tm, mg,
+    TILE_N = min(triton.next_power_of_2(num_blocks), 1024)
+    _certify_kernel[(1,)](
+        m_b, S_b, correction, skip_i32,
         num_blocks=num_blocks,
         block_epsilon=block_epsilon,
-        BLOCK_N=BLOCK_N,
+        TILE_N=TILE_N,
     )
 
-    return m_b, S_b, skip_i32.bool(), mg.item(), tm.item()
+    return m_b, S_b, skip_i32.bool()
 
 
 def selective_attend(
-    keys_fp: torch.Tensor,
-    values_fp: torch.Tensor,
-    q: torch.Tensor,
-    skip_mask: torch.Tensor,
+    keys_fp: torch.Tensor,        # [N, head_dim]
+    values_fp: torch.Tensor,      # [N, d_v]
+    q: torch.Tensor,              # [head_dim]
+    skip_mask: torch.Tensor,      # [num_blocks] bool
     block_size: int = 16,
     q_scale: float = 1.0,
 ) -> torch.Tensor:

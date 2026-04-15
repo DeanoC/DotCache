@@ -108,6 +108,7 @@ def hybrid_phase1(scores_flat, correction, num_blocks, block_size=16, block_epsi
 def main():
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from benchmarks.build_heterogeneous_context import build_context
+    from dotcache.kernels.fused_score_certify import fused_score_certify as fused_v2, selective_attend
 
     token = os.environ.get("HF_TOKEN", "")
     tokenizer = AutoTokenizer.from_pretrained("NousResearch/Meta-Llama-3.1-8B", token=token)
@@ -151,6 +152,7 @@ def main():
     k_max = keys_bl.abs().amax(dim=(1, 2)).clamp(min=1e-8)
     k_scale = k_max / 127.0
     keys_i8 = (keys_bl / k_scale.unsqueeze(1).unsqueeze(2)).round().clamp(-127, 127).to(torch.int8)
+    keys_i8_flat = keys_i8.reshape(N, head_dim).contiguous()
     keys_deq_flat = (keys_i8.to(torch.float32) * k_scale.unsqueeze(1).unsqueeze(2)).reshape(N, head_dim)
 
     # Correction
@@ -240,6 +242,42 @@ def main():
     print(f"  End-to-end (P1+P2):        {t_e2e:>7.1f} μs")
     print(f"  vs baseline:               {(t_full-t_e2e)/t_full:+.1%}")
     print(f"  Skip: {skip.sum()}/{num_blocks} ({skip.sum()/num_blocks:.1%})")
+
+    # === V2: Fused matmul+reduce kernel ===
+    print(f"\n=== Fused V2: single matmul+reduce kernel ===")
+
+    # Warmup
+    for _ in range(50):
+        fused_v2(keys_i8_flat, k_scale, q_vec, correction, block_size, q_scale_val)
+    torch.cuda.synchronize()
+
+    # Validate
+    m2, s2, sk2 = fused_v2(keys_i8_flat, k_scale, q_vec, correction, block_size, q_scale_val)
+    m_ref = s_test.reshape(num_blocks, block_size).max(dim=1).values
+    S_ref = torch.exp(s_test.reshape(num_blocks, block_size) - m_ref.unsqueeze(1)).sum(dim=1)
+    print(f"  Correct: m_b err={( m2 - m_ref).abs().max():.6f}  S_b err={(s2 - S_ref).abs().max():.6f}  skip={sk2.sum()}/{num_blocks}")
+
+    # Fused P1 only
+    torch.cuda.synchronize(); t0 = time.perf_counter()
+    for _ in range(iters):
+        m2, s2, sk2 = fused_v2(keys_i8_flat, k_scale, q_vec, correction, block_size, q_scale_val)
+    torch.cuda.synchronize()
+    t_v2_p1 = (time.perf_counter() - t0) / iters * 1e6
+
+    # Fused P1 + P2
+    torch.cuda.synchronize(); t0 = time.perf_counter()
+    for _ in range(iters):
+        m2, s2, sk2 = fused_v2(keys_i8_flat, k_scale, q_vec, correction, block_size, q_scale_val)
+        o = selective_attend(keys_fp, vals_fp, q_vec, sk2, block_size, q_scale_val)
+    torch.cuda.synchronize()
+    t_v2_e2e = (time.perf_counter() - t0) / iters * 1e6
+
+    n2 = int((~sk2).sum().item())
+    print(f"  Fused P1 (score+reduce+certify): {t_v2_p1:>7.1f} μs ({t_v2_p1/t_full:.0%} of full)")
+    print(f"  Fused E2E (P1 + selective P2):   {t_v2_e2e:>7.1f} μs")
+    print(f"  vs baseline:                     {(t_full-t_v2_e2e)/t_full:+.1%}")
+    print(f"  vs cuBLAS+Triton pipeline:       {(t_e2e-t_v2_e2e)/t_e2e:+.1%}")
+    print(f"  Skip: {sk2.sum()}/{num_blocks}")
 
 
 if __name__ == "__main__":
