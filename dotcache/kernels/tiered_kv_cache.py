@@ -235,28 +235,23 @@ class TieredKeyCacheLayer:
                 new_v.to(device=device, dtype=torch.float16).unsqueeze(1),
             ], dim=1)
 
-        # Grow INT8 keys: append a placeholder (will be requantised at block boundary)
-        # For now, do a quick single-token quantise using the current block's scale
+        # Grow INT8 keys
         new_k_f32 = new_k.to(device=device, dtype=torch.float32)  # [kv_heads, head_dim]
         block_idx = pos // self.block_size
+        token_in_block = pos % self.block_size
+        need_new_block = block_idx >= self.keys_scale.shape[1]
 
-        if block_idx < self.num_blocks:
-            # Still within existing block range — use existing scale
-            k_scale = self.keys_scale[:, block_idx]  # [kv_heads]
-            k_int8 = (new_k_f32 / k_scale.unsqueeze(-1).clamp(min=1e-8)).round().clamp(-127, 127).to(torch.int8)
-        else:
-            # New block — compute fresh scale from this single token
+        if need_new_block:
+            # First token of a new block — compute fresh scale
             k_max = new_k_f32.abs().amax(dim=-1).clamp(min=1e-8)
             k_scale_new = k_max / 127.0
             k_int8 = (new_k_f32 / k_scale_new.unsqueeze(-1)).round().clamp(-127, 127).to(torch.int8)
 
-            # Extend scale and correction tensors
             self.keys_scale = torch.cat([
                 self.keys_scale,
                 k_scale_new.unsqueeze(1).to(self.keys_scale),
             ], dim=1)
 
-            # Conservative correction for new block
             q_norm_est = self.head_dim ** 0.5
             q_scale_est = 1.0 / (self.head_dim ** 0.5)
             delta = q_norm_est * (k_scale_new * 2 / 255) / 2 * q_scale_est
@@ -265,6 +260,10 @@ class TieredKeyCacheLayer:
                 self.correction,
                 corr.unsqueeze(1).to(self.correction),
             ], dim=1)
+        else:
+            # Within existing block — use existing scale
+            k_scale = self.keys_scale[:, block_idx]
+            k_int8 = (new_k_f32 / k_scale.unsqueeze(-1).clamp(min=1e-8)).round().clamp(-127, 127).to(torch.int8)
 
         # Append INT8 key
         self.keys_int8 = torch.cat([
@@ -304,9 +303,10 @@ class TieredKeyCacheLayer:
                 new_err = torch.full((kv_heads, 1), max_err, dtype=torch.float32, device=device)
                 self.values_int4_errors = torch.cat([self.values_int4_errors, new_err], dim=1)
 
-        # Update counts
+        # Update counts — num_blocks uses floor division to match kernel expectations
+        # (kernels compute num_blocks = N // block_size, ignoring partial trailing block)
         self.num_tokens = pos + 1
-        self.num_blocks = (self.num_tokens + self.block_size - 1) // self.block_size
+        self.num_blocks = self.num_tokens // self.block_size
 
     def precompute_dequant(self) -> None:
         """Pre-compute dequantised keys and float32 values to avoid per-call allocation."""

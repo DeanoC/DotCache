@@ -124,15 +124,21 @@ def certified_attention_layer(
     # highest-scoring blocks. This eliminates the INT8 key quantisation error
     # on the blocks that contribute most attention mass (the "needle" blocks).
     # Cost: one CPU→GPU page-in per KV head for K blocks (~3μs at K=4).
+    #
+    # Only operate on block-aligned tokens (after append, num_tokens may
+    # exceed num_blocks * block_size by a partial block).
     top_k_fp16 = 4
-    if top_k_fp16 > 0 and cache.keys_fp16_cpu is not None:
-        # Build a mixed key tensor: INT8 dequant for most blocks, FP16 for top-K
+    aligned_tokens = cache.num_blocks * cache.block_size
+    if top_k_fp16 > 0 and cache.keys_fp16_cpu is not None and aligned_tokens > 0:
+        keys_aligned = cache.keys_int8[:, :aligned_tokens, :]
+        keys_fp16_aligned = cache.keys_fp16_cpu[:, :aligned_tokens, :]
+
         keys_mixed = (
-            cache.keys_int8.to(torch.float32).reshape(
+            keys_aligned.to(torch.float32).reshape(
                 cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim
-            ) * cache.keys_scale[:, :, None, None]
+            ) * cache.keys_scale[:, :cache.num_blocks, None, None]
         )
-        keys_fp16_bl = cache.keys_fp16_cpu.to(
+        keys_fp16_bl = keys_fp16_aligned.to(
             dtype=torch.float32, device=cache.keys_int8.device,
         ).reshape(cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim)
 
@@ -141,7 +147,15 @@ def certified_attention_layer(
             topk_idx = m_b[qh].topk(min(top_k_fp16, cache.num_blocks)).indices
             keys_mixed[kv, topk_idx] = keys_fp16_bl[kv, topk_idx]
 
-        keys_for_attend = keys_mixed.reshape(cache.kv_heads, cache.num_tokens, cache.head_dim)
+        # Reconstruct full key tensor: mixed blocks + any trailing partial tokens
+        keys_for_attend = keys_mixed.reshape(cache.kv_heads, aligned_tokens, cache.head_dim)
+        if cache.num_tokens > aligned_tokens:
+            trailing = cache.keys_int8[:, aligned_tokens:, :].to(torch.float32)
+            # Trailing tokens don't have block-level scales — use last block's scale
+            if cache.keys_scale.shape[1] > 0:
+                last_scale = cache.keys_scale[:, -1:, None]
+                trailing = trailing * last_scale
+            keys_for_attend = torch.cat([keys_for_attend, trailing], dim=1)
         del keys_mixed, keys_fp16_bl
         use_mixed_keys = True
     else:
