@@ -319,6 +319,12 @@ def _run_all_lanes_for_case(
             f"cert_stop_blocks={tel['first_certified_stop_blocks']}, "
             f"checkpoints={tel['last_checkpoint_count']}"
         )
+
+    # Reset adapter to dense mode so the next case's shared prefill (full
+    # sequence forward pass) does not hit the persistent-mode batch=1/query=1
+    # guard.
+    adapter.set_mode("dense")
+    adapter.clear()
     return results
 
 
