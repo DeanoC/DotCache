@@ -62,6 +62,10 @@ def measure_cosine(model, tokenizer, ctx_len, v_mode="fp16"):
             use_cache=True, output_hidden_states=True,
         )
 
+    # Save hidden states (lightweight) and free heavy decode outputs
+    hidden_states_cpu = [h.detach().cpu() for h in dec.hidden_states]
+    del dec
+
     # Build tiered caches
     layer_ids = list(range(num_layers))
     if v_mode == "int4":
@@ -69,30 +73,41 @@ def measure_cosine(model, tokenizer, ctx_len, v_mode="fp16"):
     else:
         caches = create_tiered_cache_from_model(past_kv, layer_ids)
 
+    # Free prefill KV (now in tiered caches)
+    del past_kv, outputs
+    gc.collect()
+    torch.cuda.empty_cache()
+
     # For each layer: extract dense attention output, run certified, compare
+    # Process one KV head at a time to avoid OOM at long contexts
     per_layer = []
     for lid in range(num_layers):
         cache = caches[lid]
         eps = LAYER_EPS.get(lid, 1e-4)
         attn = model.model.layers[lid].self_attn
 
-        # Get query for this layer from the decode step hidden states
         with torch.inference_mode():
-            q_all = attn.q_proj(dec.hidden_states[lid]).view(num_q, head_dim).to(torch.float32)
+            h = hidden_states_cpu[lid].to("cuda")
+            q_all = attn.q_proj(h).view(num_q, head_dim).to(torch.float32)
+            del h
 
-        # Dense attention output (full FP32)
-        keys_fp = cache.keys_fp16_cpu.to(dtype=torch.float32, device="cuda")
-        if cache.values_fp16 is not None:
-            vals_fp = cache.values_fp16.to(torch.float32)
-        else:
-            vals_fp = cache.values_fp16_cpu.to(dtype=torch.float32, device="cuda")
-
+        # Dense attention: compute per KV-head to limit VRAM
         out_dense = torch.empty(num_q, head_dim, dtype=torch.float32, device="cuda")
-        for qh in range(num_q):
-            kv = qh // gqa
-            s = torch.matmul(keys_fp[kv], q_all[qh]) * q_scale
-            w = torch.softmax(s, dim=0)
-            out_dense[qh] = w @ vals_fp[kv]
+        for kv in range(num_kv):
+            keys_h = cache.keys_fp16_cpu[kv].to(dtype=torch.float32, device="cuda")
+            if cache.values_fp16 is not None:
+                vals_h = cache.values_fp16[kv].to(torch.float32)
+            elif cache.values_fp16_cpu is not None:
+                vals_h = cache.values_fp16_cpu[kv].to(dtype=torch.float32, device="cuda")
+            else:
+                vals_h = cache.dequantise_int4_values()[kv]
+
+            for qh in range(kv * gqa, (kv + 1) * gqa):
+                s = torch.matmul(keys_h, q_all[qh]) * q_scale
+                w = torch.softmax(s, dim=0)
+                out_dense[qh] = w @ vals_h
+
+            del keys_h, vals_h
 
         # Certified attention output
         out_cert, stats = certified_attention_layer(
@@ -108,8 +123,9 @@ def measure_cosine(model, tokenizer, ctx_len, v_mode="fp16"):
             "v_format": stats.get("v_format", v_mode),
         })
 
-        del keys_fp, vals_fp
+        del out_dense, out_cert
         gc.collect()
+        torch.cuda.empty_cache()
 
     cos_mins = [l["cos_min"] for l in per_layer]
     return {
