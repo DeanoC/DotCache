@@ -103,6 +103,7 @@ def measure_execution_floor(
                 cache, q_all, gqa, q_scale,
                 block_epsilon=0.0,  # disable all skipping
                 collect_stats=False,
+                top_k_fp16_keys=4,  # match production configuration
             )
 
             # Per-head cosine
