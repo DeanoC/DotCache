@@ -21,6 +21,7 @@ from dotcache.kernels.selective_attend_triton import (
     selective_attend_multihead,
     selective_attend_multihead_int8,
     selective_attend_multihead_int8k_int4v,
+    selective_attend_multihead_hybrid,
 )
 
 
@@ -92,6 +93,7 @@ def certified_attention_layer(
     block_epsilon: float = 0.001,
     collect_stats: bool = True,
     v_tolerance: float = DEFAULT_V_TOLERANCE,
+    top_k_fp16_keys: int = 0,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -109,11 +111,12 @@ def certified_attention_layer(
     num_q_heads = q_all.shape[0]
 
     # Phase 1: Multi-head INT8 scoring + certification
+    # Use active slices (not full pre-allocated buffers)
     m_b, S_b, skip_mask = fused_score_certify_multihead(
-        K_int8_packed=cache.keys_int8,
-        K_scale=cache.keys_scale,
+        K_int8_packed=cache.keys_int8_active(),
+        K_scale=cache.keys_scale_active(),
         q_all=q_all,
-        correction=cache.correction,
+        correction=cache.correction_active(),
         gqa_group=gqa_group,
         block_size=cache.block_size,
         q_scale=q_scale,
@@ -127,61 +130,64 @@ def certified_attention_layer(
     #
     # Only operate on block-aligned tokens (after append, num_tokens may
     # exceed num_blocks * block_size by a partial block).
-    top_k_fp16 = 4
-    aligned_tokens = cache.num_blocks * cache.block_size
-    if top_k_fp16 > 0 and cache.keys_fp16_cpu is not None and aligned_tokens > 0:
-        keys_aligned = cache.keys_int8[:, :aligned_tokens, :]
-        keys_fp16_aligned = cache.keys_fp16_cpu[:, :aligned_tokens, :]
+    top_k_fp16 = top_k_fp16_keys
+    aligned_tokens = cache.aligned_tokens
+    use_mixed_keys = False
 
-        keys_mixed = (
-            keys_aligned.to(torch.float32).reshape(
-                cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim
-            ) * cache.keys_scale[:, :cache.num_blocks, None, None]
-        )
-        keys_fp16_bl = keys_fp16_aligned.to(
-            dtype=torch.float32, device=cache.keys_int8.device,
-        ).reshape(cache.kv_heads, cache.num_blocks, cache.block_size, cache.head_dim)
+    use_hybrid = top_k_fp16 > 0 and cache.keys_fp16_cpu is not None and cache.num_blocks > 0
 
+    if use_hybrid:
+        # Build per-head top-K mask
+        topk_mask = torch.zeros(num_q_heads, cache.num_blocks, dtype=torch.int32,
+                                device=cache.keys_int8.device)
+        all_topk = set()
         for qh in range(num_q_heads):
-            kv = qh // gqa_group
             topk_idx = m_b[qh].topk(min(top_k_fp16, cache.num_blocks)).indices
-            keys_mixed[kv, topk_idx] = keys_fp16_bl[kv, topk_idx]
+            topk_mask[qh, topk_idx] = 1
+            all_topk.update(topk_idx.tolist())
 
-        # Reconstruct full key tensor: mixed blocks + any trailing partial tokens
-        keys_for_attend = keys_mixed.reshape(cache.kv_heads, aligned_tokens, cache.head_dim)
-        if cache.num_tokens > aligned_tokens:
-            trailing = cache.keys_int8[:, aligned_tokens:, :].to(torch.float32)
-            # Trailing tokens don't have block-level scales — use last block's scale
-            if cache.keys_scale.shape[1] > 0:
-                last_scale = cache.keys_scale[:, -1:, None]
-                trailing = trailing * last_scale
-            keys_for_attend = torch.cat([keys_for_attend, trailing], dim=1)
-        del keys_mixed, keys_fp16_bl
-        use_mixed_keys = True
-    else:
-        use_mixed_keys = False
+        # Hot-page cache: keep FP16 blocks in VRAM. Only page-in blocks
+        # that aren't already cached. Top-K blocks tend to be stable across
+        # decode steps (the "needle" blocks don't move).
+        if not hasattr(cache, '_fp16_hot_cache'):
+            cache._fp16_hot_cache = torch.zeros(
+                cache.kv_heads, cache.keys_int8.shape[1], cache.head_dim,
+                dtype=torch.float16, device=cache.keys_int8.device,
+            )
+            cache._fp16_hot_set = set()
+        # Page in only new blocks not already in hot cache
+        new_blocks = all_topk - cache._fp16_hot_set
+        for bid in new_blocks:
+            start = bid * cache.block_size
+            end = start + cache.block_size
+            cache._fp16_hot_cache[:, start:end, :] = cache.keys_fp16_cpu[:, start:end, :].to(
+                device=cache.keys_int8.device, non_blocking=True,
+            )
+        cache._fp16_hot_set.update(new_blocks)
+        keys_fp16_sparse = cache._fp16_hot_cache[:, :aligned_tokens, :]
 
     # Phase 2: Select V format and run attention
     v_format = "fp16"  # default
 
-    if use_mixed_keys:
-        # Use mixed INT8+FP16 keys with appropriate values
-        if cache.values_int4_packed is not None:
-            values_for_attend = cache.dequantise_int4_values().to(torch.float16)
-        elif cache.values_fp16 is not None:
-            values_for_attend = cache.values_fp16
-        else:
-            values_for_attend = cache.values_fp16_cpu.to(device=cache.keys_int8.device)
-        output = selective_attend_multihead(
-            keys_packed=keys_for_attend,
-            values_packed=values_for_attend.to(torch.float32),
+    if use_hybrid:
+        # Hybrid kernel: INT8 keys + sparse FP16 for top-K, one Triton launch
+        aligned = cache.aligned_tokens
+        values_for_attend = (cache.values_fp16[:, :aligned, :]
+                             if cache.values_fp16 is not None
+                             else cache.values_fp16_cpu[:, :aligned, :].to(device=cache.keys_int8.device))
+        output = selective_attend_multihead_hybrid(
+            keys_int8=cache.keys_int8_active(),
+            keys_scale=cache.keys_scale_active(),
+            keys_fp16=keys_fp16_sparse,
+            topk_mask=topk_mask,
+            values_fp16=values_for_attend,
             q_all=q_all,
             skip_mask_i32=skip_mask.to(torch.int32),
             gqa_group=gqa_group,
             block_size=cache.block_size,
             q_scale=q_scale,
         )
-        del keys_for_attend
+        del topk_mask  # keys_fp16_sparse is the hot cache — keep it
     elif cache.values_int4_packed is not None:
         # Runtime V-format decision based on mass partition
         if collect_stats:
@@ -196,8 +202,8 @@ def certified_attention_layer(
 
         if v_format == "int4":
             output = selective_attend_multihead_int8k_int4v(
-                keys_int8=cache.keys_int8,
-                keys_scale=cache.keys_scale,
+                keys_int8=cache.keys_int8_active(),
+                keys_scale=cache.keys_scale_active(),
                 values_int4_packed=cache.values_int4_packed,
                 values_int4_scales=cache.values_int4_scales,
                 values_int4_zeros=cache.values_int4_zeros,
@@ -219,8 +225,8 @@ def certified_attention_layer(
             else:
                 raise ValueError("INT4 unsafe and no FP16 fallback available")
             output = selective_attend_multihead_int8(
-                keys_int8=cache.keys_int8,
-                keys_scale=cache.keys_scale,
+                keys_int8=cache.keys_int8_active(),
+                keys_scale=cache.keys_scale_active(),
                 values_fp16=values_fp16,
                 q_all=q_all,
                 skip_mask_i32=skip_mask.to(torch.int32),
@@ -229,10 +235,12 @@ def certified_attention_layer(
                 q_scale=q_scale,
             )
     elif cache.values_fp16 is not None:
+        # Keys and values must have matching N (block-aligned)
+        aligned = cache.aligned_tokens
         output = selective_attend_multihead_int8(
-            keys_int8=cache.keys_int8,
-            keys_scale=cache.keys_scale,
-            values_fp16=cache.values_fp16,
+            keys_int8=cache.keys_int8_active(),
+            keys_scale=cache.keys_scale_active(),
+            values_fp16=cache.values_fp16[:, :aligned, :],
             q_all=q_all,
             skip_mask_i32=skip_mask.to(torch.int32),
             gqa_group=gqa_group,

@@ -65,21 +65,24 @@ class TieredKeyCacheLayer:
         values_fp16: torch.Tensor,   # [kv_heads, N, d_v] float16/32, device=cuda
         block_size: int = 16,
         max_pagein_blocks: int = 64,
+        max_new_tokens: int = 512,
     ) -> "TieredKeyCacheLayer":
         """Create tiered cache from existing FP16 KV tensors.
 
         Quantises keys to INT8 on GPU, then moves FP16 originals to pinned CPU.
+        Pre-allocates extra slots for max_new_tokens decode steps (zero-copy append).
         """
         kv_heads, N, head_dim = keys_fp16.shape
         d_v = values_fp16.shape[2]
         num_blocks = N // block_size
         device = keys_fp16.device
+        capacity = N + max_new_tokens  # pre-allocate for decode
 
         # Reshape to blocks for per-block quantisation
         keys_blocked = keys_fp16.reshape(kv_heads, num_blocks, block_size, head_dim).to(torch.float32)
 
         # Per-block symmetric INT8 quantisation
-        k_max = keys_blocked.abs().amax(dim=(2, 3)).clamp(min=1e-8)  # [kv_heads, num_blocks]
+        k_max = keys_blocked.abs().amax(dim=(2, 3)).clamp(min=1e-8)
         k_scale = k_max / 127.0
         keys_int8 = (
             (keys_blocked / k_scale[:, :, None, None])
@@ -90,18 +93,11 @@ class TieredKeyCacheLayer:
             .contiguous()
         )
 
-        # Compute correction factor: conservative per-block bound
-        # Use a reference query (mean of centroids) to estimate max score error
-        # For production: compute tighter per-head corrections at query time
-        keys_deq = keys_int8.to(torch.float32).reshape(kv_heads, num_blocks, block_size, head_dim)
-        keys_deq = keys_deq * k_scale[:, :, None, None]
-
-        # Conservative correction: use ||q_typical|| * delta_step / 2 * 3
-        # With per-block scales, delta_step = 2 * k_scale / 255
-        q_norm_est = (head_dim ** 0.5)  # typical query norm
+        # Conservative correction
+        q_norm_est = (head_dim ** 0.5)
         q_scale_est = 1.0 / (head_dim ** 0.5)
         delta_per_block = q_norm_est * (k_scale * 2 / 255) / 2 * q_scale_est
-        correction = torch.exp(3 * delta_per_block)  # [kv_heads, num_blocks]
+        correction = torch.exp(3 * delta_per_block)
 
         # Move FP16 originals to pinned CPU memory
         keys_fp16_cpu = keys_fp16.to(dtype=torch.float16).cpu().pin_memory()
@@ -115,12 +111,37 @@ class TieredKeyCacheLayer:
             dtype=torch.float16, device=device,
         )
 
-        return cls(
-            keys_int8=keys_int8,
-            keys_scale=k_scale.to(torch.float32),
-            correction=correction.to(torch.float32),
-            values_fp16=values_fp16_cuda,
-            keys_fp16_cpu=keys_fp16_cpu,
+        # Pre-allocate decode buffers (zero-copy append)
+        max_new_blocks = (max_new_tokens + block_size - 1) // block_size
+        keys_int8_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=torch.int8, device=device)
+        keys_int8_buf[:, :N, :] = keys_int8
+        values_fp16_buf = torch.zeros(kv_heads, capacity, d_v, dtype=torch.float16, device=device)
+        values_fp16_buf[:, :N, :] = values_fp16_cuda
+
+        # Scale/correction buffers
+        max_total_blocks = num_blocks + max_new_blocks
+        scale_buf = torch.zeros(kv_heads, max_total_blocks, dtype=torch.float32, device=device)
+        scale_buf[:, :num_blocks] = k_scale.to(torch.float32)
+        corr_buf = torch.ones(kv_heads, max_total_blocks, dtype=torch.float32, device=device)
+        corr_buf[:, :num_blocks] = correction.to(torch.float32)
+
+        # CPU FP16 buffer for keys
+        keys_fp16_cpu_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=torch.float16, pin_memory=True)
+        keys_fp16_cpu_buf[:, :N, :] = keys_fp16_cpu
+
+        # Pre-compute dequant into buffer (avoids per-call materialisation)
+        keys_deq_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=torch.float32, device=device)
+        keys_deq_buf[:, :N, :] = (
+            keys_int8.to(torch.float32).reshape(kv_heads, num_blocks, block_size, head_dim)
+            * k_scale.to(torch.float32)[:, :, None, None]
+        ).reshape(kv_heads, N, head_dim)
+
+        result = cls(
+            keys_int8=keys_int8_buf,
+            keys_scale=scale_buf,
+            correction=corr_buf,
+            values_fp16=values_fp16_buf,
+            keys_fp16_cpu=keys_fp16_cpu_buf,
             kv_heads=kv_heads,
             num_tokens=N,
             head_dim=head_dim,
@@ -128,7 +149,9 @@ class TieredKeyCacheLayer:
             block_size=block_size,
             num_blocks=num_blocks,
             _pagein_buffer=pagein_buffer,
+            _keys_deq_f32=keys_deq_buf,
         )
+        return result
 
     @classmethod
     def from_fp16_cache_int4v(
@@ -200,113 +223,86 @@ class TieredKeyCacheLayer:
         key_fp16: torch.Tensor,    # [kv_heads, 1, head_dim] float16/32
         value_fp16: torch.Tensor,  # [kv_heads, 1, d_v] float16/32
     ) -> None:
-        """Append a single token's K/V to the cache.
+        """Append one token to the cache. Zero-copy into pre-allocated buffers.
 
-        Grows the cache by one token. When a block boundary is crossed,
-        requantises the completed block's INT8 keys and (if INT4 mode)
-        INT4 values.
-
-        Must be called with pre-RoPE'd keys.
+        The buffers were sized at creation time (max_new_tokens). This method
+        just writes into the next slot — no allocation, no torch.cat.
         """
-        kv_heads = self.kv_heads
-        pos = self.num_tokens  # insertion position
+        pos = self.num_tokens
         device = self.keys_int8.device
 
-        # Grow the raw FP16 CPU storage (always keep originals)
         new_k = key_fp16.to(dtype=torch.float16).squeeze(1)  # [kv_heads, head_dim]
         new_v = value_fp16.to(dtype=torch.float16).squeeze(1)
 
-        # Grow keys_fp16_cpu
-        self.keys_fp16_cpu = torch.cat([
-            self.keys_fp16_cpu,
-            new_k.cpu().unsqueeze(1),
-        ], dim=1)
+        # Write FP16 value into pre-allocated VRAM buffer
+        if self.values_fp16 is not None:
+            self.values_fp16[:, pos, :] = new_v.to(device=device, dtype=torch.float16)
+
+        # Write FP16 key into pre-allocated CPU buffer
+        self.keys_fp16_cpu[:, pos, :] = new_k.cpu()
 
         if self.values_fp16_cpu is not None:
-            self.values_fp16_cpu = torch.cat([
-                self.values_fp16_cpu,
-                new_v.cpu().unsqueeze(1),
-            ], dim=1)
+            self.values_fp16_cpu[:, pos, :] = new_v.cpu()
 
-        # Grow VRAM values (FP16 path)
-        if self.values_fp16 is not None:
-            self.values_fp16 = torch.cat([
-                self.values_fp16,
-                new_v.to(device=device, dtype=torch.float16).unsqueeze(1),
-            ], dim=1)
-
-        # Grow INT8 keys
-        new_k_f32 = new_k.to(device=device, dtype=torch.float32)  # [kv_heads, head_dim]
+        # Quantise key to INT8 and write into pre-allocated VRAM buffer
+        new_k_f32 = new_k.to(device=device, dtype=torch.float32)
         block_idx = pos // self.block_size
-        token_in_block = pos % self.block_size
-        need_new_block = block_idx >= self.keys_scale.shape[1]
 
-        if need_new_block:
-            # First token of a new block — compute fresh scale
+        if block_idx >= self.num_blocks:
+            # First token of a new block — write fresh scale + correction
+            # (subsequent tokens in this block reuse this scale)
             k_max = new_k_f32.abs().amax(dim=-1).clamp(min=1e-8)
             k_scale_new = k_max / 127.0
-            k_int8 = (new_k_f32 / k_scale_new.unsqueeze(-1)).round().clamp(-127, 127).to(torch.int8)
-
-            self.keys_scale = torch.cat([
-                self.keys_scale,
-                k_scale_new.unsqueeze(1).to(self.keys_scale),
-            ], dim=1)
-
+            self.keys_scale[:, block_idx] = k_scale_new
             q_norm_est = self.head_dim ** 0.5
             q_scale_est = 1.0 / (self.head_dim ** 0.5)
             delta = q_norm_est * (k_scale_new * 2 / 255) / 2 * q_scale_est
-            corr = torch.exp(3 * delta)
-            self.correction = torch.cat([
-                self.correction,
-                corr.unsqueeze(1).to(self.correction),
-            ], dim=1)
+            self.correction[:, block_idx] = torch.exp(3 * delta)
+            k_int8 = (new_k_f32 / k_scale_new.unsqueeze(-1)).round().clamp(-127, 127).to(torch.int8)
         else:
-            # Within existing block — use existing scale
             k_scale = self.keys_scale[:, block_idx]
             k_int8 = (new_k_f32 / k_scale.unsqueeze(-1).clamp(min=1e-8)).round().clamp(-127, 127).to(torch.int8)
 
-        # Append INT8 key
-        self.keys_int8 = torch.cat([
-            self.keys_int8,
-            k_int8.unsqueeze(1),
-        ], dim=1)
+        self.keys_int8[:, pos, :] = k_int8
 
-        # Grow INT4 values if in INT4 mode
-        if self.values_int4_packed is not None:
-            from dotcache.kernels.int4_group_quantise import quantise_int4_grouped
-            v_token = new_v.to(device=device, dtype=torch.float16)  # [kv_heads, d_v]
-            packed_all = []
-            scales_all = []
-            zeros_all = []
-            max_err = 0.0
-            for h in range(kv_heads):
-                r = quantise_int4_grouped(v_token[h:h+1], self.values_int4_group_size)
-                packed_all.append(r["data_packed"])
-                scales_all.append(r["scales"])
-                zeros_all.append(r["zeros"])
-                max_err = max(max_err, r["error_bound"])
-            self.values_int4_packed = torch.cat([
-                self.values_int4_packed,
-                torch.stack(packed_all).to(device),
-            ], dim=1)
-            self.values_int4_scales = torch.cat([
-                self.values_int4_scales,
-                torch.stack(scales_all).to(device),
-            ], dim=1)
-            self.values_int4_zeros = torch.cat([
-                self.values_int4_zeros,
-                torch.stack(zeros_all).to(device),
-            ], dim=1)
+        # Update dequant buffer if it exists
+        if self._keys_deq_f32 is not None:
+            k_scale_for_deq = self.keys_scale[:, block_idx]
+            self._keys_deq_f32[:, pos, :] = k_int8.to(torch.float32) * k_scale_for_deq.unsqueeze(-1)
 
-            # Extend error bounds at block boundaries
-            if block_idx >= self.values_int4_errors.shape[1]:
-                new_err = torch.full((kv_heads, 1), max_err, dtype=torch.float32, device=device)
-                self.values_int4_errors = torch.cat([self.values_int4_errors, new_err], dim=1)
-
-        # Update counts — num_blocks uses floor division to match kernel expectations
-        # (kernels compute num_blocks = N // block_size, ignoring partial trailing block)
+        # Update counts
         self.num_tokens = pos + 1
         self.num_blocks = self.num_tokens // self.block_size
+
+    @property
+    def active_tokens(self) -> int:
+        """Number of active (written) tokens. May be less than buffer capacity."""
+        return self.num_tokens
+
+    @property
+    def aligned_tokens(self) -> int:
+        """Block-aligned active token count."""
+        return self.num_blocks * self.block_size
+
+    def keys_int8_active(self) -> torch.Tensor:
+        """INT8 keys for active tokens only (slice of pre-allocated buffer)."""
+        n = self.aligned_tokens
+        return self.keys_int8[:, :n, :]
+
+    def keys_scale_active(self) -> torch.Tensor:
+        return self.keys_scale[:, :self.num_blocks]
+
+    def correction_active(self) -> torch.Tensor:
+        return self.correction[:, :self.num_blocks]
+
+    def values_fp16_active(self) -> torch.Tensor:
+        """FP16 values for active tokens."""
+        if self.values_fp16 is None:
+            return None
+        return self.values_fp16[:, :self.num_tokens, :]
+
+    def keys_fp16_cpu_active(self) -> torch.Tensor:
+        return self.keys_fp16_cpu[:, :self.num_tokens, :]
 
     def precompute_dequant(self) -> None:
         """Pre-compute dequantised keys and float32 values to avoid per-call allocation."""

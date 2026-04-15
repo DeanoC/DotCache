@@ -153,7 +153,7 @@ def run_niah_cell(
             layer_epsilons=layer_epsilons,
             default_epsilon=1e-4,
             collect_stats=False,
-            append_kv=False,  # Static cache — needle is in prefill, no append needed
+            append_kv=True,  # Append new K/V tokens during decode
         )
         adapter.set_mode("certified")
 
