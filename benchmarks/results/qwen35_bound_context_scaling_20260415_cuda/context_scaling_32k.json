@@ -1,0 +1,182 @@
+{
+  "records": [
+    {
+      "case_tag": "perf_journal_32k",
+      "target_length": 32768,
+      "actual_tokens": 32768,
+      "blocks_per_layer": 2048,
+      "lane": "spherical_only",
+      "decode_ms_per_step": 4088.8838616374414,
+      "exact_match_vs_dense": null,
+      "executed_m0_blocks": 98352,
+      "executed_m3_blocks": 0,
+      "cert_stop_blocks": 12294,
+      "cert_stop_rate": 0.125,
+      "checkpoints": 0,
+      "bound_spherical_count": 786816,
+      "bound_interval_count": 0,
+      "bound_ellipsoidal_count": 0,
+      "bound_total_count": 786816,
+      "bound_spherical_frac": 1.0,
+      "bound_interval_frac": 0.0,
+      "bound_ellipsoidal_frac": 0.0,
+      "beta_upper_by_layer": {
+        "3": 0.0,
+        "7": 0.0,
+        "11": 0.0,
+        "15": 0.0,
+        "19": 0.0,
+        "23": 0.0
+      },
+      "delta_upper_by_layer": {
+        "3": 0.0,
+        "7": 0.0,
+        "11": 0.0,
+        "15": 0.0,
+        "19": 0.0,
+        "23": 0.0
+      },
+      "first_cert_stop_blocks_by_layer": {
+        "3": 2049,
+        "7": 2049,
+        "11": 2049,
+        "15": 2049,
+        "19": 2049,
+        "23": 2049
+      },
+      "certified_can_stop_by_layer": {
+        "3": true,
+        "7": true,
+        "11": true,
+        "15": true,
+        "19": true,
+        "23": true
+      },
+      "fallback_process_more_count": 0,
+      "dense_fallback_count": 0
+    },
+    {
+      "case_tag": "perf_journal_32k",
+      "target_length": 32768,
+      "actual_tokens": 32768,
+      "blocks_per_layer": 2048,
+      "lane": "interval",
+      "decode_ms_per_step": 4006.6770936682587,
+      "exact_match_vs_dense": null,
+      "executed_m0_blocks": 98352,
+      "executed_m3_blocks": 0,
+      "cert_stop_blocks": 12294,
+      "cert_stop_rate": 0.125,
+      "checkpoints": 0,
+      "bound_spherical_count": 652129,
+      "bound_interval_count": 134687,
+      "bound_ellipsoidal_count": 0,
+      "bound_total_count": 786816,
+      "bound_spherical_frac": 0.8288202070115503,
+      "bound_interval_frac": 0.17117979298844965,
+      "bound_ellipsoidal_frac": 0.0,
+      "beta_upper_by_layer": {
+        "3": 0.0,
+        "7": 0.0,
+        "11": 0.0,
+        "15": 0.0,
+        "19": 0.0,
+        "23": 0.0
+      },
+      "delta_upper_by_layer": {
+        "3": 0.0,
+        "7": 0.0,
+        "11": 0.0,
+        "15": 0.0,
+        "19": 0.0,
+        "23": 0.0
+      },
+      "first_cert_stop_blocks_by_layer": {
+        "3": 2049,
+        "7": 2049,
+        "11": 2049,
+        "15": 2049,
+        "19": 2049,
+        "23": 2049
+      },
+      "certified_can_stop_by_layer": {
+        "3": true,
+        "7": true,
+        "11": true,
+        "15": true,
+        "19": true,
+        "23": true
+      },
+      "fallback_process_more_count": 0,
+      "dense_fallback_count": 0
+    },
+    {
+      "case_tag": "perf_journal_32k",
+      "target_length": 32768,
+      "actual_tokens": 32768,
+      "blocks_per_layer": 2048,
+      "lane": "interval_ellip",
+      "decode_ms_per_step": 3973.934457244468,
+      "exact_match_vs_dense": null,
+      "executed_m0_blocks": 98352,
+      "executed_m3_blocks": 0,
+      "cert_stop_blocks": 12294,
+      "cert_stop_rate": 0.125,
+      "checkpoints": 0,
+      "bound_spherical_count": 337527,
+      "bound_interval_count": 134697,
+      "bound_ellipsoidal_count": 407180,
+      "bound_total_count": 879404,
+      "bound_spherical_frac": 0.38381335540889056,
+      "bound_interval_frac": 0.15316850958148928,
+      "bound_ellipsoidal_frac": 0.46301813500962014,
+      "beta_upper_by_layer": {
+        "3": 0.0,
+        "7": 0.0,
+        "11": 0.0,
+        "15": 0.0,
+        "19": 0.0,
+        "23": 0.0
+      },
+      "delta_upper_by_layer": {
+        "3": 0.0,
+        "7": 0.0,
+        "11": 0.0,
+        "15": 0.0,
+        "19": 0.0,
+        "23": 0.0
+      },
+      "first_cert_stop_blocks_by_layer": {
+        "3": 2049,
+        "7": 2049,
+        "11": 2049,
+        "15": 2049,
+        "19": 2049,
+        "23": 2049
+      },
+      "certified_can_stop_by_layer": {
+        "3": true,
+        "7": true,
+        "11": true,
+        "15": true,
+        "19": true,
+        "23": true
+      },
+      "fallback_process_more_count": 0,
+      "dense_fallback_count": 0
+    }
+  ],
+  "active_lanes": [
+    "spherical_only",
+    "interval",
+    "interval_ellip"
+  ],
+  "lengths": [
+    32768
+  ],
+  "decode_steps": 8,
+  "warmup_steps": 2,
+  "model_id": "Qwen/Qwen3.5-0.8B",
+  "device": "cuda",
+  "backend": "torch_cuda"
+}
