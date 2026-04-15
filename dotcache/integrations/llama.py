@@ -87,7 +87,7 @@ class CertifiedAttentionState:
     block_size: int = 16
     collect_stats: bool = True  # set False during timed runs to avoid GPU syncs
     append_kv: bool = False  # append new K/V tokens to tiered cache during decode
-    top_k_fp16_keys: int = 4  # number of top-K blocks to use FP16 keys (0=INT8 only)
+    top_k_fp16_keys: int = 0  # 0=INT8 only (hybrid kernel has a bug, disabled for now)
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):

@@ -461,11 +461,12 @@ def create_tiered_cache_from_model(
 
         # Poison padding positions so they get ~zero softmax weight.
         # Positions num_tokens..aligned_tokens are zero from pre-allocation.
-        # Set INT8 keys to -127 (min value) so Q·K is very negative.
+        # Set all key representations to large negative values.
         at = cache.aligned_tokens
         nt = cache.num_tokens
         if at > nt:
             cache.keys_int8[:, nt:at, :] = -127
+            cache.keys_fp16_cpu[:, nt:at, :] = -100.0
             if cache._keys_deq_f32 is not None:
                 cache._keys_deq_f32[:, nt:at, :] = -1e4
 
