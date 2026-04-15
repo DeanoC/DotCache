@@ -87,6 +87,7 @@ class CertifiedAttentionState:
     block_size: int = 16
     collect_stats: bool = True  # set False during timed runs to avoid GPU syncs
     append_kv: bool = False  # append new K/V tokens to tiered cache during decode
+    top_k_fp16_keys: int = 4  # number of top-K blocks to use FP16 keys (0=INT8 only)
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):
@@ -484,6 +485,7 @@ class DotCacheLlamaAttention(nn.Module):
         context_states, stats = certified_attention_layer(
             cache, q_all, gqa_group, q_scale, block_epsilon=epsilon,
             collect_stats=collect,
+            top_k_fp16_keys=cert_state.top_k_fp16_keys,
         )
 
         # Accumulate stats (only if collection enabled)
