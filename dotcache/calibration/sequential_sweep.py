@@ -274,6 +274,7 @@ def _evaluate_layer_epsilon(
         d_v=cd["d_v"],
         block_size=cd["block_size"],
         num_blocks=cd["num_blocks"],
+        num_quantized_blocks=cd["num_blocks"],  # all prefill blocks are fully quantized
     )
 
     attn_wrapper = model.model.layers[layer_id].self_attn

@@ -13,6 +13,7 @@ The V-format decision uses Phase 1 outputs at zero additional cost:
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 from typing import Any
 
 from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
@@ -85,15 +86,75 @@ def decide_v_format(
     return "int4" if int4_error < tolerance else "fp16"
 
 
+def sdpa_attend_with_skip(
+    cache: TieredKeyCacheLayer,
+    q_all: torch.Tensor,           # [num_q_heads, head_dim] (model dtype, e.g. BF16)
+    skip_mask: torch.Tensor,       # [num_q_heads, num_active_blocks] bool (True=skip)
+    gqa_group: int,
+    q_scale: float,
+) -> torch.Tensor:
+    """Phase 2 attend using PyTorch SDPA — matches dense attention precision exactly.
+
+    Uses the FP16 CPU keys and VRAM values from the tiered cache, expanding
+    the block-level skip_mask into a per-token attention mask for SDPA.
+    """
+    num_q_heads, head_dim = q_all.shape
+    nt = cache.num_tokens
+    device = q_all.device
+    dtype = q_all.dtype  # keep computation in model's native dtype (BF16)
+
+    # Get keys from CPU and values from VRAM in the model's dtype
+    keys = cache.keys_fp16_cpu[:, :nt, :].to(device=device, dtype=dtype)   # [kv, nt, hd]
+    values = cache.values_fp16[:, :nt, :].to(dtype=dtype)                  # [kv, nt, dv]
+    num_kv_heads = keys.shape[0]
+
+    # Build per-token attention mask from block-level skip_mask
+    # skip_mask: [num_q_heads, num_active_blocks] — expand to [num_q_heads, nt]
+    bs = cache.block_size
+    num_active_blocks = skip_mask.shape[1]
+    # Repeat each block's skip flag for block_size tokens
+    token_skip = skip_mask.unsqueeze(-1).expand(-1, -1, bs).reshape(num_q_heads, -1)[:, :nt]
+    # SDPA mask: None if no blocks skipped (matches dense SDPA path exactly),
+    # otherwise 0 for attend, -inf for skip
+    any_skipped = token_skip.any()
+    if any_skipped:
+        attn_mask = torch.where(token_skip, float("-inf"), 0.0).to(dtype=dtype, device=device)
+        attn_mask = attn_mask.unsqueeze(0).unsqueeze(2)  # [1, num_q_heads, 1, nt]
+    else:
+        attn_mask = None
+
+    # Expand keys/values for GQA: [kv_heads, nt, hd] → [num_q_heads, nt, hd]
+    # Use expand (not repeat_interleave) to match HF's GQA handling — same
+    # memory layout means SDPA takes the same FlashAttention code path.
+    keys_exp = keys.unsqueeze(1).expand(-1, gqa_group, -1, -1).reshape(
+        num_q_heads, nt, head_dim).contiguous()
+    values_exp = values.unsqueeze(1).expand(-1, gqa_group, -1, -1).reshape(
+        num_q_heads, nt, values.shape[2]).contiguous()
+
+    # SDPA: [batch=1, heads, seq, dim]
+    q_sdpa = q_all.unsqueeze(0).unsqueeze(2)   # [1, num_q_heads, 1, hd]
+    k_sdpa = keys_exp.unsqueeze(0)              # [1, num_q_heads, nt, hd]
+    v_sdpa = values_exp.unsqueeze(0)            # [1, num_q_heads, nt, dv]
+
+    output = F.scaled_dot_product_attention(
+        q_sdpa, k_sdpa, v_sdpa,
+        attn_mask=attn_mask,
+        scale=q_scale,
+    )  # [1, num_q_heads, 1, dv]
+
+    return output[0, :, 0, :].float()  # [num_q_heads, dv] float32
+
+
 def certified_attention_layer(
     cache: TieredKeyCacheLayer,
-    q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
+    q_all: torch.Tensor,           # [num_q_heads, head_dim] model dtype (BF16) or float32
     gqa_group: int,
     q_scale: float = None,
     block_epsilon: float = 0.001,
     collect_stats: bool = True,
     v_tolerance: float = DEFAULT_V_TOLERANCE,
     top_k_fp16_keys: int = 0,
+    concentration_threshold: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -109,96 +170,87 @@ def certified_attention_layer(
         q_scale = 1.0 / (cache.head_dim ** 0.5)
 
     num_q_heads = q_all.shape[0]
+    n_qblocks = cache.num_quantized_blocks
+    bs = cache.block_size
 
-    # Phase 1: Multi-head INT8 scoring + certification
-    # Use active slices (not full pre-allocated buffers)
-    m_b, S_b, skip_mask = fused_score_certify_multihead(
-        K_int8_packed=cache.keys_int8_active(),
-        K_scale=cache.keys_scale_active(),
-        q_all=q_all,
-        correction=cache.correction_active(),
-        gqa_group=gqa_group,
-        block_size=cache.block_size,
-        q_scale=q_scale,
-        block_epsilon=block_epsilon,
-    )
+    # Phase 1: INT8 scoring only on fully quantized blocks
+    if n_qblocks > 0:
+        m_b, S_b, skip_mask = fused_score_certify_multihead(
+            K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
+            K_scale=cache.keys_scale[:, :n_qblocks, :],
+            q_all=q_all,
+            correction=cache.correction[:, :n_qblocks],
+            gqa_group=gqa_group,
+            block_size=bs,
+            q_scale=q_scale,
+            block_epsilon=block_epsilon,
+        )
+    else:
+        device = q_all.device
+        m_b = torch.empty(num_q_heads, 0, dtype=torch.float32, device=device)
+        S_b = torch.empty(num_q_heads, 0, dtype=torch.float32, device=device)
+        skip_mask = torch.empty(num_q_heads, 0, dtype=torch.bool, device=device)
 
-    # Top-K FP16 key fallback: replace INT8 keys with FP16 originals for the
-    # highest-scoring blocks. This eliminates the INT8 key quantisation error
-    # on the blocks that contribute most attention mass (the "needle" blocks).
-    # Cost: one CPU→GPU page-in per KV head for K blocks (~3μs at K=4).
-    #
-    # Only operate on block-aligned tokens (after append, num_tokens may
-    # exceed num_blocks * block_size by a partial block).
-    top_k_fp16 = top_k_fp16_keys
-    aligned_tokens = cache.aligned_tokens
-    use_mixed_keys = False
-
+    # If there's a trailing partial block, force-attend it via hybrid FP16 path
     num_active_blocks = cache.active_blocks
-    use_hybrid = top_k_fp16 > 0 and cache.keys_fp16_cpu is not None and num_active_blocks > 0
+    if cache.has_trailing_partial_block:
+        trailing_bid = cache.trailing_block_idx
+        # Extend scoring arrays to include trailing block
+        pad_m = torch.zeros(num_q_heads, 1, dtype=torch.float32, device=q_all.device)
+        pad_S = torch.ones(num_q_heads, 1, dtype=torch.float32, device=q_all.device)
+        pad_skip = torch.zeros(num_q_heads, 1, dtype=torch.bool, device=q_all.device)
+        m_b = torch.cat([m_b, pad_m], dim=1)
+        S_b = torch.cat([S_b, pad_S], dim=1)
+        skip_mask = torch.cat([skip_mask, pad_skip], dim=1)
 
-    if use_hybrid:
-        # Build per-head top-K mask
-        topk_mask = torch.zeros(num_q_heads, num_active_blocks, dtype=torch.int32,
-                                device=cache.keys_int8.device)
-        all_topk = set()
+    # Top-K safety: clear skip bit for highest-scoring blocks so they're
+    # always attended — the certification correction may underestimate their mass.
+    num_active_blocks = cache.active_blocks
+    top_k_fp16 = top_k_fp16_keys
+    if top_k_fp16 > 0 and num_active_blocks > 0:
         for qh in range(num_q_heads):
             topk_idx = m_b[qh].topk(min(top_k_fp16, num_active_blocks)).indices
-            topk_mask[qh, topk_idx] = 1
-            all_topk.update(topk_idx.tolist())
+            skip_mask[qh, topk_idx] = 0
 
-        # Hot-page cache: keep FP16 blocks in VRAM. Only page-in blocks
-        # that aren't already cached. Top-K blocks tend to be stable across
-        # decode steps (the "needle" blocks don't move).
-        if not hasattr(cache, '_fp16_hot_cache'):
-            cache._fp16_hot_cache = torch.zeros(
-                cache.kv_heads, cache.keys_int8.shape[1], cache.head_dim,
-                dtype=torch.float16, device=cache.keys_int8.device,
-            )
-            cache._fp16_hot_set = set()
-        # Page in only new blocks not already in hot cache
-        new_blocks = all_topk - cache._fp16_hot_set
-        for bid in new_blocks:
-            start = bid * cache.block_size
-            end = start + cache.block_size
-            cache._fp16_hot_cache[:, start:end, :] = cache.keys_fp16_cpu[:, start:end, :].to(
-                device=cache.keys_int8.device, non_blocking=True,
-            )
-        cache._fp16_hot_set.update(new_blocks)
-        keys_fp16_sparse = cache._fp16_hot_cache[:, :aligned_tokens, :]
+    # Force-attend trailing partial block (it has no INT8 data for scoring)
+    if cache.has_trailing_partial_block:
+        skip_mask[:, cache.trailing_block_idx] = 0
 
-    # Phase 2: Select V format and run attention
-    v_format = "fp16"  # default
+    # Entropy gating: if attention is diffuse (no block dominates),
+    # disable skipping for that head — small-mass blocks may carry critical
+    # information (e.g., needle retrieval with weak signal).
+    # Uses Phase 1 outputs so it's essentially free.
+    if num_active_blocks > 0 and concentration_threshold > 0:
+        # Per-block mass fraction per head
+        m_global = m_b.amax(dim=1, keepdim=True)  # [num_q_heads, 1]
+        log_mass = torch.log(S_b.clamp(min=1e-30)) + m_b - m_global
+        mass = torch.exp(log_mass)  # [num_q_heads, num_active_blocks]
+        total_mass = mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
+        mass_frac = mass / total_mass
+        mass_max_per_head = mass_frac.max(dim=1).values  # [num_q_heads]
+        # Diffuse heads: no single block has enough mass → don't skip anything
+        diffuse_heads = mass_max_per_head < concentration_threshold
+        if diffuse_heads.any():
+            skip_mask[diffuse_heads, :] = False
 
-    if use_hybrid:
-        # Hybrid kernel: INT8 keys + sparse FP16 for top-K, one Triton launch
-        aligned = cache.aligned_tokens
-        values_for_attend = (cache.values_fp16[:, :aligned, :]
-                             if cache.values_fp16 is not None
-                             else cache.values_fp16_cpu[:, :aligned, :].to(device=cache.keys_int8.device))
-        output = selective_attend_multihead_hybrid(
-            keys_int8=cache.keys_int8_active(),
-            keys_scale=cache.keys_scale_active(),
-            keys_fp16=keys_fp16_sparse,
-            topk_mask=topk_mask,
-            values_fp16=values_for_attend,
-            q_all=q_all,
-            skip_mask_i32=skip_mask.to(torch.int32),
-            gqa_group=gqa_group,
-            block_size=cache.block_size,
-            q_scale=q_scale,
+    # Phase 2: Attend using SDPA for exact precision matching with dense path.
+    # The Triton kernels compute in F32 which diverges from the BF16 SDPA used
+    # in dense mode.  Using SDPA here ensures identical numerical behaviour.
+    v_format = "fp16"
+
+    if cache.values_fp16 is not None:
+        # SDPA path: uses FP16 keys from CPU + FP16 values from VRAM
+        # with the block-level skip_mask, matching dense SDPA precision
+        output = sdpa_attend_with_skip(
+            cache, q_all, skip_mask, gqa_group, q_scale,
         )
-        del topk_mask  # keys_fp16_sparse is the hot cache — keep it
     elif cache.values_int4_packed is not None:
-        # Runtime V-format decision based on mass partition
+        # INT4 values: must use Triton kernel (SDPA can't handle INT4)
         if collect_stats:
             rho = compute_tier2_residual_mass(m_b, S_b, skip_mask)
             eta_int4 = cache.values_int4_errors.max().item()
             v_format = decide_v_format(rho, eta_int4, v_tolerance)
         else:
-            # When stats disabled (timed runs), use INT4 unconditionally
-            # (the caller should set v_tolerance=inf to force INT4, or
-            # pre-decide format and use the appropriate cache)
             v_format = "int4"
 
         if v_format == "int4":
@@ -235,19 +287,6 @@ def certified_attention_layer(
                 block_size=cache.block_size,
                 q_scale=q_scale,
             )
-    elif cache.values_fp16 is not None:
-        # Keys and values must have matching N (block-aligned)
-        aligned = cache.aligned_tokens
-        output = selective_attend_multihead_int8(
-            keys_int8=cache.keys_int8_active(),
-            keys_scale=cache.keys_scale_active(),
-            values_fp16=cache.values_fp16[:, :aligned, :],
-            q_all=q_all,
-            skip_mask_i32=skip_mask.to(torch.int32),
-            gqa_group=gqa_group,
-            block_size=cache.block_size,
-            q_scale=q_scale,
-        )
     else:
         raise ValueError("No values available in cache")
 

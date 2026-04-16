@@ -88,6 +88,7 @@ class CertifiedAttentionState:
     collect_stats: bool = True  # set False during timed runs to avoid GPU syncs
     append_kv: bool = False  # append new K/V tokens to tiered cache during decode
     top_k_fp16_keys: int = 4  # top-K blocks use FP16 keys for quality
+    concentration_threshold: float = 0.0  # if max block mass < this, don't skip (diffuse attention safety)
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):
@@ -467,13 +468,15 @@ class DotCacheLlamaAttention(nn.Module):
         # Project Q, K, V with RoPE (need K/V for append)
         (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
         # query_states: [1, num_q_heads, 1, head_dim]
-        q_all = query_states[0, :, 0, :].to(torch.float32)  # [num_q, head_dim]
+        # Keep query in model's native dtype (BF16) — SDPA attend matches dense precision
+        q_all = query_states[0, :, 0, :]  # [num_q, head_dim]
 
         # Append new K/V to tiered cache (grows context for future steps)
+        # Preserve model's native dtype (BF16) — don't force FP16
         if cert_state.append_kv:
             cache.append_token(
-                key_states[0].to(torch.float16),    # [kv_heads, 1, head_dim]
-                value_states[0].to(torch.float16),  # [kv_heads, 1, d_v]
+                key_states[0],    # [kv_heads, 1, head_dim]
+                value_states[0],  # [kv_heads, 1, d_v]
             )
 
         # Certified attention: Phase 1 (INT8 score+certify) + Phase 2 (selective attend)
@@ -486,6 +489,7 @@ class DotCacheLlamaAttention(nn.Module):
             cache, q_all, gqa_group, q_scale, block_epsilon=epsilon,
             collect_stats=collect,
             top_k_fp16_keys=cert_state.top_k_fp16_keys,
+            concentration_threshold=cert_state.concentration_threshold,
         )
 
         # Accumulate stats (only if collection enabled)

@@ -96,6 +96,9 @@ def run_niah_cell(
     calibrated_profile=None,
     max_new_tokens: int = 50,
     device: str = "cuda",
+    default_epsilon: float = 1e-4,
+    top_k_fp16_keys: int = 4,
+    concentration_threshold: float = 0.0,
 ) -> dict:
     """Run one NIAH cell: plant needle, generate, check retrieval.
 
@@ -151,9 +154,11 @@ def run_niah_cell(
         adapter.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
             layer_epsilons=layer_epsilons,
-            default_epsilon=1e-4,
+            default_epsilon=default_epsilon,
             collect_stats=False,
             append_kv=True,  # Append new K/V tokens during decode
+            top_k_fp16_keys=top_k_fp16_keys,
+            concentration_threshold=concentration_threshold,
         )
         adapter.set_mode("certified")
 
@@ -207,6 +212,9 @@ def run_niah_sweep(
     num_needles: int = 5,
     calibrated_profile=None,
     device: str = "cuda",
+    default_epsilon: float = 1e-4,
+    top_k_fp16_keys: int = 4,
+    concentration_threshold: float = 0.0,
 ) -> dict:
     """Run full NIAH sweep across depths and context lengths."""
     if depths is None:
@@ -226,6 +234,9 @@ def run_niah_sweep(
                         ctx_len, depth, needle_idx,
                         calibrated_profile=calibrated_profile,
                         device=device,
+                        default_epsilon=default_epsilon,
+                        top_k_fp16_keys=top_k_fp16_keys,
+                        concentration_threshold=concentration_threshold,
                     )
                     results[mode].append(r)
 
@@ -298,6 +309,12 @@ def main():
     parser.add_argument("--needles", type=int, default=3)
     parser.add_argument("--profile", default=None, help="Path to calibrated profile .npz")
     parser.add_argument("--output", default="benchmarks/results/niah.json")
+    parser.add_argument("--default-epsilon", type=float, default=1e-4,
+                        help="Default epsilon when no profile epsilon available (0=no skipping)")
+    parser.add_argument("--top-k-fp16", type=int, default=4,
+                        help="Top-K blocks use FP16 keys (999=all FP16, 0=all INT8)")
+    parser.add_argument("--concentration-threshold", type=float, default=0.0,
+                        help="If max block mass fraction < this, disable skip for that head (0=off, 0.02=2%%)")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -319,12 +336,15 @@ def main():
         profile = CalibratedProfile.load(args.profile)
         print(f"Loaded profile: {profile.summary()[:200]}")
 
-    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}")
+    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, default_epsilon={args.default_epsilon}, top_k_fp16={args.top_k_fp16}")
     result = run_niah_sweep(
         model, tokenizer, adapter,
         context_lengths=args.contexts,
         num_needles=args.needles,
         calibrated_profile=profile,
+        default_epsilon=args.default_epsilon,
+        top_k_fp16_keys=args.top_k_fp16,
+        concentration_threshold=args.concentration_threshold,
     )
 
     print(f"\n{'='*50}")

@@ -26,7 +26,7 @@ import triton.language as tl
 def _fused_score_certify_single_launch_kernel(
     # Data
     K_int8_ptr,      # [N, head_dim] int8 contiguous
-    K_scale_ptr,     # [num_blocks] float32
+    K_scale_ptr,     # [num_blocks, head_dim] float32
     Q_ptr,           # [head_dim] float32
     Corr_ptr,        # [num_blocks] float32
     # Output
@@ -64,7 +64,7 @@ def _fused_score_certify_single_launch_kernel(
         still_valid = bid < num_blocks
         if still_valid:
             base = bid * block_size
-            k_scale = tl.load(K_scale_ptr + bid).to(tl.float32)
+            scale_base = bid * head_dim
             scores = tl.zeros((block_size,), dtype=tl.float32)
             row_ptrs = K_int8_ptr + (base + t_offs) * stride_k_n
 
@@ -73,9 +73,10 @@ def _fused_score_certify_single_launch_kernel(
                 d_off = d_start + d_offs
                 d_mask = d_off < head_dim
                 q_tile = tl.load(Q_ptr + d_off, mask=d_mask, other=0.0).to(tl.float32)
+                ch_scale = tl.load(K_scale_ptr + scale_base + d_off, mask=d_mask, other=0.0).to(tl.float32)
                 k_ptrs = row_ptrs[:, None] + d_off[None, :]
                 k_tile = tl.load(k_ptrs, mask=d_mask[None, :], other=0).to(tl.float32)
-                k_fp = k_tile * k_scale
+                k_fp = k_tile * ch_scale[None, :]
                 scores += tl.sum(k_fp * q_tile[None, :], axis=1)
 
             scores = scores * q_scale
@@ -134,7 +135,7 @@ def _fused_matmul_reduce_kernel(
         still_valid = bid < num_blocks
         if still_valid:
             base = bid * block_size
-            k_scale = tl.load(K_scale_ptr + bid).to(tl.float32)
+            scale_base = bid * head_dim
             scores = tl.zeros((block_size,), dtype=tl.float32)
             row_ptrs = K_int8_ptr + (base + t_offs) * stride_k_n
             for tile_idx in range(num_tiles):
@@ -142,9 +143,10 @@ def _fused_matmul_reduce_kernel(
                 d_off = d_start + d_offs
                 d_mask = d_off < head_dim
                 q_tile = tl.load(Q_ptr + d_off, mask=d_mask, other=0.0).to(tl.float32)
+                ch_scale = tl.load(K_scale_ptr + scale_base + d_off, mask=d_mask, other=0.0).to(tl.float32)
                 k_ptrs = row_ptrs[:, None] + d_off[None, :]
                 k_tile = tl.load(k_ptrs, mask=d_mask[None, :], other=0).to(tl.float32)
-                k_fp = k_tile * k_scale
+                k_fp = k_tile * ch_scale[None, :]
                 scores += tl.sum(k_fp * q_tile[None, :], axis=1)
             scores = scores * q_scale
             m_b = tl.max(scores)
@@ -202,7 +204,7 @@ def _certify_kernel(
 def _multihead_score_certify_kernel(
     # Data — all KV heads packed: K_int8[kv_head, N, head_dim]
     K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous (heads packed)
-    K_scale_ptr,     # [num_kv_heads, num_blocks] float32
+    K_scale_ptr,     # [num_kv_heads, num_blocks, head_dim] float32
     Q_ptr,           # [num_q_heads, head_dim] float32
     Corr_ptr,        # [num_kv_heads, num_blocks] float32
     # Output
@@ -248,6 +250,7 @@ def _multihead_score_certify_kernel(
 
         # Base pointer for this KV head's keys
         kv_base = kv_head_idx * N * stride_k_n
+        scale_head_base = kv_head_idx * num_blocks * head_dim
 
         # Score blocks in this chunk
         for local_b in range(blocks_per_chunk):
@@ -255,7 +258,7 @@ def _multihead_score_certify_kernel(
             still_valid = bid < num_blocks
             if still_valid:
                 base_tok = bid * block_size
-                k_scale = tl.load(K_scale_ptr + kv_head_idx * num_blocks + bid).to(tl.float32)
+                scale_block_base = scale_head_base + bid * head_dim
                 scores = tl.zeros((block_size,), dtype=tl.float32)
                 row_ptrs = K_int8_ptr + kv_base + (base_tok + t_offs) * stride_k_n
 
@@ -264,9 +267,10 @@ def _multihead_score_certify_kernel(
                     d_off = d_start + d_offs
                     d_mask = d_off < head_dim
                     q_tile = tl.load(Q_ptr + q_head_idx * head_dim + d_off, mask=d_mask, other=0.0).to(tl.float32)
+                    ch_scale = tl.load(K_scale_ptr + scale_block_base + d_off, mask=d_mask, other=0.0).to(tl.float32)
                     k_ptrs = row_ptrs[:, None] + d_off[None, :]
                     k_tile = tl.load(k_ptrs, mask=d_mask[None, :], other=0).to(tl.float32)
-                    k_fp = k_tile * k_scale
+                    k_fp = k_tile * ch_scale[None, :]
                     scores += tl.sum(k_fp * q_tile[None, :], axis=1)
 
                 scores = scores * q_scale
@@ -317,7 +321,7 @@ def _multihead_score_certify_kernel(
 
 def fused_score_certify_multihead(
     K_int8_packed: torch.Tensor,   # [num_kv_heads, N, head_dim] int8
-    K_scale: torch.Tensor,         # [num_kv_heads, num_blocks] float32
+    K_scale: torch.Tensor,         # [num_kv_heads, num_blocks, head_dim] float32
     q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
     correction: torch.Tensor,      # [num_kv_heads, num_blocks] float32
     gqa_group: int,
@@ -370,7 +374,7 @@ def fused_score_certify_multihead(
 
 def fused_score_certify(
     K_int8: torch.Tensor,         # [N, head_dim] int8 contiguous
-    K_scale: torch.Tensor,        # [num_blocks] float32
+    K_scale: torch.Tensor,        # [num_blocks, head_dim] float32
     q: torch.Tensor,              # [head_dim] float32
     correction: torch.Tensor,     # [num_blocks] float32
     block_size: int = 16,
