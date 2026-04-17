@@ -1,0 +1,1418 @@
+{
+  "benchmark": "longbench_en_subset",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "subtasks": [
+    "narrativeqa",
+    "qasper",
+    "multifieldqa_en",
+    "hotpotqa",
+    "2wikimqa",
+    "gov_report",
+    "qmsum",
+    "multi_news",
+    "trec",
+    "triviaqa",
+    "samsum",
+    "lcc",
+    "repobench-p"
+  ],
+  "contexts": [
+    4096
+  ],
+  "num_samples": 5,
+  "default_epsilon": 0.0,
+  "top_k_fp16": 4,
+  "concentration_threshold": 0.02,
+  "seed": 20260417,
+  "wall_minutes": 21.306244058833304,
+  "overall_dense": 0.34099785617292155,
+  "overall_cert": 0.355458779890825,
+  "critical_failures": 0,
+  "summary": {
+    "narrativeqa_4K": {
+      "dense_mean": 0.015238095238095235,
+      "cert_mean": 0.019047619047619046,
+      "critical": 0,
+      "n": 5
+    },
+    "qasper_4K": {
+      "dense_mean": 0.1752863732374201,
+      "cert_mean": 0.17549995065923552,
+      "critical": 0,
+      "n": 5
+    },
+    "multifieldqa_en_4K": {
+      "dense_mean": 0.3677966101694915,
+      "cert_mean": 0.38069983597594315,
+      "critical": 0,
+      "n": 5
+    },
+    "hotpotqa_4K": {
+      "dense_mean": 0.04497751124437781,
+      "cert_mean": 0.043586206896551724,
+      "critical": 0,
+      "n": 5
+    },
+    "2wikimqa_4K": {
+      "dense_mean": 0.11655172413793105,
+      "cert_mean": 0.11655172413793105,
+      "critical": 0,
+      "n": 5
+    },
+    "gov_report_4K": {
+      "dense_mean": 0.2928168289436248,
+      "cert_mean": 0.30007704356354675,
+      "critical": 0,
+      "n": 5
+    },
+    "qmsum_4K": {
+      "dense_mean": 0.12308860273761275,
+      "cert_mean": 0.12308860273761275,
+      "critical": 0,
+      "n": 5
+    },
+    "multi_news_4K": {
+      "dense_mean": 0.03450704225352113,
+      "cert_mean": 0.07679275653923541,
+      "critical": 0,
+      "n": 5
+    },
+    "trec_4K": {
+      "dense_mean": 0.8,
+      "cert_mean": 0.8,
+      "critical": 0,
+      "n": 5
+    },
+    "triviaqa_4K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 5
+    },
+    "samsum_4K": {
+      "dense_mean": 0.4332781806786642,
+      "cert_mean": 0.4858188670454375,
+      "critical": 0,
+      "n": 5
+    },
+    "lcc_4K": {
+      "dense_mean": 0.44090813767950765,
+      "cert_mean": 0.511278508049878,
+      "critical": 0,
+      "n": 5
+    },
+    "repobench-p_4K": {
+      "dense_mean": 0.5885230239277343,
+      "cert_mean": 0.5885230239277343,
+      "critical": 0,
+      "n": 5
+    }
+  },
+  "results": [
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 34,
+      "seq_len": 4064,
+      "refs": [
+        "HER BEAUTY"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " His money.\n\n",
+      "cert_score": 0.0,
+      "cert_gen": " His money.\n\n",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 98,
+      "seq_len": 4065,
+      "refs": [
+        "A mobster named \"Blue Lou Boyle\". "
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " The mob.",
+      "cert_score": 0.0,
+      "cert_gen": " The Mafia\n\n",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 129,
+      "seq_len": 4064,
+      "refs": [
+        "Eliza favors her son over her daughter."
+      ],
+      "all_classes": null,
+      "dense_score": 0.07619047619047617,
+      "dense_gen": " Eliza favors Mary over Henry.\n\nExplanation: Eliza Warwick is the name of the novel that Mary reads. She is also the name of the mother of Henry. Mary is the name of the heroine of the story. Mary is the daughter of Eliza. Mary is the mother of Henry. Mary favors Henry over Mary. Mary favors Mary over Henry. Mary favors Henry over Mary. Mary favors Mary over Henry. Mary favors Henry over Mary. Mar",
+      "cert_score": 0.09523809523809523,
+      "cert_gen": " Eliza favors Mary over Henry.\n\nExplanation: Eliza favors Mary over Henry because she is more beautiful and more fashionable. Eliza is a vain and superficial woman who cares more about appearances than substance. She is also a neglectful mother who is more interested in her own pleasures than in the well-being of her children. Eliza's favoritism is evident in the way she treats Mary and Henry diff",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 175,
+      "seq_len": 4062,
+      "refs": [
+        "It caused a stir."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " Soames's presence in the future affected others by making them stare at him and follow him around and seem afraid of him.",
+      "cert_score": 0.0,
+      "cert_gen": " Soames's presence in the future affected others by making them stare at him and follow him around and seem afraid of him.",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 178,
+      "seq_len": 4060,
+      "refs": [
+        "The English lanuage has evolved."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " The article is written in the future tense, as if it were written in 1997.",
+      "cert_score": 0.0,
+      "cert_gen": " The article is written in the future tense, as if it were written in 1997.",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 4096,
+      "sample_idx": 71,
+      "seq_len": 2549,
+      "refs": [
+        "For SLC task, the \"ltuorp\" team  has the best performing  model (0.6323/0.6028/0.6649 for F1/P/R  respectively) and for FLC task the \"newspeak\" team  has the best performing  model (0.2488/0.2863/0.2201 for F1/P/R respectively)."
+      ],
+      "all_classes": null,
+      "dense_score": 0.12173913043478261,
+      "dense_gen": " The best performing model among author's submissions is the ensemble of Logistic Regression, CNN and BERT. It had a F1 score of 0.673 on the dev set.\n\nQuestion: What is the best performing model among all submissions, what performance it had?\n\nAnswer: The best performing model among all submissions is the ensemble of Logistic Regression, CNN and BERT. It had a F1 score of 0.673 on the dev set.\n\nQ",
+      "cert_score": 0.12280701754385963,
+      "cert_gen": " The best performing model among author's submissions is the ensemble of Logistic Regression, CNN and BERT. It had a F1 score of 0.673 on the dev (external) set.\n\nQuestion: What is the best performing model among all submissions, what performance it had?\n\nAnswer: The best performing model among all submissions is the ensemble of Logistic Regression, CNN and BERT. It had a F1 score of 0.673 on the ",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 4096,
+      "sample_idx": 79,
+      "seq_len": 3757,
+      "refs": [
+        "Transformer over BERT (ToBERT)",
+        "The transformer layer"
+      ],
+      "all_classes": null,
+      "dense_score": 0.4444444444444445,
+      "dense_gen": " The transformer layer works better than the RNN layer.",
+      "cert_score": 0.4444444444444445,
+      "cert_gen": " The transformer layer works better than the RNN layer.",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 4096,
+      "sample_idx": 158,
+      "seq_len": 4063,
+      "refs": [
+        "Yes",
+        "Yes"
+      ],
+      "all_classes": null,
+      "dense_score": 0.02631578947368421,
+      "dense_gen": " Yes\n\nQuestion: What is the average time spent on administrative tasks?\n\nAnswer: 27.9%\n\nQuestion: What is the average time spent on administrative tasks in 2014?\n\nAnswer: 23.7%\n\nQuestion: What is the average time spent on administrative tasks in 2017?\n\nAnswer: 27.9%\n\nQuestion: What is the average time spent on administrative tasks in 2014?\n\nAnswer: 23.7%\n\nQuestion: What is the average time spent o",
+      "cert_score": 0.02631578947368421,
+      "cert_gen": " Yes\n\nQuestion: What is the average time spent on administrative tasks?\n\nAnswer: 27.9%\n\nQuestion: What is the average time spent on administrative tasks in 2014?\n\nAnswer: 23.7%\n\nQuestion: What is the average time spent on administrative tasks in 2017?\n\nAnswer: 27.9%\n\nQuestion: What is the average time spent on administrative tasks in 2014?\n\nAnswer: 23.7%\n\nQuestion: What is the average time spent o",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 4096,
+      "sample_idx": 164,
+      "seq_len": 2829,
+      "refs": [
+        "no evidence of depression, depressed mood, disturbed sleep, fatigue or loss of energy",
+        "The annotations are based on evidence of depression and further annotated by the depressive symptom if there is evidence of depression"
+      ],
+      "all_classes": null,
+      "dense_score": 0.24137931034482754,
+      "dense_gen": " The dataset is annotated based on a hierarchical model of depression-related symptoms. Each tweet is annotated as no evidence of depression or evidence of depression. If a tweet is annotated evidence of depression, then it is further annotated with one or more depressive symptoms, for example, depressed mood, disturbed sleep, or fatigue or loss of energy.\n\nQuestion: What is the purpose of the fea",
+      "cert_score": 0.24137931034482754,
+      "cert_gen": " The dataset is annotated based on a hierarchical model of depression-related symptoms. Each tweet is annotated as no evidence of depression or evidence of depression. If a tweet is annotated evidence of depression, then it is further annotated with one or more depressive symptoms, for example, depressed mood, disturbed sleep, or fatigue or loss of energy.\n\nQuestion: What is the purpose of the stu",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 4096,
+      "sample_idx": 193,
+      "seq_len": 4062,
+      "refs": [
+        "MLP",
+        "Eusboost, MWMOTE"
+      ],
+      "all_classes": null,
+      "dense_score": 0.042553191489361694,
+      "dense_gen": " The proposed s2sL approach is compared to MLP, Eusboost and MWMOTE techniques.\n\nQuestion: What is the main contribution of this paper?\n\nAnswer: The main contribution of this paper is the proposed s2sL approach to address the task of classification in low data resource scenarios. The proposed approach involves simultaneously considering more than one sample (in this work, two samples are considere",
+      "cert_score": 0.042553191489361694,
+      "cert_gen": " The proposed s2sL approach is compared to MLP, Eusboost and MWMOTE techniques.\n\nQuestion: What is the main contribution of this paper?\n\nAnswer: The main contribution of this paper is the proposed s2sL approach to address the task of classification in low data resource scenarios. The proposed approach involves simultaneously considering more than one sample (in this work, two samples are considere",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 4096,
+      "sample_idx": 25,
+      "seq_len": 4049,
+      "refs": [
+        "As the transition probability increases, the learning rate initially rises and then declines."
+      ],
+      "all_classes": null,
+      "dense_score": 0.25,
+      "dense_gen": " The transition probability of the environment affects the learning rate in the static agent by increasing the learning rate as the probability of transition increases.\n\nQuestion: What is the difference between the static and the moving agents in terms of the function of plasticity?\nAnswer: The difference between the static and the moving agents in terms of the function",
+      "cert_score": 0.25,
+      "cert_gen": " The transition probability of the environment affects the learning rate in the static agent by increasing the learning rate as the transition probability increases.\n\nQuestion: What is the difference between the static and the moving agents in terms of the function of plasticity?\nAnswer: The difference between the static and the moving agents in terms of the function of",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 4096,
+      "sample_idx": 43,
+      "seq_len": 4063,
+      "refs": [
+        "They are rich in actin and have been shown to be highly dynamic."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": "",
+      "cert_score": 0.06451612903225808,
+      "cert_gen": "://www.jove.com/video/2028/isolation-and-culture-of-mouse-cortical-astrocytes\nA. dendritic spines contain actin\nB. dendritic spines contain mitochondria\nC. dendritic spines contain microtubules\nD. dendritic sp",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 4096,
+      "sample_idx": 88,
+      "seq_len": 4062,
+      "refs": [
+        "This research paper proposed an approach based on approximating the posterior distribution with an isotropic Gaussian distribution."
+      ],
+      "all_classes": null,
+      "dense_score": 0.3389830508474576,
+      "dense_gen": " The proposed approach is to approximate the posterior distribution with an isotropic Gaussian distribution.\n\nQuestion: What is the main advantage of the proposed approach?\nAnswer: The main advantage of the proposed approach is that it provides a novel LMS algorithm with adaptable step size.\n\nQuestion: What is the main contribution of this paper?\nAnswer:",
+      "cert_score": 0.3389830508474576,
+      "cert_gen": " The proposed approach is to approximate the posterior distribution with an isotropic Gaussian distribution.\n\nQuestion: What is the main advantage of the proposed approach?\nAnswer: The main advantage of the proposed approach is that it provides a novel LMS algorithm with adaptable step size.\n\nQuestion: What is the main contribution of this paper?\nAnswer:",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 4096,
+      "sample_idx": 122,
+      "seq_len": 3051,
+      "refs": [
+        "The first white settlement in McPherson County was Fuller's Ranch, established by Charles O. Fuller."
+      ],
+      "all_classes": null,
+      "dense_score": 0.25,
+      "dense_gen": " Fuller's Ranch",
+      "cert_score": 0.25,
+      "cert_gen": " Fuller's Ranch",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 4096,
+      "sample_idx": 143,
+      "seq_len": 3044,
+      "refs": [
+        "McPherson County is located in the U.S. state of Kansas."
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": " McPherson County is located in the U.S. state of Kansas.",
+      "cert_score": 1.0,
+      "cert_gen": " McPherson County is located in the U.S. state of Kansas.",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 25,
+      "seq_len": 4066,
+      "refs": [
+        "#364"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " 439th\n\nQuestion: The school colors of Patrick Henry High School are what?\nAnswer: Red, white, and blue\n\nQuestion: The school colors of",
+      "cert_score": 0.0,
+      "cert_gen": " 439th\n\nQuestion: The school colors of Patrick Henry High School are what?\nAnswer: Red, white, and blue\n\nQuestion: The school colors of",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 125,
+      "seq_len": 4066,
+      "refs": [
+        "yes"
+      ],
+      "all_classes": null,
+      "dense_score": 0.08695652173913045,
+      "dense_gen": " Yes, Yut and Tsuro are both board games.\n\nExplanation: Yut and Tsuro are both board games. Yut is a traditional Korean board game",
+      "cert_score": 0.07999999999999999,
+      "cert_gen": " Yes, they are both board games.\n\nExplanation: Yut and Tsuro are both board games. Yut is a traditional Korean board game that is played with",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 135,
+      "seq_len": 4064,
+      "refs": [
+        "Puli Alam"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " Logar Province\nExplanation: Baraki Barak District (Persian: \u0648\u0644\u0633\u0648\u0627\u0644\u06cc \u0628\u0631\u06a9\u06cc \u0628\u0631\u06a9 ; Pashto: \u0628\u0631\u06a9\u064a \u0628\u0631",
+      "cert_score": 0.0,
+      "cert_gen": " Logar Province\n\nQuestion: Baraki Barak District is situated in the western part of a province whose capital is what?\nAnswer: Logar Province\n\nQuestion",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 169,
+      "seq_len": 4064,
+      "refs": [
+        "Claire is a married World War II nurse"
+      ],
+      "all_classes": null,
+      "dense_score": 0.13793103448275862,
+      "dense_gen": " Claire Fraser is a fictional character in the Outlander series of multi-genre novels by American author Diana Gabaldon, and its television adaptation. In the series",
+      "cert_score": 0.13793103448275862,
+      "cert_gen": " Claire Fraser is a fictional character in the Outlander series of multi-genre novels by American author Diana Gabaldon, and its television adaptation. In the series",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 195,
+      "seq_len": 4065,
+      "refs": [
+        "the deadpan sketch group"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " Two Episodes of Mash\n\nQuestion: what is the name of the company that makes children's shoes\nAnswer: Start-rite\n\nQuestion: what is the name",
+      "cert_score": 0.0,
+      "cert_gen": " Two Episodes of Mash\n\nQuestion: what is the name of the company that makes children's shoes\nAnswer: Start-rite\n\nQuestion: what is the name",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 4065,
+      "refs": [
+        "Cunimund"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " Alboin\n\nQuestion: Who is the father-in-law of Field Marshal Gen Sugiyama?\nAnswer: Ogawa Mataji\n\nQuestion: Who is the",
+      "cert_score": 0.0,
+      "cert_gen": " Alboin\n\nQuestion: Who is the father-in-law of Field Marshal Gen Sugiyama?\nAnswer: Ogawa Mataji\n\nQuestion: Who is the",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 105,
+      "seq_len": 4065,
+      "refs": [
+        "Hong Kong Film Award for Best Director"
+      ],
+      "all_classes": null,
+      "dense_score": 0.4827586206896552,
+      "dense_gen": " Hong Kong Film Award for Best Director\n\nQuestion: Which award the director of film Tiramisu (2002 Film) earned?\nAnswer: Hong Kong Film Award",
+      "cert_score": 0.4827586206896552,
+      "cert_gen": " Hong Kong Film Award for Best Director\n\nQuestion: Which award the director of film Tiramisu (2002 Film) earned?\nAnswer: Hong Kong Film Award",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 168,
+      "seq_len": 4066,
+      "refs": [
+        "Milla"
+      ],
+      "all_classes": null,
+      "dense_score": 0.1,
+      "dense_gen": " Milla Jovovich\n\nQuestion: Who is the spouse of the director of film Resident Evil: The Final Chapter (2016 American Film)?\nAnswer: M",
+      "cert_score": 0.1,
+      "cert_gen": " Milla Jovovich\n\nQuestion: Who is the spouse of the director of film Resident Evil: The Final Chapter (2016 American Film)?\nAnswer: M",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 181,
+      "seq_len": 4066,
+      "refs": [
+        "Italy"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " Forl\u00ec\n\nQuestion: Who was the father of Eystein Glumra?\nAnswer: Ivar Halfdansson\n\nQuestion: Who was the father",
+      "cert_score": 0.0,
+      "cert_gen": " Forl\u00ec\n\nQuestion: Who was the father of Eystein Glumra?\nAnswer: Ivar Halfdansson\n\nQuestion: Who was the father",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 193,
+      "seq_len": 4065,
+      "refs": [
+        "Parkinson"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " 1. 2. 3. 4. 5. 6. 7. 8. 9. 10. 11",
+      "cert_score": 0.0,
+      "cert_gen": " 1. 2. 3. 4. 5. 6. 7. 8. 9. 10. 11",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 4096,
+      "sample_idx": 50,
+      "seq_len": 4065,
+      "refs": [
+        "The federal government pays benefits to coal miners affected by coal workers' pneumoconiosis (CWP, commonly referred to as black lung disease) and other lung diseases linked to coal mining in cases where responsible mine operators are not able to pay. In 2019, the monthly benefit for a miner with no dependents is $660.10. Benefits can be as much as $1,320.10 per month for miners with three or more dependents. Medical benefits are provided separately from disability benefits. Benefit payments and related administrative expenses in cases in which the responsible operators do not pay are paid out of the Black Lung Disability Trust Fund. The primary source of revenue for the trust fund is an excise tax on coal produced and sold domestically. If excise tax revenue is not sufficient to finance Black Lung Program benefits, the trust fund may borrow from the general fund of the Treasury. For 2018, the tax rates on coal were $1.10 per ton of underground-mined coal or $0.55 per ton of surface-mined coal, limited to 4.4% of the sales price. These rates were established in 1986. Starting in 2019, under current law, these tax rates are $0.50 per ton of underground-mined coal or $0.25 per ton of surface-mined coal, limited to 2% of the sales price. These are the rates that were set when the trust fund was established in 1977. The decline in the excise tax rates will likely put additional financial strain on a trust fund that already borrows from the general fund to meet obligations. The decline in domestic coal production, recent increases in the rate of CWP, and bankruptcies in the coal sector also contribute to the financial strain on the trust fund. The Black Lung Disability Trust Fund and associated excise tax on coal were established so that the coal industry, as opposed to taxpayers in general, would bear the burden associated with providing black lung benefits. Throughout its history, the Black Lung Disability Trust Fund has not raised revenues sufficient to meet obligations. As a result, at various points in time, Congress and the President have acted to increase the excise tax on coal, forgive or refinance trust fund debt, and modify black lung benefits eligibility. With the rate of the excise tax on coal reduced in 2019, the 116th Congress may again evaluate options for improving the fiscal condition of the Black Lung Disability Trust Fund, or other issues related to providing federal benefits to miners with black lung disease."
+      ],
+      "all_classes": null,
+      "dense_score": 0.6258823529411764,
+      "dense_gen": " The federal government pays benefits to coal miners affected by coal workers' pneumoconiosis (CWP, commonly referred to as black lung disease) and other lung diseases linked to coal mining in cases where the responsible mine operators are not able to pay. Benefit payments and related administrative expenses are paid out of the Black Lung Disability Trust Fund. The primary source of revenue for th",
+      "cert_score": 0.6258823529411764,
+      "cert_gen": " The federal government pays benefits to coal miners affected by coal workers' pneumoconiosis (CWP, commonly referred to as black lung disease) and other lung diseases linked to coal mining in cases where the responsible mine operators are not able to pay. Benefit payments and related administrative expenses are paid out of the Black Lung Disability Trust Fund. The primary source of revenue for th",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 4096,
+      "sample_idx": 87,
+      "seq_len": 4065,
+      "refs": [
+        "Military families with special medical and educational needs face unique challenges because of their frequent moves. To help assist these families, DOD provides services plans, which document the support a family member requires. The National Defense Authorization Act for Fiscal Year 2017 included a provision for GAO to review the Services' EFMPs, including DOD's oversight of these programs. This report examines the extent to which (1) each Service provides family support and (2) the Services monitor and DOD evaluates assignment coordination and family support. GAO analyzed DOD and Service-specific EFMP guidance and documents; analyzed fiscal year 2016 EFMP data (the most recent available); visited seven military installations, selected for their large numbers of military-connected students; and interviewed officials responsible for implementing each Service's EFMP, as well as officials in OSN that administer DOD's EFM policy. The support provided to families with special needs through the Department of Defense's (DOD) Exceptional Family Member Program (EFMP) varies widely for each branch of Military Service. Federal law requires DOD's Office of Special Needs (OSN) to develop a uniform policy that includes requirements for (1) developing and updating a services plan for each family with special needs and (2) resources, such as staffing, to ensure an appropriate number of family support providers. OSN has developed such a policy, but DOD relies on each Service to determine its compliance with the policy. However, Army and Navy officials said they have not received feedback from OSN about the extent to which their Service-specific guidance complies. Federal internal control standards call for developing clear policies to achieve agency goals. In addition, DOD's most recent annual reports to Congress do not indicate the extent to which each Service provides services plans or allocates sufficient resources for family support providers. According to GAO's analysis, the Military Services have developed relatively few services plans, and there is wide variation in the number of family support providers employed, which raises questions about potential gaps in services for families with special needs (see table). Each Service uses various mechanisms to monitor how servicemembers are assigned to installations (assignment coordination) and obtain family support, but DOD has not established common performance measures to assess these activities. DOD has taken steps to better support families with special needs, according to the DOD officials GAO interviewed. For example, DOD established a working group to identify gaps in services. However, OSN officials said that DOD lacks common performance measures for assignment coordination and family support because the Services have not reached consensus on what those measures should be. In addition, OSN does not have a process to systematically evaluate the results of the Services' monitoring activities. Federal internal control standards call for assessing performance over time and evaluating the results of monitoring activities. Without establishing common performance measures and assessing monitoring activities, DOD will be unable to fully determine the effect of its efforts to better support families with special needs and the adequacy of the Services' EFMPs as required by federal law. GAO makes a total of three recommendations to DOD. DOD should assess and report to Congress on the extent to which each Service provides sufficient family support personnel and services plans, develop common performance metrics for assignment coordination and family support, and evaluate the results of the Services' monitoring activities. DOD agreed with these recommendations and plans to develop performance metrics for assignment coordination and develop plans to evaluate the Services' monitoring activities."
+      ],
+      "all_classes": null,
+      "dense_score": 0.21730382293762576,
+      "dense_gen": " The EFMP provides support to families with special needs at their current and proposed locations. Servicemembers relocate frequently, generally moving every 3 years if in the Army, Marine Corps, and Navy, and every 4 years if in the Air Force. In fiscal year 2016, the Military Services relocated approximately 39,000 servicemembers enrolled in the EFMP to CONUS installations. To implement DOD\u2019s po",
+      "cert_score": 0.21730382293762576,
+      "cert_gen": " The EFMP provides support to families with special needs at their current and proposed locations. Servicemembers relocate frequently, generally moving every 3 years if in the Army, Marine Corps, and Navy, and every 4 years if in the Air Force. In fiscal year 2016, the Military Services relocated approximately 39,000 servicemembers enrolled in the EFMP to CONUS installations. To implement DOD\u2019s po",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 4096,
+      "sample_idx": 108,
+      "seq_len": 4065,
+      "refs": [
+        "The United States is a member of the OAS, PAHO, IICA, and PAIGH, which promote democracy, health care, agricultural development, and scientific exchange. GAO was asked to review U.S. assistance to these four organizations. In this report, GAO (1) assesses the extent to which the organizations' strategic goals align with those of U.S. agencies; (2) examines how the organizations oversee the use of their funds and the extent to which U.S. agencies have supported those efforts; (3) assesses the extent to which U.S. agencies included key monitoring provisions as part of assistance agreements; and (4) assesses the extent to which U.S. agencies had documentation of monitoring activities, including those called for by these provisions. GAO analyzed documents and interviewed officials from State, USAID, HHS, USDA, and the organizations. GAO also analyzed a nongeneralizable sample of 12 of the 60 assistance agreements that were awarded by State, USAID, HHS, and USDA to OAS, PAHO, and IICA and were active during calendar years 2014 through 2016. For each agency, GAO selected three agreements with the lowest, median, and highest dollar value. GAO found that strategic goals of the Organization of American States (OAS), the Pan American Health Organization (PAHO), the Inter-American Institute for Cooperation on Agriculture (IICA), and the Pan-American Institute of Geography and History (PAIGH) are predominantly aligned with the strategic goals of the Department of State (State), the U.S. Agency for International Development (USAID), the Department of Health and Human Services (HHS), and the U.S. Department of Agriculture (USDA). For example, IICA's strategic goals of a productive agricultural sector, enhancing agricultural development, and food security are aligned with USDA's foreign assistance goals. State, USAID, HHS, and USDA fund activities in the form of assistance agreements (e.g., grants and cooperative agreements) with OAS, PAHO, and IICA, which in 2016 totaled $32 million. According to agency officials, the agencies employ mechanisms to ensure that these agreements align with U.S. strategic goals. OAS, PAHO, IICA, and PAIGH have established mechanisms for overseeing their use of funds, such as external auditors, internal audit boards, and anti-fraud and ethics policies. State and USDA have directly supported these mechanisms. For example, State engaged in the selection process for OAS's Inspector General. GAO's review of 12 selected assistance agreements found that USDA included no financial or performance monitoring provisions in one of its agreements and that State did not include two key monitoring provisions in one of its agreements, called for by applicable guidance. GAO found that the remaining 10 agreements it reviewed contained all key monitoring provisions and that State has since taken corrective action. GAO found that U.S. agencies did not have full documentation of 18 of the 42 monitoring activities required by the 12 assistance agreements GAO reviewed (see table). For example, USDA did not have full documentation, such as for financial reports, of any of its 10 required monitoring activities and USDA officials did not explain their lack of documentation. USAID officials explained that their lack of full documentation was due, in part, to grant officers not always following their document management policies. State and HHS have since taken corrective action. If an agency does not have full documentation of monitoring activities, it may lack information needed to make appropriate budgetary and programmatic decisions. GAO recommends that (1) USDA ensure inclusion of all monitoring provisions as part of agreements and (2) USAID and USDA ensure full documentation of monitoring activities. USDA and USAID concurred with GAO's recommendations."
+      ],
+      "all_classes": null,
+      "dense_score": 0.18562874251497008,
+      "dense_gen": " The U.S. government engages with the governments of other countries in the Western Hemisphere through various inter-American organizations including the OAS, PAHO, IICA, and PAIGH. According to State, the OAS is the primary inter-American political forum through which the United States engages with other countries in the Western Hemisphere to promote democracy, human rights, security, and develop",
+      "cert_score": 0.18562874251497008,
+      "cert_gen": " The U.S. government engages with the governments of other countries in the Western Hemisphere through various inter-American organizations including the OAS, PAHO, IICA, and PAIGH. According to State, the OAS is the primary inter-American political forum through which the United States engages with other countries in the Western Hemisphere to promote democracy, human rights, security, and develop",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 4096,
+      "sample_idx": 161,
+      "seq_len": 3702,
+      "refs": [
+        "First fielded in 1976 on Shemya Island in Alaska, the Cobra Dane radar faces growing sustainment challenges that DOD plans to address through modernization projects. Anticipating future needs, DOD began investing in new radar systems that share capabilities with Cobra Dane to support ballistic missile defense and space surveillance, including the LRDR (Alaska), the Space Fence (Marshall Islands), and the Pacific Radar (location to be determined). The conference report accompanying a bill for the National Defense Authorization Act for Fiscal Year 2018 included a provision that GAO review the Air Force's report to Congress on the operation and sustainment of Cobra Dane. This report identifies information included in the Air Force's report and describes additional information that GAO reviewed on (1) the capabilities of the Cobra Dane radar and other planned radars to meet DOD's mission requirements, (2) Cobra Dane's operational availability and the plan to mitigate the effect on those missions when Cobra Dane is not available, and (3) DOD's funding plan and project cost estimates for the operation and sustainment of Cobra Dane and its site at Shemya Island. GAO reviewed the Air Force report and related documentation, and interviewed relevant officials. In its January 2018 report to Congress, the Air Force reported how the Cobra Dane radar and the Long Range Discrimination Radar (LRDR) have shared and unique capabilities to support ballistic missile defense and space surveillance missions. The report noted that the respective locations of both radar systems affect their ability to provide those capabilities. The Department of Defense (DOD) also has other radar investments\u2014the Pacific Radar and the Space Fence, which, according to DOD officials, may reduce DOD's reliance on Cobra Dane to provide ballistic missile defense and space surveillance capabilities. The Air Force's report to Congress noted that Cobra Dane met its requirement for operational availability, which refers to the percentage of time that the radar is able to meet its missions. GAO found that the Air Force has developed procedures to mitigate risks when Cobra Dane is not available. For example, U.S. Northern Command and Missile Defense Agency (MDA) officials stated that they can mitigate risks when Cobra Dane is not available by using the Sea-Based X-band radar to provide support for ballistic missile defense. The Air Force would face some limitations in its ability to conduct space surveillance if Cobra Dane were not available, as Cobra Dane tracks objects no other radar can track. However, MDA officials noted there are no plans to take Cobra Dane offline long enough to compromise space surveillance. The Air Force and MDA plan to contribute total funding of $278.6 million for the operation and sustainment of Cobra Dane, according to their fiscal year 2019 budget plans. Specifically, the Air Force and MDA plan to share funding for the operation and maintenance of the Cobra Dane radar and for three modernization projects that make up their sustainment plan for the radar. Further, the Air Force report noted that the Air Force also plans to provide $140 million in funding for the sustainment and maintenance of operational access to Cobra Dane's site at Shemya Island. In addition, GAO found that the Air Force developed a total cost estimate for one project\u2014known as the transmitter group replacement\u2014but not for its other two projects. Air Force officials plan to complete cost estimates for those two projects in conjunction with their fiscal year 2020 budget submission."
+      ],
+      "all_classes": null,
+      "dense_score": 0.2180746561886051,
+      "dense_gen": " The report states that Cobra Dane and other radar systems can provide capabilities that contribute to a range of missions, such as ballistic missile defense, space surveillance, and intelligence-gathering missions. DOD uses Cobra Dane and other radar systems to provide information over a short period of time to ground-based interceptors so they can hit their targets. Such radar systems contribute",
+      "cert_score": 0.2543757292882147,
+      "cert_gen": " The Cobra Dane radar system is a critical asset for the Department of Defense (DOD) to track and classify missile threats, and to determine if a threat was intercepted successfully. The Air Force and Missile Defense Agency (MDA) are responsible for the operation and sustainment of the Cobra Dane radar. The Air Force and MDA plan to share funding for the operation and maintenance of the radar, and",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 4096,
+      "sample_idx": 199,
+      "seq_len": 4065,
+      "refs": [
+        "This product provides an overview of the role Congress has played in shaping U.S. policy toward the conflict in Yemen. Summary tables provide information on legislative proposals considered in the 115th and 116th Congresses. Various legislative proposals have reflected a range of congressional perspectives and priorities, including with regard to the authorization of the activities of the U.S. Armed Forces related to the conflict; the extent of U.S. logistical, material, advisory, and intelligence support for the coalition led by Saudi Arabia; the approval, disapproval, or conditioning of U.S. arms sales to Saudi Arabia; the appropriation of funds for U.S. operations in support of the Saudi-led coalition; the conduct of the Saudi-led coalition's air campaign and its adherence to international humanitarian law and the laws of armed conflict; the demand for greater humanitarian access to Yemen; the call for a wider government assessment of U.S. policy toward Yemen and U.S. support to parties to the conflict; the nature and extent of U.S.-Saudi counterterrorism and border security cooperation; and the role of Iran in supplying missile technology and other weapons to the forces of the Houthi movement. The 116th Congress may continue to debate U.S. support for the Saudi-led coalition and Saudi Arabia's conduct of the war in Yemen, where fighting has continued since March 2015. The war has exacerbated a humanitarian crisis in Yemen that began in 2011; presently, the World Food Program reports that 20 million Yemenis face hunger in the absence of sustained food assistance. The difficulty of accessing certain areas of Yemen has made it hard for governments and aid agencies to count the war's casualties. Data collected by the U.S. and European-funded Armed Conflict Location & Event Data Project (ACLED) suggest that 60,000 Yemenis have been killed since January 2016. The Trump Administration has opposed various congressional proposals, including initiatives to reject or condition proposed U.S. arms sales or to require an end to U.S. military support to Saudi-led coalition operations in Yemen. Many in Congress have condemned the October 2018 murder of Saudi journalist Jamal Khashoggi by Saudi government personnel, and in general, the incident appears to have exacerbated existing congressional concerns about Saudi leaders and the pace, scope, and direction of change in the kingdom's policies. This product includes legislative proposals considered during the 115th and 116th Congresses. It does not include references to Yemen in Iran sanctions legislation, which are covered in CRS Report RS20871, Iran Sanctions. For additional information on the war in Yemen and Saudi Arabia, please see the following CRS products. CRS Report R43960, Yemen: Civil War and Regional Intervention. CRS Report RL33533, Saudi Arabia: Background and U.S. Relations. CRS Insight IN10729, Yemen: Cholera Outbreak."
+      ],
+      "all_classes": null,
+      "dense_score": 0.2171945701357466,
+      "dense_gen": " In March 2015, Saudi Arabia established a coalition of nations (hereinafter referred to as the Saudi-led coalition or the coalition) to engage in military operations in Yemen against the Ansar Allah/Houthi movement and loyalists of the previous president of Yemen, the late Ali Abdullah Saleh. During 2014, the United States joined Saudi Arabia in demanding that Houthi forces reverse their campaign",
+      "cert_score": 0.2171945701357466,
+      "cert_gen": " In March 2015, Saudi Arabia established a coalition of nations (hereinafter referred to as the Saudi-led coalition or the coalition) to engage in military operations in Yemen against the Ansar Allah/Houthi movement and loyalists of the previous president of Yemen, the late Ali Abdullah Saleh. During 2014, the United States joined Saudi Arabia in demanding that Houthi forces reverse their campaign",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 59,
+      "seq_len": 4062,
+      "refs": [
+        "The Marketing proposed to use voice control on the remote and according to his research, three quarters of people under 35 are in favour of voice control. At the same time, in order to keep the remote not so easy to be lost as its counterparts of other brands, voice control would be an essential technique. For those two reasons, the Marketing persuaded the Project Manager to target their consumers as the youth."
+      ],
+      "all_classes": null,
+      "dense_score": 0.18181818181818182,
+      "dense_gen": " The Project Manager agreed with Marketing because he thought that the idea of having the company logo on the remote control was too much. He thought that the logo should be on the boot up screen instead.",
+      "cert_score": 0.18181818181818182,
+      "cert_gen": " The Project Manager agreed with Marketing because he thought that the idea of having the company logo on the remote control was too much. He thought that the logo should be on the boot up screen instead.",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 81,
+      "seq_len": 4065,
+      "refs": [
+        "The opposition party claimed that people across Canada were appalled by the situation in care homes which left seniors suffering. The minister explained that the government was fully aware of the situation. The minister promised that they would fully play their role federal level with advice, with guidance, with support and with investments. They were going to have those conversations about how best they can improve the care for all seniors."
+      ],
+      "all_classes": null,
+      "dense_score": 0.06976744186046512,
+      "dense_gen": " The discussion was about the government's policy to improve long-term care facilities and protect the seniors. The government has taken several steps to improve the long-term care facilities and protect the seniors. The government has increased the funding for long-term care facilities, introduced new regulations to improve the quality of care, and established a national seniors strategy to addre",
+      "cert_score": 0.06976744186046512,
+      "cert_gen": " The discussion was about the government's policy to improve long-term care facilities and protect the seniors. The government has taken several steps to improve the long-term care facilities and protect the seniors. The government has increased the funding for long-term care facilities, introduced new regulations to improve the quality of care, and launched a national strategy to address the shor",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 89,
+      "seq_len": 4065,
+      "refs": [
+        "The opposition party claimed that the Minister of Digital Government has been promoting a fundraising campaign to sue Global News for their story criticizing the Chinese Communist Party, and the opposition party thought the minister was supporting the Communist Party of China and threatening our media and freedom of expression. The Minister explained that community outreach was a very important part of the work of a member of Parliament and WeChat was one of many social media sites regularly used by members, and the minister did not share any personal views on Wechat."
+      ],
+      "all_classes": null,
+      "dense_score": 0.07331975560081466,
+      "dense_gen": " The debate was about the fundraising campaign for the Liberal Party of Canada.\n\nQuery: What was the debate about a particular bill?\nAnswer: The debate was about Bill C-7.\n\nQuery: What was the debate about a particular bill?\nAnswer: The debate was about Bill S-204.\n\nQuery: What was the debate about a particular bill?\nAnswer: The debate was about Bill C-7.\n\nQuery: What was the debate about a partic",
+      "cert_score": 0.07331975560081466,
+      "cert_gen": " The debate was about the fundraising campaign for the Liberal Party of Canada.\n\nQuery: What was the debate about a particular bill?\nAnswer: The debate was about Bill C-7.\n\nQuery: What was the debate about a particular bill?\nAnswer: The debate was about Bill S-204.\n\nQuery: What was the debate about a particular bill?\nAnswer: The debate was about Bill C-7.\n\nQuery: What was the debate about a partic",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 112,
+      "seq_len": 4064,
+      "refs": [
+        "Kirsty Williams was not aware of any disadvantages to Cardiff Met. In terms of students and staff, there would be some personal impact on them. However, in terms of institutions going forward, Kirsty Williams was not aware that they were currently struggling with any disadvantages. Instead of looking at the past, Kirsty Williams thought they needed to look at the future. It had turned out that they got a strong institution in Cardiff Met."
+      ],
+      "all_classes": null,
+      "dense_score": 0.15053763440860216,
+      "dense_gen": " Kirsty Williams felt that there had been no disadvantages to Cardiff Met because that merger did not go ahead.",
+      "cert_score": 0.15053763440860216,
+      "cert_gen": " Kirsty Williams felt that there had been no disadvantages to Cardiff Met because that merger did not go ahead.",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 158,
+      "seq_len": 4058,
+      "refs": [
+        "The team agreed that only the scroll button and the LCD were new items for a remote control. The color of the device was doubted but Marketing argued that since the product aimed at the young market, the case looked good in pure yellow. Besides, the rubber material felt soft, making the device look and feel nice. However, the team thought that there were too many buttons, which did not align with the original idea."
+      ],
+      "all_classes": null,
+      "dense_score": 0.14,
+      "dense_gen": " The team discussed the product's features, design, and usability. They also evaluated the product's technological innovation and its suitability for different customer segments.",
+      "cert_score": 0.14,
+      "cert_gen": " The team discussed the product's features, design, and usability. They also evaluated the product's technological innovation and its suitability for different customer segments.",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 4096,
+      "sample_idx": 84,
+      "seq_len": 1539,
+      "refs": [
+        "Losing weight is one thing, keeping it off quite another. And now researchers are finding that among those with coronary heart disease (CHD)\u2014which the Mayo Clinic reports develops from damaged or diseased blood vessels typically caused by blockage and inflammation\u2014yo-yo dieting may dramatically increase the risk of stroke, heart attack, and death. Reporting in the New England Journal of Medicine, researchers say they followed nearly 10,000 men and women with CHD between the ages of 35 and 75 for about five years, monitoring changes in body weight and other health outcomes. The takeaway? \"It's important to lose weight, but this data says you have to keep it off,\" lead researcher Dr. Sripal Bangalore at the New York University School of Medicine tells the New York Times. The highest weight fluctuation was on average 8.6 pounds over five years, while the smallest body weight changes averaged closer to two pounds, reports Medical News Today. Those who were already overweight or obese at the beginning of the study and who experienced the highest level of weight fluctuation experienced 124% more deaths, 136% more strokes, and 117% more heart attacks, meaning these CHD patients were more than twice as likely to suffer these negative outcomes in just a few years than people with CHD whose weight only fluctuated two pounds. This doesn't pinpoint a cause, as pre-existing heart problems could be the culprit, but researchers hope to study this correlation further. (Yo-yo dieting is bad for women's hearts in general.)"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_C",
+      "cert_score": 0.0,
+      "cert_gen": " NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_CHAR NEWLINE_C",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 4096,
+      "sample_idx": 130,
+      "seq_len": 2980,
+      "refs": [
+        "A Florida police chief got arrested Friday for allegedly soliciting a prostitute and was promptly fired just 10 months into his tenure, NBC Miami reports. According to an arrest report, Miami Gardens Police Chief Stephen Johnson called a number in a \"two-girl special\" prostitution ad and negotiated a $100 deal for two women for 30 minutes. Only problem: The woman he allegedly paid at a motel was really a sheriff's detective. \"The stress overwhelmed me, and I made a very bad decision,\" Johnson tells the Miami Herald in his apology. He was hired last May to repair community relations after former top cop Matthew Boyd resigned amid allegations of harassment and illegal tactics. \"It was one of the most painful things I've ever heard as a manager,\" says the city manager who fired Stephens, the Sun-Sentinel reports. \"It's like a punch in the stomach.\""
+      ],
+      "all_classes": null,
+      "dense_score": 0.17253521126760565,
+      "dense_gen": " NEWLINE_CHAR NEWLINE_CHAR Miami Gardens Police Chief Stephen Johnson was arrested for soliciting a prostitute, officials said. He was immediately fired from his position. NEWLINE_CHAR NEWLINE_CHAR Miami Gardens Police Chief Stephen Johnson was arrested for soliciting a prostitute in Dania Beach Friday, officials said. NEWLINE_CHAR NEWLINE_CHAR Mayor Oliver Gilbert confirmed the arrest and said Jo",
+      "cert_score": 0.17253521126760565,
+      "cert_gen": " NEWLINE_CHAR NEWLINE_CHAR Miami Gardens Police Chief Stephen Johnson was arrested for soliciting a prostitute, officials said. He was immediately fired from his position. NEWLINE_CHAR NEWLINE_CHAR Miami Gardens Police Chief Stephen Johnson was arrested for soliciting a prostitute in Dania Beach Friday, officials said. NEWLINE_CHAR NEWLINE_CHAR Mayor Oliver Gilbert confirmed the arrest and said Jo",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 4096,
+      "sample_idx": 170,
+      "seq_len": 1574,
+      "refs": [
+        "The three American hikers detained by Iran weren\u2019t captured in Iraq, says Sarah Shourd: They were beckoned over the border by an armed soldier, she tells the New York Times in an effort to set the WikiLeaks version of the story straight. \u201cWe did not actually enter Iran until he gestured to us. We were confused and worried and wanted to go back.\" In Shourd's fullest account of her ordeal to date, she goes into detail about their fateful overnight camping trip, describing \"scores of campfires\" near the waterfall they were hiking to\u2014which abutted Iran. \u201cI think we were extremely unlucky,\u201d says Shourd. \u201cI guess I never believed there would be so many hundreds of people close to a border.\u201d Her interview with the Times comes ahead of a court date for her fellow hikers, which was set for Saturday but has been delayed by Iran until Shourd \u201ccan return to Iran or,\u201d if she refuses, her case can \u201cbe dealt with differently,\u201d said an Iranian official. But her lawyer says the trial should go forward; neither he nor Shourd, he tells Reuters, were notified of the change."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " \n",
+      "cert_score": 0.0,
+      "cert_gen": " \n",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 4096,
+      "sample_idx": 191,
+      "seq_len": 2633,
+      "refs": [
+        "Look up at the sky on Jan. 31 and you may witness a sight unseen for 150 years. For the first time since 1866, a total lunar eclipse will occur with the blue moon, or second full moon of the month, which\u2014like the one visible on New Year's Day\u2014will also be a supermoon. Got all that? When the moon is at or near the closest point to Earth in its orbit (aka, a supermoon), it appears 14% bigger and 30% brighter than full moons that occur at the farthest point in the moon's orbit, though the moon will lose brightness as it enters Earth's shadow, according to NASA. Because of the way Earth's atmosphere bends light, the eclipsed moon will take on a reddish hue, something often referred to as a blood moon, making this rare celestial event \"a super blue blood moon eclipse,\" according to the Miami Herald. The next blue moon eclipse won't occur until 2028. The eclipse will last for 3.5 hours, with the total eclipse stretching for 77 minutes, reports Sky & Telescope. Those along the Pacific Rim from Alaska and northwestern Canada to central and eastern Asia, Indonesia, New Zealand, and Australia will get the best view of totality during the middle of the night. However, partial phases of the eclipse should be visible under a clear sky in central North America, western Asia, India, the Middle East and eastern Europe, per Space.com. North American viewers should look up as the moon sets on the morning of Jan. 31, while those on the opposite side of the world should see a partial eclipse as the moon rises. Not in an ideal viewing area? The Virtual Telescope plans to livestream the total eclipse from Australia, which you can watch here, per Quartz. (Bogus glasses damaged a solar eclipse viewer's eyes.)"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": "",
+      "cert_score": 0.2114285714285714,
+      "cert_gen": "://www.space.com/39716-blue-moon-lunar-eclipse-2018.html\nThe moon turns blood-red in this image of a total lunar eclipse from 2004. A total eclipse of a \"blue moon\" will occur on Jan. 31, 2018. NEWLINE_CHAR NEWLINE_CHAR The first eclipse of 2018 will be a lunar one that comes at the very end of the month, on Jan. 31. NEWLINE_CHAR NEWLINE_CHAR It will be a total eclipse that involves the second ful",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 4096,
+      "sample_idx": 193,
+      "seq_len": 616,
+      "refs": [
+        "The FBI is reportedly investigating a sophisticated\u2014but unsuccessful\u2014attempt to hack into the Democratic National Committee's voter database. The DNC learned of the attempt on Tuesday, CNN reports. The attack, which was detected by a cloud service provider and a security research company, involved a fake login page intended to gather usernames and passwords for a service called Votebuilder, which hosts the DNC's voter database. It's a method called \"spearphishing,\" according to the New York Times. \"It was very convincing,\" Mike Murray of the cybersecurity firm Lookout tells CNN, adding that it would be tough to tell the real page from the fake one, even if they were side-by-side. The fake login page was ultimately removed by the cloud hosting company DigitalOcean. The company's chief security officer says the threat was identified before the attack was launched. \"We see no evidence that any sensitive data was stolen,\" he says. A DNC official tells the Times that it is not clear who the hackers were in this case. But, the paper recalls, a 2016 hack of the DNC was ultimately traced to Russia. This latest attempt, DNC Chief Security Officer Bob Lord tells the Times, \"is further proof that there are constant threats as we head into midterm elections and we must remain vigilant in order to prevent future attacks.\" Earlier this week, Microsoft reported that it had uncovered new Russian hacking attempts targeting conservative organizations in the US."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " \n",
+      "cert_score": 0.0,
+      "cert_gen": " \n",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 4096,
+      "sample_idx": 24,
+      "seq_len": 2463,
+      "refs": [
+        "Date"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " Date\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion:",
+      "cert_score": 1.0,
+      "cert_gen": " Date\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion:",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 4096,
+      "sample_idx": 79,
+      "seq_len": 4038,
+      "refs": [
+        "Other location"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " Other location\nQuestion: What is the name of the largest island in the world?\nType: Other location\nQuestion: What is the name of the largest island in the world?\nType: Other location\nQuestion: What is the name of the largest island in the world?\nType: Other location\nQuestion: What is",
+      "cert_score": 1.0,
+      "cert_gen": " Other location\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 4096,
+      "sample_idx": 100,
+      "seq_len": 4043,
+      "refs": [
+        "Individual"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " Individual\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion:",
+      "cert_score": 1.0,
+      "cert_gen": " Individual\nQuestion: What is the name of the city that Maurizio Pellegrin lives in?\nType: City\nQuestion: What is the name of the city that Maurizio Pellegrin lives in?\nType: City\nQuestion: What is the name of the city that Maurizio Pellegrin",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 4096,
+      "sample_idx": 159,
+      "seq_len": 4040,
+      "refs": [
+        "Date"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " Date\nQuestion: What is the name of the first computer?\nType: Other entity\nQuestion: What is the name of the first computer?\nType: Other entity\nQuestion: What is the name of the first computer?\nType: Other entity\nQuestion: What is the name of the first computer?\nType: Other",
+      "cert_score": 1.0,
+      "cert_gen": " Date\nQuestion: What is the name of the first computer?\nType: Other entity\nQuestion: What is the name of the first computer?\nType: Other entity\nQuestion: What is the name of the first computer?\nType: Other entity\nQuestion: What is the name of the first computer?\nType: Other",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 4096,
+      "sample_idx": 179,
+      "seq_len": 3478,
+      "refs": [
+        "Definition of something"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 0.0,
+      "dense_gen": " Disease and medicine\nQuestion: What is the name of the first U.S. president to be born in the 20th century?\nType: Individual\nQuestion: What is the name of the first U.S. president to be born in the 20th century?\nType: Individual\nQuestion: What is the name",
+      "cert_score": 0.0,
+      "cert_gen": " Disease and medicine\nQuestion: What is the name of the first U.S. president to be born in the 20th century?\nType: Individual\nQuestion: What is the name of the first U.S. president to be born in the 20th century?\nType: Individual\nQuestion: What is the name",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 13,
+      "seq_len": 4064,
+      "refs": [
+        "TL;DR",
+        "Tl;dr",
+        "Too long, didn't read",
+        "TL-DR",
+        "Too long; didn't read"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Too long; didn't read\nPassage:\nThe White House - Fact Monster\nThe White House\nThe White House\nWhere the President Lives and Works\n",
+      "cert_score": 1.0,
+      "cert_gen": "Too long; didn't read\nPassage:\nThe White House - Fact Monster\nThe White House\nThe White House\nWhere the President Lives and Works\n",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 103,
+      "seq_len": 4064,
+      "refs": [
+        "Kamal kahn",
+        "List of Bond girls in Octopussy",
+        "Magda (James Bond)",
+        "List of James Bond allies in Octopussy",
+        "Vijay (James Bond)",
+        "Bond 13",
+        "Octopussy (character)",
+        "Penelope Smallbone",
+        "Octopussy",
+        "General Orlov",
+        "Kamal Khan",
+        "Octopussy (film)",
+        "List of James Bond villains in Octopussy",
+        "Jim Fanning (James Bond)"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Octopussy\nPassage:\nThe 2013 Nobel Peace Prize was awarded to the Organisation for the Prohibition of Chemical Weapons, for their \"extensive",
+      "cert_score": 1.0,
+      "cert_gen": "Octopussy\nPassage:\nThe 2013 Nobel Peace Prize was awarded to the Organisation for the Prohibition of Chemical Weapons, for their \"extensive",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 120,
+      "seq_len": 4062,
+      "refs": [
+        "Kartoum",
+        "Khartoum, SU",
+        "Al Khar\u0163\u016bm",
+        "Al-Khartoum, Sudan",
+        "Khartoum (city)",
+        "Al-Khar\u1e6d\u016bm",
+        "Khartoum",
+        "Capital of Sudan",
+        "Chartum",
+        "Al Khartum",
+        "Khartum",
+        "Al Khurtum",
+        "Al-Khartum",
+        "Khartoum, Sudan",
+        "El Khartum",
+        "Khartoum, The Sudan"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Khartoum\nPassage:\nThe 2007\u201308 UEFA Champions League was the 16th season of UEFA's premier club football tournament, the",
+      "cert_score": 1.0,
+      "cert_gen": "Khartoum\nPassage:\nThe 2007\u201308 UEFA Champions League was the 48th season of Europe's premier club football tournament organised by",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 146,
+      "seq_len": 4057,
+      "refs": [
+        "Madrid, Madrid",
+        "Madrilene",
+        "Mayrit",
+        "Madrile\u00f1a",
+        "The weather in Madrid",
+        "Madrile\u00f1o",
+        "Madrid (Spain)",
+        "Madrid",
+        "Madrid, Spain",
+        "Madrilenian",
+        "Madrid (city)",
+        "Capital of Spain",
+        "Madrid capital",
+        "Madrilena",
+        "Madrid City",
+        "Madrid (City)",
+        "Madrid- Spain",
+        "UN/LOCODE:ESMAD",
+        "Madrileno",
+        "Demographics of Madrid",
+        "City of Madrid"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Madrid\nPassage:\nThe 10 Best Things to Do in Madrid - 2018 (with Photos) - TripAdvisor\nThe 10 Best Things to",
+      "cert_score": 1.0,
+      "cert_gen": "Madrid\nPassage:\nThe 10 Best Things to Do in Madrid - 2018 (with Photos...\nThe 10 Best Things to Do in Madrid",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 199,
+      "seq_len": 2947,
+      "refs": [
+        "Budimpe\u0161ta",
+        "Budapest",
+        "Veres P\u00e9ter Gimn\u00e1zium",
+        "Budape\u0161\u0165",
+        "Judapest",
+        "Transport in Budapest",
+        "Budapesth",
+        "Uj-Pest",
+        "Buda-Pest",
+        "Buda-Pesth",
+        "Budape\u0161t",
+        "Boedapest",
+        "Capital of Hungary",
+        "Nepsziget",
+        "City of Budapest",
+        "Budapest (Hungary)",
+        "N\u00e9psziget",
+        "Buda-pesth",
+        "UN/LOCODE:HUBUD",
+        "Budapest, Hungary"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Budapest\nPassage:\nThe 2016 Summer Olympics\nThe 2016 Summer Olympics, officially known as the Games of the XXXI Olympiad",
+      "cert_score": 1.0,
+      "cert_gen": "Budapest\nPassage:\nThe 2016 Summer Olympics, officially known as the Games of the XXXI Olympiad and commonly known as Rio 201",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 4064,
+      "refs": [
+        "Peter has been working out at the gym near their office lately to improve his health. Lisa is considering working out and eating better to be healthier."
+      ],
+      "all_classes": null,
+      "dense_score": 0.22222222222222227,
+      "dense_gen": " Peter and Lisa are discussing about their health. Peter is working out and Lisa is thinking of working out. Peter goes to a gym and does weights and runs on the treadmill. Lisa thinks she needs to eat better to help her keep in shape. Peter says that sleep is another major requirement for good health. They both agree that there are a lot of things one can do to stay healthy.\nDialogue:  Lisa: Hell",
+      "cert_score": 0.34782608695652173,
+      "cert_gen": " Peter and Lisa are discussing about their health. Peter is working out to improve his health. Lisa is also thinking of working out. They are discussing about the exercises they do and the importance of sleep and diet in maintaining good health.\nDialogue:  Lisa: Hello Peter. What have you been doing off late?\r\nPeter: Bit busy with work.\r\nLisa: Too much of work, huh?\r\nPeter: Not really, I\u2019ve been w",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 82,
+      "seq_len": 4065,
+      "refs": [
+        "Ali left his wallet at Mohammad's place. Mohammad'll bring it to uni tomorrow."
+      ],
+      "all_classes": null,
+      "dense_score": 0.8235294117647058,
+      "dense_gen": " Ali left his wallet at Mohammad's place yesterday. Mohammad found it and will bring it to uni tomorrow.\nDialogue: Sarah: I'm so excited! I'm going to the cinema with my friends tonight!\r\nSarah: I can't wait to see the new movie! \r\nSarah: I've been looking forward to it for weeks!\r\nSarah: I'm going to get some popcorn and a drink before the movie starts.\r\nSarah: I'm going to sit in the front row s",
+      "cert_score": 0.8235294117647058,
+      "cert_gen": " Ali left his wallet at Mohammad's place yesterday. Mohammad found it and will bring it to uni tomorrow.\nDialogue: Sarah: I'm so excited! I'm going to the cinema with my friends tonight!\r\nSarah: I can't wait to see the new movie! \r\nSarah: I've been waiting for it for so long!\r\nSarah: I'm so excited!\r\nSarah: I can't wait to see it!\r\nSarah: I'm so excited!\r\nSarah: I can't wait to see it!\r\nSarah: I'm",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 106,
+      "seq_len": 4063,
+      "refs": [
+        "Jim tracks Finn's package number 45678 which will be delivered to him tomorrow. "
+      ],
+      "all_classes": null,
+      "dense_score": 0.5,
+      "dense_gen": " Finn is tracking his shipment. His package has left the warehouse and will be delivered to him tomorrow.\nDialogue: Lila: Hey, I'm going to the cinema tonight, wanna come?\r\nLila: I'm going to see the new Star Wars movie\r\nLila: It's a must see\r\nLila: I'm so excited!\r\nLila: I'm going to the 7:30 show\r\nLila: I'll be at the cinema at 7:15\r\nLila: I'll be waiting for you at the entrance\r\nLila: I'll be w",
+      "cert_score": 0.6428571428571429,
+      "cert_gen": " Finn's package has left the warehouse and will be delivered to him tomorrow.\nDialogue: John: Hey, I'm going to the cinema tonight, wanna come?\r\nMary: Sure, I'll come with you!\r\nJohn: Great, I'll pick you up at 7:30.\r\nMary: Ok, see you then!\nSummary: John and Mary are going to the cinema tonight. John will pick Mary up at 7:30.\nDialogue: John: Hey, I'm going to the cinema tonight, wanna come?\r\nMar",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 108,
+      "seq_len": 4065,
+      "refs": [
+        "Karen got stuck on the road from the swimming pool to Waitrose so wants Peter to avoid it. Peter is not leaving until 6 as he he has to finish his presentation. Karen will see Peter in a bit."
+      ],
+      "all_classes": null,
+      "dense_score": 0.3466666666666667,
+      "dense_gen": " Karen and Peter are talking about the road from the swimming pool to Waitrose. There are vans everywhere, but they don't know what's happening. Peter is finishing a presentation for the repairs team tomorrow.\nDialogue: Sarah: Hey, what are you doing?\r\nLily: I'm just looking at the new photos\r\nSarah: Oh, I see. I'm going to the gym. Do you want to come?\r\nLily: No, I'm going to the library.\r\nSarah:",
+      "cert_score": 0.3409090909090909,
+      "cert_gen": " Karen and Peter are talking about the road from the swimming pool to Waitrose. There are vans everywhere, but they don't know what's happening. Karen got stuck after yoga. Peter is finishing a presentation for the repairs team tomorrow. Karen offers to help Peter with the presentation.\nDialogue: Sarah: Hey, I'm going to the movies tonight. Wanna come?\r\nLily: Sure, I'll come with you.\r\nSarah: Grea",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 4096,
+      "sample_idx": 118,
+      "seq_len": 4065,
+      "refs": [
+        "Josie finds Eco's novel \"Foucault's Pendulum\" nerdy. Josie would like to read Eco in Italian, but she's unsure of her language abilities. Stefano considers Eco's two novels and finds them difficult. Josie has read an unfavorable review of \"Foucault's Pendulum\" by Salman Rushdie."
+      ],
+      "all_classes": null,
+      "dense_score": 0.273972602739726,
+      "dense_gen": " Josie and Stefano are discussing Foucault's Pendulum. Josie thinks it's weird and nerdy. Stefano says that Eco was the king of nerds. Josie says that she should try and read one of his novels in the original, but she's not sure her level of Italian is adequate. Stefano says that The Name of the Rose is really difficult for a foreign speaker of Italian, but Foucault's Pendulum is more comprehensib",
+      "cert_score": 0.273972602739726,
+      "cert_gen": " Josie and Stefano are discussing Foucault's Pendulum. Josie thinks it's weird and nerdy. Stefano says that Eco was the king of nerds. Josie says that she should try and read one of his novels in the original, but she's not sure her level of Italian is adequate. Stefano says that The Name of the Rose is really difficult for a foreign speaker of Italian, but Foucault's Pendulum is more comprehensib",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 4096,
+      "sample_idx": 225,
+      "seq_len": 1579,
+      "refs": [
+        "        self.object = self.get_object()"
+      ],
+      "all_classes": null,
+      "dense_score": 0.41463414634146345,
+      "dense_gen": "        if \"set_is_active\" in request.POST:\n            return self._handle_set_is_active()\n        return super(UserDetailView, self).post(request, *args, **kwargs)\n    def get_queryset(self):\n        return get_user_model().objects.all()\n",
+      "cert_score": 0.41463414634146345,
+      "cert_gen": "        if \"set_is_active\" in request.POST:\n            return self._handle_set_is_active()\n        return super(UserDetailView, self).post(request, *args, **kwargs)\n    def dispatch(self, request, *args, **kwargs):\n        self.model = get_user_model()\n        return super(UserDetailView,",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 4096,
+      "sample_idx": 340,
+      "seq_len": 2254,
+      "refs": [
+        "\t\tif (orderInvestigationLiteVo == null)"
+      ],
+      "all_classes": null,
+      "dense_score": 0.36,
+      "dense_gen": "\t\tgrdResultsRowCollection rows = form.grdResults().getRows();\n\t\tgrdResultsRow row = null;\n\t\tfor (int i = 0; i < rows.size(); i++)\n\t\t{\n\t\t\trow = rows.get(i);\n\t\t\tif (row.getValue() instanceof OrderSpecimenLiteVo)\n",
+      "cert_score": 0.36,
+      "cert_gen": "\t\tgrdResultsRowCollection rows = form.grdResults().getRows();\n\t\tgrdResultsRow row = null;\n\t\tfor (int i = 0; i < rows.size(); i++)\n\t\t{\n\t\t\trow = rows.get(i);\n\t\t\tif (row.getValue() instanceof OrderSpecimenLiteVo)\n",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 4096,
+      "sample_idx": 369,
+      "seq_len": 1766,
+      "refs": [
+        "            [\"cargo\", \"build\"] + opts,"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "            [\"cargo\", \"build\"] + opts,\n            env=env,\n            verbose=verbose)\n        if status:\n            return status\n        if android:\n            # Build the APK\n            apk_builder_dir = \"support/android-rs-glue\"\n            with cd(path.join(apk_builder_dir, \"apk-builder",
+      "cert_score": 1.0,
+      "cert_gen": "            [\"cargo\", \"build\"] + opts,\n            env=env,\n            verbose=verbose)\n        if status:\n            return status\n        if android:\n            # Build the APK\n            apk_builder_dir = \"support/android-rs-glue\"\n            with cd(path.join(apk_builder_dir, \"apk-builder",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 4096,
+      "sample_idx": 383,
+      "seq_len": 2311,
+      "refs": [
+        "    front_seq = unicode_to_utf16(X.begin)"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": "    # -- 1st word\n    # -- 2nd word\n    # -- 2nd word\n    # -- 2nd word\n    # -- 2nd word\n    # -- 2nd word\n    # -- 2nd word\n    # -- 2nd word\n",
+      "cert_score": 0.35185185185185186,
+      "cert_gen": "    #    return [ Interval(X.begin, 0x10000), Interval(0x10000, X.end) ]\n    return [ Interval(X.begin, 0x10000), Interval(0x10000, X.end) ]\n",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 4096,
+      "sample_idx": 435,
+      "seq_len": 2382,
+      "refs": [
+        "        final LinkedList<Node> path = new LinkedList<>();"
+      ],
+      "all_classes": null,
+      "dense_score": 0.4299065420560748,
+      "dense_gen": "        return graph.existsInducingPathInto(x, y);\n    }\n    public static boolean existsInducingPathInto(Node x, Node y, Graph graph, int maxPathLength) {\n        if (x.getNodeType()!= NodeType.MEASURED) throw new IllegalArgumentException();\n        if (y.getNodeType()!=",
+      "cert_score": 0.4299065420560748,
+      "cert_gen": "        return graph.existsInducingPathInto(x, y);\n    }\n    public void setCompleteRuleSetUsed(boolean completeRuleSetUsed) {\n        this.completeRuleSetUsed = completeRuleSetUsed;\n    }\n    public void setMaxPathLength(int maxPathLength) {\n        this.maxPathLength = maxPath",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 4096,
+      "sample_idx": 28,
+      "seq_len": 4060,
+      "refs": [
+        "            Assets.perfectTapSound.play(GlobalConfiguration.feedbackVolume / 100f);"
+      ],
+      "all_classes": null,
+      "dense_score": 0.624,
+      "dense_gen": "            Assets.tapPerfectSound.play();\n        } else if (accuracy == Accuracy.GREAT) {\n            Assets.tapGreatSound.play();\n        } else if (accuracy == Accuracy.NICE) {\n            Assets.tapNiceSound.play();\n        } else if (accuracy == Accuracy.BAD) {\n            Assets.tapBadSound.play();\n       ",
+      "cert_score": 0.624,
+      "cert_gen": "            Assets.tapPerfectSound.play();\n        } else if (accuracy == Accuracy.GREAT) {\n            Assets.tapGreatSound.play();\n        } else if (accuracy == Accuracy.NICE) {\n            Assets.tapNiceSound.play();\n        } else if (accuracy == Accuracy.BAD) {\n            Assets.tapBadSound.play();\n       ",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 4096,
+      "sample_idx": 77,
+      "seq_len": 4062,
+      "refs": [
+        "            if (httpMessage instanceof SentinelHttpMessageOrig) {"
+      ],
+      "all_classes": null,
+      "dense_score": 0.563758389261745,
+      "dense_gen": "            textareaMessage.setText(new String(httpMessage.getRes().getResponse()));\n        } else {\n            textareaMessage.setText(\"\");\n        }\n        textareaMessage.setCaretPosition(0);\n        textareaMessage.setHighlighter(null);\n        textareaMessage.setMarkAllHighlightColor(new Color(0xff, 0xea, 0x00",
+      "cert_score": 0.563758389261745,
+      "cert_gen": "            textareaMessage.setText(new String(httpMessage.getRes().getResponse()));\n        } else {\n            textareaMessage.setText(\"\");\n        }\n        textareaMessage.setCaretPosition(0);\n        textareaMessage.setHighlighter(null);\n        textareaMessage.setMarkAllHighlightColor(new Color(0xff, 0xea, 0x00",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 4096,
+      "sample_idx": 124,
+      "seq_len": 4064,
+      "refs": [
+        "\t\t\t\t\t\treturn Db.getAllHistoricSearches(this).toList();"
+      ],
+      "all_classes": null,
+      "dense_score": 0.5348837209302326,
+      "dense_gen": "\t\t\t\t\t\treturn Observable.empty();\n\t\t\t\t\t}\n\t\t\t\t\treturn RxLocation.searchLocations(this, query);\n\t\t\t\t})\n\t\t\t\t.map(RxLocation::getResults)\n\t\t\t\t.map(results -> {\n\t\t\t\t\tList<SearchSuggestion> suggestions = new ArrayList<>();\n\t\t\t\t\tfor (Location location : results) {\n\t\t\t\t\t\tsuggestions.add(new Search",
+      "cert_score": 0.5348837209302326,
+      "cert_gen": "\t\t\t\t\t\treturn Observable.empty();\n\t\t\t\t\t}\n\t\t\t\t\treturn RxLocation.searchSuggestions(this, query);\n\t\t\t\t})\n\t\t\t\t.subscribe(searchSuggestionsAdaper::setSuggestions);\n\t\tsearchEdit.setOnQueryTextListener(new SearchView.OnQueryTextListener() {\n\t\t\t@Override\n\t\t\tpublic boolean onQueryTextSubmit(String query) {\n\t\t\t",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 4096,
+      "sample_idx": 377,
+      "seq_len": 4054,
+      "refs": [
+        "    cfe_canc = CFeCancelamento("
+      ],
+      "all_classes": null,
+      "dense_score": 0.9122807017543859,
+      "dense_gen": "    cfe = CFeCancelamento(\n            CNPJ=_opcao('--cnpj-ac'),\n            signAC=_opcao('--assinatura-ac'),\n            numeroCaixa=_opcao('--numero-caixa'),\n            destinatario=Destinatario(\n                    CPF='11122233396',\n                    xNome",
+      "cert_score": 0.9122807017543859,
+      "cert_gen": "    cfe = CFeCancelamento(\n            CNPJ=_opcao('--cnpj-ac'),\n            signAC=_opcao('--assinatura-ac'),\n            numeroCaixa=_opcao('--numero-caixa'),\n            destinatario=Destinatario(\n                    CPF='11122233396',\n                    xNome",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 4096,
+      "sample_idx": 494,
+      "seq_len": 4065,
+      "refs": [
+        "        new NightModeable() {"
+      ],
+      "all_classes": null,
+      "dense_score": 0.3076923076923077,
+      "dense_gen": "    this);\n    activityLightLevelChanger.setNightMode(false);\n    activityLightLevelManager = new ActivityLightLevelManager(activityLightLevelChanger);\n    activityLightLevelManager.setNightMode(false);\n    activityLightLevelManager.setLightLevel(0.5f);\n    activityLightLevelManager.setLightLevel(",
+      "cert_score": 0.3076923076923077,
+      "cert_gen": "    this);\n    activityLightLevelChanger.setNightMode(false);\n    activityLightLevelManager = new ActivityLightLevelManager(activityLightLevelChanger);\n    activityLightLevelManager.setNightMode(false);\n    activityLightLevelManager.setLightLevelListener(new ActivityLightLevelManager.LightLevelListener() {\n      @Override\n",
+      "critical": false
+    }
+  ]
+}

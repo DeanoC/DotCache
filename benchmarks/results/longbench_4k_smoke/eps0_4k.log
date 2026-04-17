@@ -1,0 +1,546 @@
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights:   0%|          | 1/291 [00:01<08:58,  1.86s/it]Loading weights:   1%|          | 2/291 [00:04<09:52,  2.05s/it]Loading weights:   1%|▏         | 4/291 [00:04<04:15,  1.12it/s]Loading weights:   2%|▏         | 5/291 [00:04<03:27,  1.38it/s]Loading weights:   2%|▏         | 6/291 [00:05<02:52,  1.65it/s]Loading weights:   3%|▎         | 9/291 [00:05<01:21,  3.47it/s]Loading weights:   4%|▍         | 13/291 [00:05<00:58,  4.78it/s]Loading weights:   5%|▍         | 14/291 [00:06<01:06,  4.16it/s]Loading weights:   5%|▌         | 15/291 [00:06<01:19,  3.48it/s]Loading weights:   6%|▌         | 18/291 [00:06<00:48,  5.66it/s]Loading weights:   7%|▋         | 20/291 [00:06<00:38,  7.12it/s]Loading weights:   8%|▊         | 22/291 [00:07<00:45,  5.89it/s]Loading weights:   8%|▊         | 24/291 [00:08<01:07,  3.96it/s]Loading weights:   9%|▉         | 27/291 [00:08<00:44,  5.94it/s]Loading weights:  10%|▉         | 29/291 [00:08<00:36,  7.27it/s]Loading weights:  11%|█         | 31/291 [00:09<00:43,  5.96it/s]Loading weights:  11%|█▏        | 33/291 [00:09<00:56,  4.53it/s]Loading weights:  12%|█▏        | 36/291 [00:09<00:39,  6.52it/s]Loading weights:  13%|█▎        | 38/291 [00:09<00:32,  7.76it/s]Loading weights:  14%|█▎        | 40/291 [00:10<00:38,  6.52it/s]Loading weights:  14%|█▍        | 42/291 [00:11<00:55,  4.49it/s]Loading weights:  15%|█▌        | 45/291 [00:11<00:37,  6.48it/s]Loading weights:  16%|█▌        | 47/291 [00:11<00:32,  7.45it/s]Loading weights:  17%|█▋        | 49/291 [00:11<00:37,  6.45it/s]Loading weights:  18%|█▊        | 51/291 [00:12<00:56,  4.22it/s]Loading weights:  19%|█▉        | 55/291 [00:13<00:36,  6.51it/s]Loading weights:  20%|█▉        | 58/291 [00:13<00:37,  6.30it/s]Loading weights:  20%|██        | 59/291 [00:13<00:44,  5.22it/s]Loading weights:  21%|██        | 60/291 [00:14<00:51,  4.45it/s]Loading weights:  22%|██▏       | 64/291 [00:14<00:31,  7.12it/s]Loading weights:  23%|██▎       | 66/291 [00:14<00:26,  8.48it/s]Loading weights:  23%|██▎       | 68/291 [00:15<00:43,  5.17it/s]Loading weights:  24%|██▎       | 69/291 [00:15<00:46,  4.76it/s]Loading weights:  25%|██▍       | 72/291 [00:15<00:31,  7.02it/s]Loading weights:  25%|██▌       | 74/291 [00:16<00:27,  7.87it/s]Loading weights:  26%|██▌       | 76/291 [00:16<00:34,  6.19it/s]Loading weights:  26%|██▋       | 77/291 [00:16<00:43,  4.95it/s]Loading weights:  27%|██▋       | 78/291 [00:17<00:50,  4.22it/s]Loading weights:  28%|██▊       | 81/291 [00:17<00:30,  6.92it/s]Loading weights:  29%|██▊       | 83/291 [00:17<00:24,  8.56it/s]Loading weights:  29%|██▉       | 85/291 [00:17<00:30,  6.79it/s]Loading weights:  30%|██▉       | 87/291 [00:18<00:42,  4.85it/s]Loading weights:  31%|███       | 90/291 [00:18<00:28,  7.10it/s]Loading weights:  32%|███▏      | 94/291 [00:19<00:27,  7.07it/s]Loading weights:  33%|███▎      | 96/291 [00:20<00:39,  5.00it/s]Loading weights:  34%|███▍      | 100/291 [00:20<00:26,  7.14it/s]Loading weights:  35%|███▌      | 103/291 [00:20<00:26,  7.20it/s]Loading weights:  36%|███▌      | 105/291 [00:21<00:34,  5.41it/s]Loading weights:  37%|███▋      | 108/291 [00:21<00:25,  7.31it/s]Loading weights:  38%|███▊      | 110/291 [00:21<00:21,  8.48it/s]Loading weights:  38%|███▊      | 112/291 [00:21<00:24,  7.39it/s]Loading weights:  39%|███▉      | 114/291 [00:22<00:36,  4.80it/s]Loading weights:  40%|████      | 117/291 [00:22<00:26,  6.64it/s]Loading weights:  41%|████      | 119/291 [00:23<00:21,  7.99it/s]Loading weights:  42%|████▏     | 121/291 [00:23<00:24,  6.97it/s]Loading weights:  42%|████▏     | 123/291 [00:24<00:34,  4.83it/s]Loading weights:  43%|████▎     | 126/291 [00:24<00:23,  7.02it/s]Loading weights:  44%|████▍     | 128/291 [00:24<00:19,  8.31it/s]Loading weights:  45%|████▍     | 130/291 [00:24<00:24,  6.45it/s]Loading weights:  45%|████▌     | 132/291 [00:25<00:32,  4.82it/s]Loading weights:  46%|████▋     | 135/291 [00:25<00:22,  7.01it/s]Loading weights:  47%|████▋     | 137/291 [00:25<00:18,  8.41it/s]Loading weights:  48%|████▊     | 139/291 [00:26<00:21,  7.08it/s]Loading weights:  48%|████▊     | 141/291 [00:26<00:30,  4.95it/s]Loading weights:  49%|████▉     | 144/291 [00:27<00:21,  6.93it/s]Loading weights:  50%|█████     | 146/291 [00:27<00:17,  8.15it/s]Loading weights:  51%|█████     | 148/291 [00:27<00:20,  6.91it/s]Loading weights:  52%|█████▏    | 150/291 [00:28<00:29,  4.84it/s]Loading weights:  53%|█████▎    | 153/291 [00:28<00:20,  6.68it/s]Loading weights:  53%|█████▎    | 155/291 [00:28<00:17,  7.98it/s]Loading weights:  54%|█████▍    | 157/291 [00:29<00:19,  6.85it/s]Loading weights:  55%|█████▍    | 159/291 [00:29<00:24,  5.29it/s]Loading weights:  56%|█████▌    | 162/291 [00:29<00:17,  7.55it/s]Loading weights:  56%|█████▋    | 164/291 [00:29<00:14,  8.58it/s]Loading weights:  57%|█████▋    | 166/291 [00:30<00:18,  6.84it/s]Loading weights:  58%|█████▊    | 168/291 [00:31<00:25,  4.92it/s]Loading weights:  59%|█████▉    | 172/291 [00:31<00:15,  7.48it/s]Loading weights:  60%|██████    | 175/291 [00:31<00:16,  6.89it/s]Loading weights:  61%|██████    | 177/291 [00:32<00:22,  5.15it/s]Loading weights:  62%|██████▏   | 180/291 [00:32<00:15,  7.06it/s]Loading weights:  63%|██████▎   | 182/291 [00:32<00:13,  8.11it/s]Loading weights:  63%|██████▎   | 184/291 [00:33<00:17,  6.15it/s]Loading weights:  64%|██████▍   | 186/291 [00:34<00:23,  4.45it/s]Loading weights:  65%|██████▍   | 189/291 [00:34<00:16,  6.18it/s]Loading weights:  66%|██████▌   | 191/291 [00:34<00:13,  7.49it/s]Loading weights:  66%|██████▋   | 193/291 [00:34<00:15,  6.40it/s]Loading weights:  67%|██████▋   | 195/291 [00:35<00:20,  4.72it/s]Loading weights:  68%|██████▊   | 198/291 [00:35<00:13,  6.68it/s]Loading weights:  69%|██████▊   | 200/291 [00:35<00:11,  7.99it/s]Loading weights:  69%|██████▉   | 202/291 [00:36<00:13,  6.65it/s]Loading weights:  70%|███████   | 204/291 [00:36<00:18,  4.67it/s]Loading weights:  71%|███████   | 207/291 [00:37<00:12,  6.55it/s]Loading weights:  72%|███████▏  | 209/291 [00:37<00:10,  7.75it/s]Loading weights:  73%|███████▎  | 211/291 [00:37<00:11,  6.81it/s]Loading weights:  73%|███████▎  | 213/291 [00:38<00:16,  4.66it/s]Loading weights:  74%|███████▍  | 216/291 [00:38<00:11,  6.80it/s]Loading weights:  75%|███████▍  | 218/291 [00:38<00:08,  8.12it/s]Loading weights:  76%|███████▌  | 220/291 [00:38<00:10,  7.03it/s]Loading weights:  76%|███████▋  | 222/291 [00:39<00:13,  4.98it/s]Loading weights:  77%|███████▋  | 225/291 [00:39<00:09,  7.19it/s]Loading weights:  78%|███████▊  | 227/291 [00:39<00:07,  8.53it/s]Loading weights:  79%|███████▊  | 229/291 [00:40<00:09,  6.65it/s]Loading weights:  79%|███████▉  | 231/291 [00:40<00:12,  4.88it/s]Loading weights:  80%|████████  | 234/291 [00:41<00:08,  6.60it/s]Loading weights:  81%|████████  | 236/291 [00:41<00:06,  7.88it/s]Loading weights:  82%|████████▏ | 238/291 [00:41<00:07,  6.68it/s]Loading weights:  82%|████████▏ | 240/291 [00:42<00:11,  4.59it/s]Loading weights:  84%|████████▎ | 243/291 [00:42<00:07,  6.70it/s]Loading weights:  84%|████████▍ | 245/291 [00:42<00:05,  7.95it/s]Loading weights:  85%|████████▍ | 247/291 [00:43<00:06,  6.41it/s]Loading weights:  86%|████████▌ | 249/291 [00:43<00:09,  4.45it/s]Loading weights:  87%|████████▋ | 253/291 [00:44<00:05,  6.80it/s]Loading weights:  88%|████████▊ | 256/291 [00:44<00:05,  6.93it/s]Loading weights:  89%|████████▊ | 258/291 [00:45<00:06,  5.15it/s]Loading weights:  90%|████████▉ | 261/291 [00:45<00:04,  6.95it/s]Loading weights:  90%|█████████ | 263/291 [00:45<00:03,  7.92it/s]Loading weights:  91%|█████████ | 265/291 [00:46<00:04,  6.25it/s]Loading weights:  92%|█████████▏| 267/291 [00:46<00:04,  4.87it/s]Loading weights:  93%|█████████▎| 270/291 [00:46<00:03,  6.93it/s]Loading weights:  93%|█████████▎| 272/291 [00:47<00:02,  8.11it/s]Loading weights:  94%|█████████▍| 274/291 [00:47<00:02,  7.04it/s]Loading weights:  95%|█████████▍| 276/291 [00:48<00:03,  4.89it/s]Loading weights:  96%|█████████▌| 279/291 [00:48<00:01,  6.71it/s]Loading weights:  97%|█████████▋| 281/291 [00:48<00:01,  8.11it/s]Loading weights:  97%|█████████▋| 283/291 [00:48<00:00,  8.42it/s]Loading weights:  98%|█████████▊| 285/291 [00:49<00:01,  4.90it/s]Loading weights:  99%|█████████▉| 289/291 [00:49<00:00,  7.55it/s]Loading weights: 100%|██████████| 291/291 [00:49<00:00,  5.86it/s]
+Model: 9.09 GB
+
+LongBench: subtasks=['narrativeqa', 'qasper', 'multifieldqa_en', 'hotpotqa', '2wikimqa', 'gov_report', 'qmsum', 'multi_news', 'trec', 'triviaqa', 'samsum', 'lcc', 'repobench-p'], contexts=[4]K, n=5, eps_default=0.0, top_k_fp16=4, conc_thr=0.02
+Loading LongBench subtasks...
+  narrativeqa        200 samples
+  qasper             200 samples
+  multifieldqa_en    150 samples
+  hotpotqa           200 samples
+  2wikimqa           200 samples
+  gov_report         200 samples
+  qmsum              200 samples
+  multi_news         200 samples
+  trec               200 samples
+  triviaqa           200 samples
+  samsum             200 samples
+  lcc                500 samples
+  repobench-p        500 samples
+The following generation flags are not valid and may be ignored: ['top_p']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [1/130] dense     narrativeqa        4K s=34 seq=4064 -> 0.00
+  [2/130] certified narrativeqa        4K s=34 seq=4064 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [3/130] dense     narrativeqa        4K s=98 seq=4065 -> 0.00
+  [4/130] certified narrativeqa        4K s=98 seq=4065 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [5/130] dense     narrativeqa        4K s=129 seq=4064 -> 0.08
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [6/130] certified narrativeqa        4K s=129 seq=4064 -> 0.10
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [7/130] dense     narrativeqa        4K s=175 seq=4062 -> 0.00
+  [8/130] certified narrativeqa        4K s=175 seq=4062 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [9/130] dense     narrativeqa        4K s=178 seq=4060 -> 0.00
+  [10/130] certified narrativeqa        4K s=178 seq=4060 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [11/130] dense     qasper             4K s=71 seq=2549 -> 0.12
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [12/130] certified qasper             4K s=71 seq=2549 -> 0.12
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [13/130] dense     qasper             4K s=79 seq=3757 -> 0.44
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [14/130] certified qasper             4K s=79 seq=3757 -> 0.44
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [15/130] dense     qasper             4K s=158 seq=4063 -> 0.03
+  [16/130] certified qasper             4K s=158 seq=4063 -> 0.03
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [17/130] dense     qasper             4K s=164 seq=2829 -> 0.24
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [18/130] certified qasper             4K s=164 seq=2829 -> 0.24
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [19/130] dense     qasper             4K s=193 seq=4062 -> 0.04
+  [20/130] certified qasper             4K s=193 seq=4062 -> 0.04
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [21/130] dense     multifieldqa_en    4K s=25 seq=4049 -> 0.25
+  [22/130] certified multifieldqa_en    4K s=25 seq=4049 -> 0.25
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [23/130] dense     multifieldqa_en    4K s=43 seq=4063 -> 0.00
+  [24/130] certified multifieldqa_en    4K s=43 seq=4063 -> 0.06
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [25/130] dense     multifieldqa_en    4K s=88 seq=4062 -> 0.34
+  [26/130] certified multifieldqa_en    4K s=88 seq=4062 -> 0.34
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [27/130] dense     multifieldqa_en    4K s=122 seq=3051 -> 0.25
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [28/130] certified multifieldqa_en    4K s=122 seq=3051 -> 0.25
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [29/130] dense     multifieldqa_en    4K s=143 seq=3044 -> 1.00
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [30/130] certified multifieldqa_en    4K s=143 seq=3044 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [31/130] dense     hotpotqa           4K s=25 seq=4066 -> 0.00
+  [32/130] certified hotpotqa           4K s=25 seq=4066 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [33/130] dense     hotpotqa           4K s=125 seq=4066 -> 0.09
+  [34/130] certified hotpotqa           4K s=125 seq=4066 -> 0.08
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [35/130] dense     hotpotqa           4K s=135 seq=4064 -> 0.00
+  [36/130] certified hotpotqa           4K s=135 seq=4064 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [37/130] dense     hotpotqa           4K s=169 seq=4064 -> 0.14
+  [38/130] certified hotpotqa           4K s=169 seq=4064 -> 0.14
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [39/130] dense     hotpotqa           4K s=195 seq=4065 -> 0.00
+  [40/130] certified hotpotqa           4K s=195 seq=4065 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [41/130] dense     2wikimqa           4K s=7 seq=4065 -> 0.00
+  [42/130] certified 2wikimqa           4K s=7 seq=4065 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [43/130] dense     2wikimqa           4K s=105 seq=4065 -> 0.48
+  [44/130] certified 2wikimqa           4K s=105 seq=4065 -> 0.48
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [45/130] dense     2wikimqa           4K s=168 seq=4066 -> 0.10
+  [46/130] certified 2wikimqa           4K s=168 seq=4066 -> 0.10
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [47/130] dense     2wikimqa           4K s=181 seq=4066 -> 0.00
+  [48/130] certified 2wikimqa           4K s=181 seq=4066 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [49/130] dense     2wikimqa           4K s=193 seq=4065 -> 0.00
+  [50/130] certified 2wikimqa           4K s=193 seq=4065 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [51/130] dense     gov_report         4K s=50 seq=4065 -> 0.63
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [52/130] certified gov_report         4K s=50 seq=4065 -> 0.63
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [53/130] dense     gov_report         4K s=87 seq=4065 -> 0.22
+  [54/130] certified gov_report         4K s=87 seq=4065 -> 0.22
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [55/130] dense     gov_report         4K s=108 seq=4065 -> 0.19
+  [56/130] certified gov_report         4K s=108 seq=4065 -> 0.19
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [57/130] dense     gov_report         4K s=161 seq=3702 -> 0.22
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [58/130] certified gov_report         4K s=161 seq=3702 -> 0.25
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [59/130] dense     gov_report         4K s=199 seq=4065 -> 0.22
+  [60/130] certified gov_report         4K s=199 seq=4065 -> 0.22
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [61/130] dense     qmsum              4K s=59 seq=4062 -> 0.18
+  [62/130] certified qmsum              4K s=59 seq=4062 -> 0.18
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [63/130] dense     qmsum              4K s=81 seq=4065 -> 0.07
+  [64/130] certified qmsum              4K s=81 seq=4065 -> 0.07
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [65/130] dense     qmsum              4K s=89 seq=4065 -> 0.07
+  [66/130] certified qmsum              4K s=89 seq=4065 -> 0.07
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [67/130] dense     qmsum              4K s=112 seq=4064 -> 0.15
+  [68/130] certified qmsum              4K s=112 seq=4064 -> 0.15
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [69/130] dense     qmsum              4K s=158 seq=4058 -> 0.14
+  [70/130] certified qmsum              4K s=158 seq=4058 -> 0.14
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [71/130] dense     multi_news         4K s=84 seq=1539 -> 0.00
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [72/130] certified multi_news         4K s=84 seq=1539 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [73/130] dense     multi_news         4K s=130 seq=2980 -> 0.17
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [74/130] certified multi_news         4K s=130 seq=2980 -> 0.17
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [75/130] dense     multi_news         4K s=170 seq=1574 -> 0.00
+  [76/130] certified multi_news         4K s=170 seq=1574 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [77/130] dense     multi_news         4K s=191 seq=2633 -> 0.00
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [78/130] certified multi_news         4K s=191 seq=2633 -> 0.21
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [79/130] dense     multi_news         4K s=193 seq=616 -> 0.00
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [80/130] certified multi_news         4K s=193 seq=616 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [81/130] dense     trec               4K s=24 seq=2463 -> 1.00
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [82/130] certified trec               4K s=24 seq=2463 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [83/130] dense     trec               4K s=79 seq=4038 -> 1.00
+  [84/130] certified trec               4K s=79 seq=4038 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [85/130] dense     trec               4K s=100 seq=4043 -> 1.00
+  [86/130] certified trec               4K s=100 seq=4043 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [87/130] dense     trec               4K s=159 seq=4040 -> 1.00
+  [88/130] certified trec               4K s=159 seq=4040 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [89/130] dense     trec               4K s=179 seq=3478 -> 0.00
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [90/130] certified trec               4K s=179 seq=3478 -> 0.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [91/130] dense     triviaqa           4K s=13 seq=4064 -> 1.00
+  [92/130] certified triviaqa           4K s=13 seq=4064 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [93/130] dense     triviaqa           4K s=103 seq=4064 -> 1.00
+  [94/130] certified triviaqa           4K s=103 seq=4064 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [95/130] dense     triviaqa           4K s=120 seq=4062 -> 1.00
+  [96/130] certified triviaqa           4K s=120 seq=4062 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [97/130] dense     triviaqa           4K s=146 seq=4057 -> 1.00
+  [98/130] certified triviaqa           4K s=146 seq=4057 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [99/130] dense     triviaqa           4K s=199 seq=2947 -> 1.00
+  [100/130] certified triviaqa           4K s=199 seq=2947 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [101/130] dense     samsum             4K s=6 seq=4064 -> 0.22
+  [102/130] certified samsum             4K s=6 seq=4064 -> 0.35
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [103/130] dense     samsum             4K s=82 seq=4065 -> 0.82
+  [104/130] certified samsum             4K s=82 seq=4065 -> 0.82
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [105/130] dense     samsum             4K s=106 seq=4063 -> 0.50
+  [106/130] certified samsum             4K s=106 seq=4063 -> 0.64
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [107/130] dense     samsum             4K s=108 seq=4065 -> 0.35
+  [108/130] certified samsum             4K s=108 seq=4065 -> 0.34
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [109/130] dense     samsum             4K s=118 seq=4065 -> 0.27
+  [110/130] certified samsum             4K s=118 seq=4065 -> 0.27
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [111/130] dense     lcc                4K s=225 seq=1579 -> 0.41
+  [112/130] certified lcc                4K s=225 seq=1579 -> 0.41
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [113/130] dense     lcc                4K s=340 seq=2254 -> 0.36
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [114/130] certified lcc                4K s=340 seq=2254 -> 0.36
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [115/130] dense     lcc                4K s=369 seq=1766 -> 1.00
+  [116/130] certified lcc                4K s=369 seq=1766 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [117/130] dense     lcc                4K s=383 seq=2311 -> 0.00
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [118/130] certified lcc                4K s=383 seq=2311 -> 0.35
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [119/130] dense     lcc                4K s=435 seq=2382 -> 0.43
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [120/130] certified lcc                4K s=435 seq=2382 -> 0.43
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [121/130] dense     repobench-p        4K s=28 seq=4060 -> 0.62
+  [122/130] certified repobench-p        4K s=28 seq=4060 -> 0.62
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [123/130] dense     repobench-p        4K s=77 seq=4062 -> 0.56
+  [124/130] certified repobench-p        4K s=77 seq=4062 -> 0.56
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [125/130] dense     repobench-p        4K s=124 seq=4064 -> 0.53
+  [126/130] certified repobench-p        4K s=124 seq=4064 -> 0.53
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [127/130] dense     repobench-p        4K s=377 seq=4054 -> 0.91
+  [128/130] certified repobench-p        4K s=377 seq=4054 -> 0.91
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [129/130] dense     repobench-p        4K s=494 seq=4065 -> 0.31
+  [130/130] certified repobench-p        4K s=494 seq=4065 -> 0.31
+
+================================================================
+LongBench (EN) results (21.3 min)
+================================================================
+task_ctx                      dense     cert        Δ   crit
+2wikimqa_4K                   0.117    0.117   +0.000      0
+gov_report_4K                 0.293    0.300   +0.007      0
+hotpotqa_4K                   0.045    0.044   -0.001      0
+lcc_4K                        0.441    0.511   +0.070      0
+multi_news_4K                 0.035    0.077   +0.042      0
+multifieldqa_en_4K            0.368    0.381   +0.013      0
+narrativeqa_4K                0.015    0.019   +0.004      0
+qasper_4K                     0.175    0.175   +0.000      0
+qmsum_4K                      0.123    0.123   +0.000      0
+repobench-p_4K                0.589    0.589   +0.000      0
+samsum_4K                     0.433    0.486   +0.053      0
+trec_4K                       0.800    0.800   +0.000      0
+triviaqa_4K                   1.000    1.000   +0.000      0
+
+Overall: dense=0.341 cert=0.355 Δ=+0.014 critical=0/65
+
+JSON -> benchmarks/results/longbench_4k_smoke/eps0_4k.json
