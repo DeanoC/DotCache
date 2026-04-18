@@ -65,6 +65,9 @@ class TieredKeyCacheLayer:
     # CPU warm tier — FP16 values for fallback when INT4 error too high
     values_fp16_cpu: torch.Tensor | None = None  # [kv_heads, N, d_v] float16, pinned CPU
 
+    # VRAM mirror of keys_fp16_cpu — avoids CPU→GPU copy per layer per decode step
+    keys_fp16_gpu: torch.Tensor | None = None    # [kv_heads, N, head_dim] model dtype, cuda
+
     @classmethod
     def from_fp16_cache(
         cls,
@@ -145,6 +148,10 @@ class TieredKeyCacheLayer:
         keys_fp16_cpu_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=kv_dtype, pin_memory=True)
         keys_fp16_cpu_buf[:, :N, :] = keys_fp16_cpu
 
+        # GPU mirror so decode-time attend avoids a CPU→GPU copy per step
+        keys_fp16_gpu_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=kv_dtype, device=device)
+        keys_fp16_gpu_buf[:, :N, :] = keys_fp16.to(dtype=kv_dtype, device=device)
+
         # Pre-compute dequant into buffer
         # Per-channel: k_scale is [kv_heads, num_blocks, head_dim], broadcast over token dim
         keys_deq_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=torch.float32, device=device)
@@ -168,6 +175,7 @@ class TieredKeyCacheLayer:
             num_quantized_blocks=num_blocks,  # all prefill blocks are complete
             _pagein_buffer=pagein_buffer,
             _keys_deq_f32=keys_deq_buf,
+            keys_fp16_gpu=keys_fp16_gpu_buf,
         )
         return result
 
@@ -305,6 +313,10 @@ class TieredKeyCacheLayer:
 
         # Write key into pre-allocated CPU buffer (preserves model dtype)
         self.keys_fp16_cpu[:, pos, :] = new_k.cpu()
+
+        # Mirror into GPU key buffer so decode-time attend avoids a CPU→GPU copy
+        if self.keys_fp16_gpu is not None:
+            self.keys_fp16_gpu[:, pos, :] = new_k.to(device=device, dtype=kv_dtype)
 
         if self.values_fp16_cpu is not None:
             self.values_fp16_cpu[:, pos, :] = new_v.cpu()

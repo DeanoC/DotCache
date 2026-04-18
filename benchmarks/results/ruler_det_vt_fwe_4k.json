@@ -1,0 +1,366 @@
+{
+  "benchmark": "ruler_subset",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "subtasks": [
+    "vt",
+    "fwe"
+  ],
+  "contexts": [
+    4096
+  ],
+  "num_samples": 10,
+  "default_epsilon": 0.0001,
+  "top_k_fp16": 4,
+  "concentration_threshold": 0.02,
+  "seed": 20260416,
+  "wall_minutes": 3.2289703851158267,
+  "overall_dense": 0.875,
+  "overall_cert": 0.8125,
+  "critical_failures": 4,
+  "summary": {
+    "vt_4K": {
+      "dense_mean": 0.95,
+      "cert_mean": 0.825,
+      "critical": 4,
+      "n": 10
+    },
+    "fwe_4K": {
+      "dense_mean": 0.8,
+      "cert_mean": 0.8,
+      "critical": 0,
+      "n": 10
+    }
+  },
+  "results": [
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_90_0",
+        "VAR_70_1",
+        "VAR_16_2",
+        "VAR_87_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_90_0, VAR_16_2, VAR_70_1, VAR_477_0, VAR_672_1, VAR_702_2, VAR_862_1, VAR_853_0, VAR_716_0, VAR_305_1, VAR_571_3, VAR_682_2, VAR_574_2, VAR_953_3, VAR_87_3, VAR_862_1,",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_70_1, VAR_90_0, VAR_16_2, VAR_70_1, VAR_90_0, VAR_16_2, VAR_70_1, VAR_90_0, VAR_16_2, VAR_70_1, VAR_90_0, VAR_16_2, VAR_70_1, VAR_90_0, VAR_16_2, VAR_70_1,",
+      "critical": true
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_76_0",
+        "VAR_51_1",
+        "VAR_25_2",
+        "VAR_45_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_76_0, VAR_51_1, VAR_388_0, VAR_396_1, VAR_479_0, VAR_691_2, VAR_519_1, VAR_917_0, VAR_548_3, VAR_438_2, VAR_45_3, VAR_25_2, VAR_388_2, VAR_474_1, VAR_526_3, VAR_752_3,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_76_0, VAR_51_1, VAR_25_2, VAR_45_3, VAR_548_3, VAR_752_3, VAR_526_3, VAR_691_2, VAR_479_0, VAR_388_0, VAR_396_1, VAR_438_2, VAR_388_2, VAR_474_1, VAR_548_3, VAR_45_3,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_69_0",
+        "VAR_56_1",
+        "VAR_34_2",
+        "VAR_55_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_69_0, VAR_56_1, VAR_270_0, VAR_251_1, VAR_365_2, VAR_738_0, VAR_817_1, VAR_232_2, VAR_845_1, VAR_34_2, VAR_328_2, VAR_186_3, VAR_55_3, VAR_429_3, VAR_548_3, VAR_251_1,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_69_0, VAR_56_1, VAR_270_0, VAR_251_1, VAR_365_2, VAR_429_3, VAR_232_2, VAR_548_3, VAR_34_2, VAR_328_2, VAR_738_0, VAR_186_3, VAR_55_3, VAR_845_1, VAR_817_1, VAR_669_0,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_42_0",
+        "VAR_64_1",
+        "VAR_90_2",
+        "VAR_66_3"
+      ],
+      "dense_score": 0.5,
+      "dense_gen": " VAR_42_0, VAR_64_1, VAR_839_0, VAR_922_0, VAR_101_1, VAR_294_1, VAR_522_1, VAR_544_2, VAR_591_0, VAR_750_3, VAR_793_3, VAR_922_0, VAR_101_1, VAR_294_1, VAR_522_1, VAR_544_2,",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_42_0, VAR_64_1, VAR_101_1, VAR_839_0, VAR_922_0, VAR_294_1, VAR_544_2, VAR_793_3, VAR_750_3, VAR_66_3, VAR_522_1, VAR_591_0, VAR_601_2, VAR_544_2, VAR_544_2, VAR_544_2,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_58_0",
+        "VAR_45_1",
+        "VAR_70_2",
+        "VAR_67_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_58_0, VAR_45_1, VAR_70_2, VAR_562_2, VAR_892_3, VAR_451_2, VAR_977_1, VAR_983_0, VAR_903_1, VAR_789_3, VAR_67_3, VAR_169_3, VAR_116_1, VAR_265_0, VAR_570_0, VAR_314_2,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_58_0, VAR_45_1, VAR_70_2, VAR_562_2, VAR_892_3, VAR_451_2, VAR_977_1, VAR_983_0, VAR_903_1, VAR_789_3, VAR_67_3, VAR_169_3, VAR_116_1, VAR_265_0, VAR_570_0, VAR_892_3,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_89_0",
+        "VAR_39_1",
+        "VAR_27_2",
+        "VAR_13_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_89_0, VAR_13_3, VAR_27_2, VAR_39_1, VAR_675_3, VAR_285_2, VAR_557_2, VAR_327_2, VAR_576_1, VAR_489_0, VAR_404_1, VAR_322_0, VAR_726_0, VAR_719_1, VAR_295_3, VAR_817_3,",
+      "cert_score": 0.5,
+      "cert_gen": " VAR_89_0 and VAR_13_3.\n\nFind all variables that are assigned the value 57344 in the text above.\nAnswer: The variables are VAR_322_0 and VAR_295_3.\n\nFind all variables that are assigned the value 3999",
+      "critical": true
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_28_0",
+        "VAR_88_1",
+        "VAR_98_2",
+        "VAR_84_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_28_0, VAR_88_1, VAR_98_2, VAR_84_3, VAR_812_2, VAR_360_3, VAR_947_3, VAR_520_2, VAR_201_1, VAR_325_2, VAR_374_0, VAR_409_1, VAR_430_0, VAR_527_0, VAR_842_1, VAR_812_2,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_28_0, VAR_88_1, VAR_98_2, VAR_84_3, VAR_812_2, VAR_360_3, VAR_947_3, VAR_520_2, VAR_201_1, VAR_325_2, VAR_374_0, VAR_409_1, VAR_430_0, VAR_527_0, VAR_842_1, VAR_812_2,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_55_0",
+        "VAR_59_1",
+        "VAR_47_2",
+        "VAR_93_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_55_0, VAR_59_1, VAR_47_2, VAR_93_3, VAR_616_2, VAR_916_3, VAR_862_3, VAR_800_3, VAR_692_2, VAR_164_1, VAR_291_0, VAR_515_0, VAR_276_1, VAR_384_2, VAR_749_1, VAR_692_2,",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_55_0, VAR_59_1, and VAR_47_2.\n\nFind all variables that are assigned the value 68549 in the text above.\nAnswer: The variables are VAR_515_0 and VAR_276_1.\n\nFind all variables that are assigned the",
+      "critical": true
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_31_0",
+        "VAR_99_1",
+        "VAR_32_2",
+        "VAR_77_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_31_0, VAR_99_1, VAR_77_3, VAR_833_3, VAR_745_3, VAR_673_2, VAR_735_3, VAR_791_2, VAR_516_1, VAR_465_0, VAR_385_1, VAR_295_2, VAR_32_2, VAR_99_1, VAR_77_3, VAR_745_3,",
+      "cert_score": 0.5,
+      "cert_gen": " VAR_31_0, VAR_99_1, and VAR_833_3.\n\nFind all variables that are assigned the value 20324 in the text above.\nAnswer: The variables are VAR_213_0 and VAR_493_1.\n\nFind all variables that are assigned th",
+      "critical": true
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_88_0",
+        "VAR_83_1",
+        "VAR_37_2",
+        "VAR_27_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_83_1, VAR_88_0, VAR_413_2, VAR_174_1, VAR_237_1, VAR_616_0, VAR_414_1, VAR_176_0, VAR_27_3, VAR_37_2, VAR_465_0, VAR_972_2, VAR_886_3, VAR_895_3, VAR_284_3, VAR_874_2,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_83_1, VAR_88_0, VAR_413_2, VAR_174_1, VAR_237_1, VAR_616_0, VAR_414_1, VAR_176_0, VAR_27_3, VAR_37_2, VAR_465_0, VAR_972_2, VAR_886_3, VAR_895_3, VAR_874_2, VAR_284_3,",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 4033,
+      "refs": [
+        "lagoon",
+        "meadow",
+        "apple"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " lagoon, meadow, and apple.",
+      "cert_score": 1.0,
+      "cert_gen": " lagoon, meadow, and apple.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3978,
+      "refs": [
+        "palace",
+        "village",
+        "apple"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": palace, village, and apple.",
+      "cert_score": 1.0,
+      "cert_gen": ": palace, village, and apple.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3962,
+      "refs": [
+        "temple",
+        "apple",
+        "palace"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " temple, apple, and temple.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " temple, apple, and temple.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 4052,
+      "refs": [
+        "island",
+        "glacier",
+        "lagoon"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": ": island, glacier, and island.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": ": island, glacier, and island.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3986,
+      "refs": [
+        "desert",
+        "market",
+        "forest"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " desert, market, and forest.",
+      "cert_score": 1.0,
+      "cert_gen": " desert, market, and forest.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 4021,
+      "refs": [
+        "palace",
+        "country",
+        "lagoon"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": ": palace, country, and palace.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": ": palace, country, and palace.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3978,
+      "refs": [
+        "island",
+        "ocean",
+        "stone"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": ": island, ocean, and island.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": ": island, ocean, and island.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3969,
+      "refs": [
+        "palace",
+        "river",
+        "mountain"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " 'palace', 'river', and 'palace'.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " 'palace', 'river', and 'palace'.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3970,
+      "refs": [
+        "volcano",
+        "castle",
+        "canyon"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " volcano, castle, and volcano.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " volcano, castle, and volcano.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3965,
+      "refs": [
+        "desert",
+        "stone",
+        "country"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 'desert','stone' and 'country'.",
+      "cert_score": 1.0,
+      "cert_gen": " 'desert','stone' and 'country'.",
+      "critical": false
+    }
+  ]
+}

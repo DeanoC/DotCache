@@ -1,0 +1,366 @@
+{
+  "benchmark": "ruler_subset",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "subtasks": [
+    "vt",
+    "fwe"
+  ],
+  "contexts": [
+    4096
+  ],
+  "num_samples": 10,
+  "default_epsilon": 0.0,
+  "top_k_fp16": 4,
+  "concentration_threshold": 0.02,
+  "seed": 20260416,
+  "wall_minutes": 3.060814990832781,
+  "overall_dense": 0.7958333333333333,
+  "overall_cert": 0.7833333333333333,
+  "critical_failures": 1,
+  "summary": {
+    "vt_4K": {
+      "dense_mean": 0.925,
+      "cert_mean": 0.9,
+      "critical": 1,
+      "n": 10
+    },
+    "fwe_4K": {
+      "dense_mean": 0.6666666666666666,
+      "cert_mean": 0.6666666666666666,
+      "critical": 0,
+      "n": 10
+    }
+  },
+  "results": [
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_91_0",
+        "VAR_92_1",
+        "VAR_83_2",
+        "VAR_87_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_91_0, VAR_92_1, VAR_83_2, VAR_87_3, VAR_459_1, VAR_247_0, VAR_188_0, VAR_302_1, VAR_810_2, VAR_798_2, VAR_878_1, VAR_413_3, VAR_335_3, VAR_750_3, VAR_848_2, VAR_211_0,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_91_0, VAR_92_1, VAR_83_2, VAR_87_3, VAR_459_1, VAR_247_0, VAR_188_0, VAR_302_1, VAR_810_2, VAR_798_2, VAR_878_1, VAR_413_3, VAR_335_3, VAR_750_3, VAR_848_2, VAR_211_0,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_75_0",
+        "VAR_98_1",
+        "VAR_72_2",
+        "VAR_99_3"
+      ],
+      "dense_score": 0.5,
+      "dense_gen": " VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1,",
+      "cert_score": 0.5,
+      "cert_gen": " VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1, VAR_75_0, VAR_98_1,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_71_0",
+        "VAR_60_1",
+        "VAR_35_2",
+        "VAR_50_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_71_0, VAR_50_3, VAR_379_3, VAR_873_3, VAR_837_3, VAR_241_2, VAR_60_1, VAR_759_2, VAR_667_2, VAR_396_0, VAR_35_2, VAR_763_0, VAR_676_1, VAR_878_0, VAR_885_1, VAR_956_1,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_71_0, VAR_50_3, VAR_379_3, VAR_873_3, VAR_837_3, VAR_60_1, VAR_759_2, VAR_667_2, VAR_241_2, VAR_35_2, VAR_396_0, VAR_885_1, VAR_763_0, VAR_878_0, VAR_676_1, VAR_956_1,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_14_0",
+        "VAR_72_1",
+        "VAR_85_2",
+        "VAR_49_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_14_0, VAR_422_3, VAR_994_2, VAR_587_1, VAR_953_0, VAR_495_1, VAR_85_2, VAR_72_1, VAR_49_3, VAR_964_3, VAR_635_2, VAR_495_1, VAR_85_2, VAR_72_1, VAR_49_3, VAR_964_3,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_14_0, VAR_422_3, VAR_994_2, VAR_587_1, VAR_953_0, VAR_495_1, VAR_85_2, VAR_72_1, VAR_49_3, VAR_964_3, VAR_635_2, VAR_643_3, VAR_746_2, VAR_860_1, VAR_285_0, VAR_463_0,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_87_0",
+        "VAR_23_1",
+        "VAR_50_2",
+        "VAR_47_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_87_0, VAR_23_1, VAR_50_2, VAR_334_1, VAR_300_0, VAR_821_2, VAR_278_1, VAR_47_3, VAR_568_2, VAR_619_1, VAR_786_3, VAR_914_0, VAR_967_0, VAR_931_3, VAR_594_2, VAR_334_1,",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_87_0, VAR_23_1, VAR_50_2, VAR_334_1, VAR_300_0, VAR_821_2, VAR_278_1, VAR_967_0, VAR_23_1, VAR_50_2, VAR_334_1, VAR_300_0, VAR_821_2, VAR_278_1, VAR_967_0, VAR_23_1,",
+      "critical": true
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_23_0",
+        "VAR_73_1",
+        "VAR_39_2",
+        "VAR_90_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_23_0, VAR_476_1, VAR_815_0, VAR_891_2, VAR_191_3, VAR_699_3, VAR_338_3, VAR_90_3, VAR_268_1, VAR_325_2, VAR_620_2, VAR_153_1, VAR_379_0, VAR_73_1, VAR_39_2, VAR_896_0,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_23_0, VAR_476_1, VAR_815_0, VAR_891_2, VAR_191_3, VAR_699_3, VAR_338_3, VAR_90_3, VAR_268_1, VAR_325_2, VAR_620_2, VAR_153_1, VAR_39_2, VAR_73_1, VAR_379_0, VAR_896_0,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_27_0",
+        "VAR_69_1",
+        "VAR_31_2",
+        "VAR_70_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_27_0, VAR_69_1, VAR_923_1, VAR_668_3, VAR_254_3, VAR_421_2, VAR_632_1, VAR_752_1, VAR_667_0, VAR_907_0, VAR_320_2, VAR_306_3, VAR_70_3, VAR_31_2, VAR_636_2, VAR_668_3,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_27_0, VAR_69_1, VAR_923_1, VAR_668_3, VAR_254_3, VAR_421_2, VAR_632_1, VAR_752_1, VAR_667_0, VAR_907_0, VAR_320_2, VAR_306_3, VAR_70_3, VAR_31_2, VAR_636_2, VAR_668_3,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_66_0",
+        "VAR_66_1",
+        "VAR_99_2",
+        "VAR_83_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_66_0, VAR_66_1, VAR_99_2, VAR_198_2, VAR_238_2, VAR_346_0, VAR_361_3, VAR_375_0, VAR_687_3, VAR_778_1, VAR_83_3, VAR_99_2, VAR_129_2, VAR_198_2, VAR_238_2, VAR_254_3,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_66_0, VAR_66_1, VAR_99_2, VAR_198_2, VAR_361_3, VAR_375_0, VAR_687_3, VAR_778_1, VAR_83_3, VAR_99_2, VAR_129_2, VAR_238_2, VAR_254_3, VAR_346_0, VAR_603_1, VAR_637_1,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_15_0",
+        "VAR_13_1",
+        "VAR_77_2",
+        "VAR_27_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_15_0, VAR_13_1, VAR_197_2, VAR_156_1, VAR_824_1, VAR_479_2, VAR_952_0, VAR_815_0, VAR_697_1, VAR_819_2, VAR_757_3, VAR_846_0, VAR_27_3, VAR_77_2, VAR_13_1, VAR_15_0,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_15_0, VAR_13_1, VAR_197_2, VAR_156_1, VAR_824_1, VAR_479_2, VAR_952_0, VAR_815_0, VAR_697_1, VAR_819_2, VAR_757_3, VAR_27_3, VAR_77_2, VAR_846_0, VAR_563_3, VAR_215_3,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_20_0",
+        "VAR_81_1",
+        "VAR_56_2",
+        "VAR_54_3"
+      ],
+      "dense_score": 0.75,
+      "dense_gen": " VAR_20_0, VAR_56_2, VAR_81_1, VAR_102_0, VAR_412_3, VAR_472_1, VAR_612_2, VAR_842_1, VAR_901_2, VAR_916_3, VAR_286_2, VAR_307_3, VAR_884_0, VAR_159_1, VAR_764_0\n\nFind all variables that are assigned",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_20_0, VAR_56_2, VAR_81_1, VAR_102_0, VAR_412_3, VAR_472_1, VAR_612_2, VAR_842_1, VAR_901_2, VAR_916_3, VAR_286_2, VAR_307_3, VAR_884_0, VAR_159_1, VAR_764_0\n\nFind all variables that are assigned",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3877,
+      "refs": [
+        "meadow",
+        "highway",
+        "volcano"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " meadow, highway, and volcano.",
+      "cert_score": 1.0,
+      "cert_gen": " meadow, highway, and volcano.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3961,
+      "refs": [
+        "country",
+        "glacier",
+        "river"
+      ],
+      "dense_score": 0.3333333333333333,
+      "dense_gen": " country, country, and country.",
+      "cert_score": 0.3333333333333333,
+      "cert_gen": " country, country, and country.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3999,
+      "refs": [
+        "railway",
+        "jungle",
+        "tower"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " railway, jungle, and railway.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " railway, jungle, and railway.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 4041,
+      "refs": [
+        "meadow",
+        "apple",
+        "garden"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " meadow, apple, and garden.",
+      "cert_score": 1.0,
+      "cert_gen": " meadow, apple, and garden.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3987,
+      "refs": [
+        "desert",
+        "tower",
+        "marsh"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " desert, tower, and desert.",
+      "cert_score": 1.0,
+      "cert_gen": " desert, tower, and marsh.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3973,
+      "refs": [
+        "railway",
+        "market",
+        "apple"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " railway, market, and apple.",
+      "cert_score": 1.0,
+      "cert_gen": " railway, market, and apple.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3976,
+      "refs": [
+        "forest",
+        "harbor",
+        "glacier"
+      ],
+      "dense_score": 0.3333333333333333,
+      "dense_gen": " 'forest', 'forest', and 'forest'.",
+      "cert_score": 0.3333333333333333,
+      "cert_gen": " 'forest', 'forest', and 'forest'.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3994,
+      "refs": [
+        "cloud",
+        "garden",
+        "jungle"
+      ],
+      "dense_score": 0.3333333333333333,
+      "dense_gen": " cloud, cloud, and cloud.",
+      "cert_score": 0.3333333333333333,
+      "cert_gen": " cloud, cloud, and cloud.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3967,
+      "refs": [
+        "forest",
+        "river",
+        "market"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " 'forest', 'river' and 'forest'.",
+      "cert_score": 0.3333333333333333,
+      "cert_gen": " 'forest', 'forest', and 'forest'.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3989,
+      "refs": [
+        "country",
+        "harbor",
+        "forest"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " country, harbor, and country.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " country, harbor, and country.",
+      "critical": false
+    }
+  ]
+}

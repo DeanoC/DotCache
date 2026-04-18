@@ -1,0 +1,133 @@
+{
+  "benchmark": "ruler_subset",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "subtasks": [
+    "niah_single",
+    "niah_multikey",
+    "vt"
+  ],
+  "contexts": [
+    4096
+  ],
+  "num_samples": 2,
+  "default_epsilon": 0.0001,
+  "top_k_fp16": 4,
+  "concentration_threshold": 0.02,
+  "seed": 20260416,
+  "wall_minutes": 0.8665661643511461,
+  "overall_dense": 0.875,
+  "overall_cert": 1.0,
+  "critical_failures": 0,
+  "summary": {
+    "niah_single_4K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 2
+    },
+    "niah_multikey_4K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 2
+    },
+    "vt_4K": {
+      "dense_mean": 0.625,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 2
+    }
+  },
+  "results": [
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3954,
+      "refs": [
+        "3337462"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 3337462.",
+      "cert_score": 1.0,
+      "cert_gen": " 3337462.",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3954,
+      "refs": [
+        "9671515"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 9671515.\n\nWhat is the special magic number for breeze mentioned in the provided text?\nThe special magic number for breeze mentioned in the provided text is ",
+      "cert_score": 1.0,
+      "cert_gen": " 9671515.",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 4000,
+      "refs": [
+        "6976389"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 6976389.\n\nWhat is the special magic number for moonlit mentioned in the provided text?\nThe special magic number for moonlit mentioned in the provided",
+      "cert_score": 1.0,
+      "cert_gen": ": 6976389.\n\nWhat is the special magic number for moonlit mentioned in the provided text?\nThe special magic number for moonlit mentioned in the provided",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3999,
+      "refs": [
+        "3204725"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 3204725.\n\nWhat is the special magic number for ember mentioned in the provided text?\nThe special magic number for ember mentioned in the provided text is",
+      "cert_score": 1.0,
+      "cert_gen": ": 3204725.\n\nWhat is the special magic number for ember mentioned in the provided text?\nThe special magic number for ember mentioned in the provided text is",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_85_0",
+        "VAR_60_1",
+        "VAR_58_2",
+        "VAR_51_3"
+      ],
+      "dense_score": 0.75,
+      "dense_gen": " VAR_85_0, VAR_60_1, and VAR_58_2.\n\nFind all variables that are assigned the value 48694 in the text above.\nAnswer: The variables are VAR_272_0 and VAR_231_1.\n\nFind all variables that are assigned the",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_85_0, VAR_60_1, VAR_58_2, VAR_51_3, VAR_327_0, VAR_812_3, VAR_636_3, VAR_689_0, VAR_475_1, VAR_478_2, VAR_535_1, VAR_261_2, VAR_272_0, VAR_231_1, VAR_121_2, VAR_822_3,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_82_0",
+        "VAR_81_1",
+        "VAR_36_2",
+        "VAR_62_3"
+      ],
+      "dense_score": 0.5,
+      "dense_gen": " VAR_82_0, VAR_930_0, VAR_605_2, VAR_585_3, VAR_610_3, VAR_764_2, VAR_394_1, VAR_773_0, VAR_36_2, VAR_652_3, VAR_341_2, VAR_648_1, VAR_565_0, VAR_605_2, VAR_585_3, VAR_610_3,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_82_0, VAR_930_0, VAR_858_1, VAR_605_2, VAR_585_3, VAR_610_3, VAR_764_2, VAR_394_1, VAR_773_0, VAR_565_0, VAR_648_1, VAR_341_2, VAR_652_3, VAR_62_3, VAR_36_2, VAR_81_1,",
+      "critical": false
+    }
+  ]
+}

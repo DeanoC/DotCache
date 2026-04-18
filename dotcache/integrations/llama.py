@@ -1050,10 +1050,33 @@ def _prefill_prompt(
     adapter: LlamaDotCacheModelAdapter,
     input_ids,
     attention_mask,
+    *,
+    chunk_size: int | None = None,
 ):
     adapter.set_mode("dense")
     adapter.set_capture(False)
-    outputs = _run_inference(lambda: model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True))
+    total_len = int(input_ids.shape[1])
+    if chunk_size is None or chunk_size <= 0 or chunk_size >= total_len:
+        outputs = _run_inference(lambda: model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True))
+    else:
+        past_key_values = None
+        outputs = None
+        for start in range(0, total_len, chunk_size):
+            end = min(start + chunk_size, total_len)
+            chunk_input_ids = input_ids[:, start:end]
+            chunk_attention_mask = attention_mask[:, :end]
+            cache_position = torch.arange(start, end, device=input_ids.device, dtype=torch.long)
+            outputs = _run_inference(
+                lambda cid=chunk_input_ids, cam=chunk_attention_mask, pkv=past_key_values, cp=cache_position: model(
+                    input_ids=cid,
+                    attention_mask=cam,
+                    past_key_values=pkv,
+                    use_cache=True,
+                    cache_position=cp,
+                    position_ids=cp.unsqueeze(0),
+                )
+            )
+            past_key_values = outputs.past_key_values
     if _torch_backend_matches_device(adapter.backend, input_ids.device.type):
         prefill_layers = extract_past_key_values_tensors(outputs.past_key_values)
     else:

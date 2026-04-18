@@ -1,0 +1,722 @@
+{
+  "seq_len": 8001,
+  "depth": 0.5,
+  "needle_idx": 2,
+  "expected": "Zurich",
+  "dense_text": " primary backup server is located in Zurich.\n\nThe history of mathematics spans thousands of years and encompasses many different",
+  "cert_text": " secret is the history of mathematics.\nExplanation: The history of mathematics spans thousands of years and encompasses many",
+  "dense_correct": true,
+  "cert_correct": false,
+  "first_diverge_step": 1,
+  "steps": [
+    {
+      "step": 0,
+      "cosine": 1.0,
+      "agree": true,
+      "dense_top1": {
+        "id": 578,
+        "token": " The",
+        "prob": 0.29743584990501404
+      },
+      "cert_top1": {
+        "id": 578,
+        "token": " The",
+        "prob": 0.29743584990501404
+      },
+      "dense_top5_ids": [
+        578,
+        220,
+        330,
+        2290,
+        720
+      ],
+      "cert_top5_ids": [
+        578,
+        220,
+        330,
+        2290,
+        720
+      ]
+    },
+    {
+      "step": 1,
+      "cosine": 0.9962331056594849,
+      "agree": false,
+      "dense_top1": {
+        "id": 6156,
+        "token": " primary",
+        "prob": 0.28490114212036133
+      },
+      "cert_top1": {
+        "id": 6367,
+        "token": " secret",
+        "prob": 0.22336165606975555
+      },
+      "dense_top5_ids": [
+        6156,
+        6367,
+        4320,
+        3925,
+        3361
+      ],
+      "cert_top5_ids": [
+        6367,
+        4320,
+        6156,
+        3925,
+        4495
+      ],
+      "cert_top1_in_dense_top5": true,
+      "dense_top1_in_cert_top5": true,
+      "logit_diff_max": 2.25,
+      "logit_diff_mean": 0.350769579410553,
+      "logit_diff_p99": 1.15625
+    },
+    {
+      "step": 2,
+      "cosine": 0.7821877002716064,
+      "agree": false,
+      "dense_top1": {
+        "id": 16101,
+        "token": " backup",
+        "prob": 0.9907059073448181
+      },
+      "cert_top1": {
+        "id": 374,
+        "token": " is",
+        "prob": 0.33612939715385437
+      },
+      "dense_top5_ids": [
+        16101,
+        1203,
+        3622,
+        14580,
+        44538
+      ],
+      "cert_top5_ids": [
+        374,
+        11,
+        2082,
+        3492,
+        3813
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 10.21875,
+      "logit_diff_mean": 1.6450397968292236,
+      "logit_diff_p99": 5.265625
+    },
+    {
+      "step": 3,
+      "cosine": 0.7535754442214966,
+      "agree": false,
+      "dense_top1": {
+        "id": 3622,
+        "token": " server",
+        "prob": 0.995151162147522
+      },
+      "cert_top1": {
+        "id": 279,
+        "token": " the",
+        "prob": 0.2105882167816162
+      },
+      "dense_top5_ids": [
+        3622,
+        3813,
+        374,
+        16692,
+        2816
+      ],
+      "cert_top5_ids": [
+        279,
+        330,
+        25,
+        220,
+        430
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 17.8125,
+      "logit_diff_mean": 2.93709135055542,
+      "logit_diff_p99": 6.90625
+    },
+    {
+      "step": 4,
+      "cosine": 0.6109610199928284,
+      "agree": false,
+      "dense_top1": {
+        "id": 374,
+        "token": " is",
+        "prob": 0.9883286952972412
+      },
+      "cert_top1": {
+        "id": 3925,
+        "token": " history",
+        "prob": 0.08735893666744232
+      },
+      "dense_top5_ids": [
+        374,
+        369,
+        3813,
+        7559,
+        315
+      ],
+      "cert_top5_ids": [
+        3925,
+        3813,
+        1396,
+        4320,
+        6156
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 18.03125,
+      "logit_diff_mean": 3.760901927947998,
+      "logit_diff_p99": 8.296875
+    },
+    {
+      "step": 5,
+      "cosine": 0.6899763941764832,
+      "agree": false,
+      "dense_top1": {
+        "id": 7559,
+        "token": " located",
+        "prob": 0.9937781095504761
+      },
+      "cert_top1": {
+        "id": 315,
+        "token": " of",
+        "prob": 0.9631382822990417
+      },
+      "dense_top5_ids": [
+        7559,
+        304,
+        279,
+        3196,
+        1766
+      ],
+      "cert_top5_ids": [
+        315,
+        13,
+        11,
+        627,
+        323
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 14.5625,
+      "logit_diff_mean": 1.5494011640548706,
+      "logit_diff_p99": 4.98046875
+    },
+    {
+      "step": 6,
+      "cosine": 0.7041357755661011,
+      "agree": false,
+      "dense_top1": {
+        "id": 304,
+        "token": " in",
+        "prob": 0.9977325201034546
+      },
+      "cert_top1": {
+        "id": 38696,
+        "token": " mathematics",
+        "prob": 0.9167380928993225
+      },
+      "dense_top5_ids": [
+        304,
+        520,
+        389,
+        198,
+        72826
+      ],
+      "cert_top5_ids": [
+        38696,
+        7033,
+        50895,
+        279,
+        71808
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 14.625,
+      "logit_diff_mean": 1.6190952062606812,
+      "logit_diff_p99": 5.076171875
+    },
+    {
+      "step": 7,
+      "cosine": 0.6121506690979004,
+      "agree": false,
+      "dense_top1": {
+        "id": 72826,
+        "token": " Zurich",
+        "prob": 0.9919262528419495
+      },
+      "cert_top1": {
+        "id": 627,
+        "token": ".\n",
+        "prob": 0.259823739528656
+      },
+      "dense_top5_ids": [
+        72826,
+        30221,
+        1901,
+        279,
+        7295
+      ],
+      "cert_top5_ids": [
+        627,
+        13,
+        382,
+        45395,
+        4286
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 20.9375,
+      "logit_diff_mean": 1.7467468976974487,
+      "logit_diff_p99": 5.859375
+    },
+    {
+      "step": 8,
+      "cosine": 0.4797046184539795,
+      "agree": false,
+      "dense_top1": {
+        "id": 382,
+        "token": ".\n\n",
+        "prob": 0.30519014596939087
+      },
+      "cert_top1": {
+        "id": 70869,
+        "token": "Explanation",
+        "prob": 0.3687383234500885
+      },
+      "dense_top5_ids": [
+        382,
+        627,
+        13,
+        4286,
+        2055
+      ],
+      "cert_top5_ids": [
+        70869,
+        128001,
+        791,
+        2123,
+        6888
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 10.8125,
+      "logit_diff_mean": 1.6997015476226807,
+      "logit_diff_p99": 5.8203125
+    },
+    {
+      "step": 9,
+      "cosine": 0.5372795462608337,
+      "agree": false,
+      "dense_top1": {
+        "id": 791,
+        "token": "The",
+        "prob": 0.13686953485012054
+      },
+      "cert_top1": {
+        "id": 25,
+        "token": ":",
+        "prob": 0.8455594778060913
+      },
+      "dense_top5_ids": [
+        791,
+        70869,
+        128001,
+        3923,
+        58
+      ],
+      "cert_top5_ids": [
+        25,
+        512,
+        1473,
+        551,
+        315
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 13.078125,
+      "logit_diff_mean": 1.8349852561950684,
+      "logit_diff_p99": 6.3515625
+    },
+    {
+      "step": 10,
+      "cosine": 0.8531556725502014,
+      "agree": false,
+      "dense_top1": {
+        "id": 3925,
+        "token": " history",
+        "prob": 0.7038445472717285
+      },
+      "cert_top1": {
+        "id": 578,
+        "token": " The",
+        "prob": 0.5128262042999268
+      },
+      "dense_top5_ids": [
+        3925,
+        6156,
+        6367,
+        4320,
+        3485
+      ],
+      "cert_top5_ids": [
+        578,
+        20817,
+        763,
+        1115,
+        1226
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 12.390625,
+      "logit_diff_mean": 2.526454448699951,
+      "logit_diff_p99": 6.328125
+    },
+    {
+      "step": 11,
+      "cosine": 0.575417160987854,
+      "agree": false,
+      "dense_top1": {
+        "id": 315,
+        "token": " of",
+        "prob": 0.9996206760406494
+      },
+      "cert_top1": {
+        "id": 3925,
+        "token": " history",
+        "prob": 0.23982471227645874
+      },
+      "dense_top5_ids": [
+        315,
+        45395,
+        374,
+        323,
+        11
+      ],
+      "cert_top5_ids": [
+        3925,
+        6367,
+        1495,
+        3485,
+        3361
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 21.546875,
+      "logit_diff_mean": 3.4674882888793945,
+      "logit_diff_p99": 8.088333129882812
+    },
+    {
+      "step": 12,
+      "cosine": 0.7550599575042725,
+      "agree": false,
+      "dense_top1": {
+        "id": 38696,
+        "token": " mathematics",
+        "prob": 0.9972148537635803
+      },
+      "cert_top1": {
+        "id": 315,
+        "token": " of",
+        "prob": 0.9941814541816711
+      },
+      "dense_top5_ids": [
+        38696,
+        279,
+        7033,
+        50895,
+        4731
+      ],
+      "cert_top5_ids": [
+        315,
+        374,
+        45395,
+        9932,
+        11
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 13.8125,
+      "logit_diff_mean": 1.644058346748352,
+      "logit_diff_p99": 5.578125
+    },
+    {
+      "step": 13,
+      "cosine": 0.751410722732544,
+      "agree": false,
+      "dense_top1": {
+        "id": 45395,
+        "token": " spans",
+        "prob": 0.9972037076950073
+      },
+      "cert_top1": {
+        "id": 38696,
+        "token": " mathematics",
+        "prob": 0.9928784966468811
+      },
+      "dense_top5_ids": [
+        45395,
+        374,
+        706,
+        71010,
+        198
+      ],
+      "cert_top5_ids": [
+        38696,
+        279,
+        50895,
+        7033,
+        21651
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 19.359375,
+      "logit_diff_mean": 1.6656461954116821,
+      "logit_diff_p99": 5.640625
+    },
+    {
+      "step": 14,
+      "cosine": 0.7871199250221252,
+      "agree": false,
+      "dense_top1": {
+        "id": 9214,
+        "token": " thousands",
+        "prob": 0.9994152784347534
+      },
+      "cert_top1": {
+        "id": 45395,
+        "token": " spans",
+        "prob": 0.9538188576698303
+      },
+      "dense_top5_ids": [
+        9214,
+        96731,
+        1690,
+        927,
+        11758
+      ],
+      "cert_top5_ids": [
+        45395,
+        374,
+        71010,
+        706,
+        649
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 19.4375,
+      "logit_diff_mean": 1.513806939125061,
+      "logit_diff_p99": 5.5972900390625
+    },
+    {
+      "step": 15,
+      "cosine": 0.6971732378005981,
+      "agree": false,
+      "dense_top1": {
+        "id": 315,
+        "token": " of",
+        "prob": 0.9999057054519653
+      },
+      "cert_top1": {
+        "id": 9214,
+        "token": " thousands",
+        "prob": 0.995899498462677
+      },
+      "dense_top5_ids": [
+        315,
+        198,
+        271,
+        128001,
+        1667
+      ],
+      "cert_top5_ids": [
+        9214,
+        927,
+        1690,
+        279,
+        220
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 16.40625,
+      "logit_diff_mean": 1.6014745235443115,
+      "logit_diff_p99": 5.0531768798828125
+    },
+    {
+      "step": 16,
+      "cosine": 0.5898118615150452,
+      "agree": false,
+      "dense_top1": {
+        "id": 1667,
+        "token": " years",
+        "prob": 0.9999674558639526
+      },
+      "cert_top1": {
+        "id": 315,
+        "token": " of",
+        "prob": 0.9987815022468567
+      },
+      "dense_top5_ids": [
+        1667,
+        1060,
+        379,
+        198,
+        128001
+      ],
+      "cert_top5_ids": [
+        315,
+        323,
+        198,
+        11,
+        320
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 15.078125,
+      "logit_diff_mean": 2.8795833587646484,
+      "logit_diff_p99": 7.6796875
+    },
+    {
+      "step": 17,
+      "cosine": 0.6967861652374268,
+      "agree": false,
+      "dense_top1": {
+        "id": 323,
+        "token": " and",
+        "prob": 0.9994674324989319
+      },
+      "cert_top1": {
+        "id": 1667,
+        "token": " years",
+        "prob": 0.998857855796814
+      },
+      "dense_top5_ids": [
+        323,
+        271,
+        11,
+        198,
+        13
+      ],
+      "cert_top5_ids": [
+        1667,
+        1060,
+        9214,
+        24552,
+        198
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 15.65625,
+      "logit_diff_mean": 1.7012439966201782,
+      "logit_diff_p99": 5.21875
+    },
+    {
+      "step": 18,
+      "cosine": 0.6703928112983704,
+      "agree": false,
+      "dense_top1": {
+        "id": 71010,
+        "token": " encompasses",
+        "prob": 0.9993196725845337
+      },
+      "cert_top1": {
+        "id": 323,
+        "token": " and",
+        "prob": 0.9860484600067139
+      },
+      "dense_top5_ids": [
+        71010,
+        38632,
+        198,
+        95122,
+        5764
+      ],
+      "cert_top5_ids": [
+        323,
+        11,
+        13,
+        627,
+        382
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 15.5,
+      "logit_diff_mean": 2.248262643814087,
+      "logit_diff_p99": 6.546875
+    },
+    {
+      "step": 19,
+      "cosine": 0.784429132938385,
+      "agree": false,
+      "dense_top1": {
+        "id": 1690,
+        "token": " many",
+        "prob": 0.9993979930877686
+      },
+      "cert_top1": {
+        "id": 71010,
+        "token": " encompasses",
+        "prob": 0.9935867786407471
+      },
+      "dense_top5_ids": [
+        1690,
+        198,
+        893,
+        271,
+        128001
+      ],
+      "cert_top5_ids": [
+        71010,
+        38632,
+        5764,
+        1690,
+        665
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": true,
+      "logit_diff_max": 19.609375,
+      "logit_diff_mean": 1.4603517055511475,
+      "logit_diff_p99": 4.9765625
+    },
+    {
+      "step": 20,
+      "cosine": 0.8009825348854065,
+      "agree": false,
+      "dense_top1": {
+        "id": 2204,
+        "token": " different",
+        "prob": 0.9996858835220337
+      },
+      "cert_top1": {
+        "id": 1690,
+        "token": " many",
+        "prob": 0.9952741861343384
+      },
+      "dense_top5_ids": [
+        2204,
+        198,
+        128001,
+        271,
+        1422
+      ],
+      "cert_top5_ids": [
+        1690,
+        893,
+        1253,
+        198,
+        264
+      ],
+      "cert_top1_in_dense_top5": false,
+      "dense_top1_in_cert_top5": false,
+      "logit_diff_max": 12.5,
+      "logit_diff_mean": 1.2664238214492798,
+      "logit_diff_p99": 4.379791259765625
+    }
+  ]
+}

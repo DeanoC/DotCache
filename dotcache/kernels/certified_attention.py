@@ -103,22 +103,32 @@ def sdpa_attend_with_skip(
     device = q_all.device
     dtype = q_all.dtype  # keep computation in model's native dtype (BF16)
 
-    # Get keys from CPU and values from VRAM in the model's dtype
-    keys = cache.keys_fp16_cpu[:, :nt, :].to(device=device, dtype=dtype)   # [kv, nt, hd]
-    values = cache.values_fp16[:, :nt, :].to(dtype=dtype)                  # [kv, nt, dv]
+    # Keys from GPU mirror (falls back to CPU copy only if mirror absent).
+    # Values already live on GPU.
+    if cache.keys_fp16_gpu is not None:
+        keys = cache.keys_fp16_gpu[:, :nt, :]
+        if keys.dtype != dtype:
+            keys = keys.to(dtype=dtype)
+    else:
+        keys = cache.keys_fp16_cpu[:, :nt, :].to(device=device, dtype=dtype)
+    values = cache.values_fp16[:, :nt, :]
+    if values.dtype != dtype:
+        values = values.to(dtype=dtype)
     num_kv_heads = keys.shape[0]
 
-    # Build per-token attention mask from block-level skip_mask
-    # skip_mask: [num_q_heads, num_active_blocks] — expand to [num_q_heads, nt]
+    # Build per-token attention mask from block-level skip_mask.
+    # CRITICAL: pass attn_mask=None when nothing is skipped, otherwise
+    # PyTorch SDPA falls back from the FlashAttention kernel to MATH/MEM_EFFICIENT,
+    # which has slightly different accumulator precision.  That drift flips
+    # near-tied argmax tokens and cascades into repetition loops on
+    # enumeration outputs (RULER vt/fwe).  The .any().item() is one GPU sync
+    # per layer per step (~3μs × 32 layers ≈ 0.1 ms overhead) — trivial vs
+    # the decode floor.
     bs = cache.block_size
     num_active_blocks = skip_mask.shape[1]
-    # Repeat each block's skip flag for block_size tokens
-    token_skip = skip_mask.unsqueeze(-1).expand(-1, -1, bs).reshape(num_q_heads, -1)[:, :nt]
-    # SDPA mask: None if no blocks skipped (matches dense SDPA path exactly),
-    # otherwise 0 for attend, -inf for skip
-    any_skipped = token_skip.any()
-    if any_skipped:
-        attn_mask = torch.where(token_skip, float("-inf"), 0.0).to(dtype=dtype, device=device)
+    if skip_mask.any().item():
+        token_skip = skip_mask.unsqueeze(-1).expand(-1, -1, bs).reshape(num_q_heads, -1)[:, :nt]
+        attn_mask = torch.where(token_skip, float("-inf"), 0.0).to(dtype=dtype)
         attn_mask = attn_mask.unsqueeze(0).unsqueeze(2)  # [1, num_q_heads, 1, nt]
     else:
         attn_mask = None
@@ -208,9 +218,9 @@ def certified_attention_layer(
     num_active_blocks = cache.active_blocks
     top_k_fp16 = top_k_fp16_keys
     if top_k_fp16 > 0 and num_active_blocks > 0:
-        for qh in range(num_q_heads):
-            topk_idx = m_b[qh].topk(min(top_k_fp16, num_active_blocks)).indices
-            skip_mask[qh, topk_idx] = 0
+        k = min(top_k_fp16, num_active_blocks)
+        topk_idx = m_b.topk(k, dim=1).indices  # [num_q_heads, k]
+        skip_mask.scatter_(1, topk_idx, False)
 
     # Force-attend trailing partial block (it has no INT8 data for scoring)
     if cache.has_trailing_partial_block:

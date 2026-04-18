@@ -1,0 +1,46 @@
+[
+  {
+    "prompt": "heterogeneous_8k",
+    "tokens": 8192,
+    "gen_steps": 32,
+    "cos_min": 0.20465068519115448,
+    "cos_mean": 0.5520741646178067,
+    "cos_p5": 0.26591686755418775,
+    "skip_rate_mean": 0.7606086730957031,
+    "skip_rate_min": 0.689849853515625,
+    "generated_text_preview": "orch()\n    if not torch.is_tensor(values):\n        raise TypeError(\"values must be a torch.Tensor\")\n"
+  },
+  {
+    "prompt": "heterogeneous_8k_q2",
+    "tokens": 8192,
+    "gen_steps": 32,
+    "cos_min": 0.20465068519115448,
+    "cos_mean": 0.5520741646178067,
+    "cos_p5": 0.26591686755418775,
+    "skip_rate_mean": 0.7606086730957031,
+    "skip_rate_min": 0.689849853515625,
+    "generated_text_preview": "orch()\n    if not torch.is_tensor(values):\n        raise TypeError(\"values must be a torch.Tensor\")\n"
+  },
+  {
+    "prompt": "code_heavy",
+    "tokens": 6410,
+    "gen_steps": 32,
+    "cos_min": 0.5074465870857239,
+    "cos_mean": 0.7403621673583984,
+    "cos_p5": 0.5274996638298035,
+    "skip_rate_mean": 0.765845947265625,
+    "skip_rate_min": 0.5869921875,
+    "generated_text_preview": " TODO: this is a hack to get the tokenizer to work with the model\n        tokenizer = AutoTokenizer."
+  },
+  {
+    "prompt": "docs_heavy",
+    "tokens": 8192,
+    "gen_steps": 32,
+    "cos_min": 0.06363040953874588,
+    "cos_mean": 0.3679806354921311,
+    "cos_p5": 0.12124371603131294,
+    "skip_rate_mean": 0.7616171836853027,
+    "skip_rate_min": 0.656524658203125,
+    "generated_text_preview": "` | `0.25` |\n\nWhat that means:\n\n- The new `torch_cuda` backend is real, not just a smoke path.\n- The"
+  }
+]

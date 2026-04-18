@@ -1,0 +1,303 @@
+{
+  "seq_len": 3932,
+  "depth": 0.0,
+  "needle_idx": 0,
+  "expected": "Crimson Falcon",
+  "dense_text": " secret project codename is Crimson Falcon.\n",
+  "cert_text": " secret project codename is Crimson Falcon.\n",
+  "dense_correct": true,
+  "cert_correct": true,
+  "first_diverge_step": null,
+  "steps": [
+    {
+      "step": 0,
+      "cosine": 1.0,
+      "agree": true,
+      "dense_top1": {
+        "id": 578,
+        "token": " The",
+        "prob": 0.2530674934387207
+      },
+      "cert_top1": {
+        "id": 578,
+        "token": " The",
+        "prob": 0.2530674934387207
+      },
+      "dense_top5_ids": [
+        578,
+        67177,
+        220,
+        330,
+        720
+      ],
+      "cert_top5_ids": [
+        578,
+        67177,
+        220,
+        330,
+        720
+      ]
+    },
+    {
+      "step": 1,
+      "cosine": 0.9993825554847717,
+      "agree": true,
+      "dense_top1": {
+        "id": 6367,
+        "token": " secret",
+        "prob": 0.6066511273384094
+      },
+      "cert_top1": {
+        "id": 6367,
+        "token": " secret",
+        "prob": 0.5789220333099365
+      },
+      "dense_top5_ids": [
+        6367,
+        4320,
+        3925,
+        2082,
+        8769
+      ],
+      "cert_top5_ids": [
+        6367,
+        4320,
+        2082,
+        3925,
+        8769
+      ]
+    },
+    {
+      "step": 2,
+      "cosine": 0.9964287281036377,
+      "agree": true,
+      "dense_top1": {
+        "id": 2447,
+        "token": " project",
+        "prob": 0.33213308453559875
+      },
+      "cert_top1": {
+        "id": 2447,
+        "token": " project",
+        "prob": 0.31147080659866333
+      },
+      "dense_top5_ids": [
+        2447,
+        374,
+        11,
+        2082,
+        3813
+      ],
+      "cert_top5_ids": [
+        2447,
+        374,
+        11,
+        2082,
+        3813
+      ]
+    },
+    {
+      "step": 3,
+      "cosine": 0.9982560873031616,
+      "agree": true,
+      "dense_top1": {
+        "id": 20950,
+        "token": " cod",
+        "prob": 0.9308993816375732
+      },
+      "cert_top1": {
+        "id": 20950,
+        "token": " cod",
+        "prob": 0.9152166843414307
+      },
+      "dense_top5_ids": [
+        20950,
+        2082,
+        836,
+        374,
+        3110
+      ],
+      "cert_top5_ids": [
+        20950,
+        2082,
+        374,
+        836,
+        3110
+      ]
+    },
+    {
+      "step": 4,
+      "cosine": 0.9972611665725708,
+      "agree": true,
+      "dense_top1": {
+        "id": 1878,
+        "token": "ename",
+        "prob": 0.9991384744644165
+      },
+      "cert_top1": {
+        "id": 1878,
+        "token": "ename",
+        "prob": 0.9991106390953064
+      },
+      "dense_top5_ids": [
+        1878,
+        268,
+        609,
+        34054,
+        9195
+      ],
+      "cert_top5_ids": [
+        1878,
+        268,
+        34054,
+        609,
+        9195
+      ]
+    },
+    {
+      "step": 5,
+      "cosine": 0.9396579265594482,
+      "agree": true,
+      "dense_top1": {
+        "id": 374,
+        "token": " is",
+        "prob": 0.9860041737556458
+      },
+      "cert_top1": {
+        "id": 374,
+        "token": " is",
+        "prob": 0.9505611658096313
+      },
+      "dense_top5_ids": [
+        374,
+        9932,
+        13,
+        382,
+        11
+      ],
+      "cert_top5_ids": [
+        374,
+        574,
+        9932,
+        67177,
+        11
+      ]
+    },
+    {
+      "step": 6,
+      "cosine": 0.9570440649986267,
+      "agree": true,
+      "dense_top1": {
+        "id": 67177,
+        "token": " Crimson",
+        "prob": 0.8925078511238098
+      },
+      "cert_top1": {
+        "id": 67177,
+        "token": " Crimson",
+        "prob": 0.6274851560592651
+      },
+      "dense_top5_ids": [
+        67177,
+        25,
+        330,
+        97119,
+        3146
+      ],
+      "cert_top5_ids": [
+        67177,
+        330,
+        25,
+        97119,
+        364
+      ]
+    },
+    {
+      "step": 7,
+      "cosine": 0.987135648727417,
+      "agree": true,
+      "dense_top1": {
+        "id": 43961,
+        "token": " Falcon",
+        "prob": 0.9965832829475403
+      },
+      "cert_top1": {
+        "id": 43961,
+        "token": " Falcon",
+        "prob": 0.9856404066085815
+      },
+      "dense_top5_ids": [
+        43961,
+        23718,
+        435,
+        1426,
+        26564
+      ],
+      "cert_top5_ids": [
+        43961,
+        23718,
+        26564,
+        1426,
+        37
+      ]
+    },
+    {
+      "step": 8,
+      "cosine": 0.9693903923034668,
+      "agree": true,
+      "dense_top1": {
+        "id": 627,
+        "token": ".\n",
+        "prob": 0.31898799538612366
+      },
+      "cert_top1": {
+        "id": 627,
+        "token": ".\n",
+        "prob": 0.2948662340641022
+      },
+      "dense_top5_ids": [
+        627,
+        382,
+        13,
+        4286,
+        2055
+      ],
+      "cert_top5_ids": [
+        627,
+        382,
+        13,
+        198,
+        4286
+      ]
+    },
+    {
+      "step": 9,
+      "cosine": 0.9926489591598511,
+      "agree": true,
+      "dense_top1": {
+        "id": 128001,
+        "token": "<|end_of_text|>",
+        "prob": 0.5230440497398376
+      },
+      "cert_top1": {
+        "id": 128001,
+        "token": "<|end_of_text|>",
+        "prob": 0.4095320403575897
+      },
+      "dense_top5_ids": [
+        128001,
+        70869,
+        791,
+        28085,
+        58
+      ],
+      "cert_top5_ids": [
+        128001,
+        70869,
+        791,
+        28085,
+        2028
+      ]
+    }
+  ]
+}
