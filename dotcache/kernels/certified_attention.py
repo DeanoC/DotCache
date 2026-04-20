@@ -32,6 +32,11 @@ DEFAULT_V_TOLERANCE = 0.5
 # Number of top-K blocks whose mass counts toward α_K (not tier-2)
 TOP_K_BLOCKS = 4
 
+# Adaptive top-K* defaults (paper §3.3).
+DEFAULT_TAU_COV = 0.995
+DEFAULT_K_MIN = 2
+DEFAULT_K_MAX = 128
+
 
 def compute_tier2_residual_mass(
     m_b: torch.Tensor,       # [num_q_heads, num_blocks] block maxima
@@ -84,6 +89,67 @@ def decide_v_format(
     rho_worst = rho.max().item()
     int4_error = eta_int4 * rho_worst
     return "int4" if int4_error < tolerance else "fp16"
+
+
+def compute_adaptive_topk_mask(
+    m_b: torch.Tensor,       # [num_q_heads, num_blocks] Phase-1 block max (INT8 estimate)
+    S_b: torch.Tensor,       # [num_q_heads, num_blocks] Phase-1 block sum
+    tau_cov: float = DEFAULT_TAU_COV,
+    k_min: int = DEFAULT_K_MIN,
+    k_max: int = DEFAULT_K_MAX,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Paper §3.3 adaptive top-K* selector (cumulative-mass threshold).
+
+    Per head: sort blocks by estimated mass, find smallest K such that
+    cumulative mass ≥ `tau_cov`, clamp to [k_min, k_max]. Returns:
+
+    - topk_mask [H, B] bool: True = block is in the top-K* for that head.
+    - k_star    [H] int32: actual K* selected per head (post-clamp).
+    - tail_mass [H] float32: 1 − Σ mass on top-K* (INT8-estimated).
+    - tau_cov_actual [H] float32: actual cumulative mass captured at K*.
+
+    All computation stays on device; this function has zero CPU syncs.
+    """
+    num_q_heads, num_blocks = m_b.shape
+    device = m_b.device
+    if num_blocks == 0:
+        empty_bool = torch.zeros(num_q_heads, 0, dtype=torch.bool, device=device)
+        zeros_int = torch.zeros(num_q_heads, dtype=torch.int32, device=device)
+        zeros_f32 = torch.zeros(num_q_heads, dtype=torch.float32, device=device)
+        return empty_bool, zeros_int, zeros_f32, zeros_f32
+
+    # Per-head normalised mass, stable via log-sum-exp.
+    m_global = m_b.amax(dim=1, keepdim=True)
+    log_mass = torch.log(S_b.clamp(min=1e-30)) + m_b - m_global
+    mass = torch.exp(log_mass)
+    total = mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
+    mass_frac = mass / total                                       # [H, B]
+
+    # Sort descending per head; cumulative mass in sorted order.
+    sorted_mass, sorted_idx = mass_frac.sort(dim=1, descending=True)
+    cumsum = sorted_mass.cumsum(dim=1)                             # [H, B]
+
+    # K*[h] = smallest k such that cumsum[h, k-1] ≥ tau_cov.
+    # searchsorted on each row returns the insertion index of tau_cov;
+    # since cumsum is non-decreasing in [0, 1], that index = (K* - 1).
+    tau_vec = torch.full((num_q_heads, 1), float(tau_cov), device=device, dtype=cumsum.dtype)
+    k_star = torch.searchsorted(cumsum, tau_vec).squeeze(1) + 1    # [H]
+    # Clamp to [k_min, min(k_max, num_blocks)].
+    hi = min(int(k_max), num_blocks)
+    lo = min(int(k_min), hi)
+    k_star = k_star.clamp(min=lo, max=hi).to(torch.int32)
+
+    # Build [H, B] top-K mask: position < k_star[h] in the sorted order.
+    pos = torch.arange(num_blocks, device=device).unsqueeze(0)     # [1, B]
+    keep_sorted = pos < k_star.unsqueeze(1).to(pos.dtype)           # [H, B] bool
+    topk_mask = torch.zeros_like(mass_frac, dtype=torch.bool)
+    topk_mask.scatter_(1, sorted_idx, keep_sorted)                 # [H, B]
+
+    # Tail mass + actual coverage using cumsum at (K*-1).
+    k_idx = (k_star.long() - 1).clamp(min=0, max=num_blocks - 1).unsqueeze(1)
+    tau_actual = cumsum.gather(1, k_idx).squeeze(1).float()
+    tail_mass = (1.0 - tau_actual).clamp(min=0.0)
+    return topk_mask, k_star, tail_mass, tau_actual
 
 
 def compute_fp16_block_scores(
@@ -289,6 +355,9 @@ def certified_attention_layer(
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
+    tau_cov: float | None = None,
+    k_min: int = DEFAULT_K_MIN,
+    k_max: int = DEFAULT_K_MAX,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -351,6 +420,40 @@ def certified_attention_layer(
         k = min(top_k_fp16, num_active_blocks)
         topk_idx = m_b.topk(k, dim=1).indices  # [num_q_heads, k]
         skip_mask.scatter_(1, topk_idx, False)
+
+    # Paper §3.3 adaptive K*: when tau_cov is supplied, replace the skip mask
+    # with the per-head top-K* selection so that blocks whose cumulative
+    # INT8-estimated mass reaches tau_cov are attended and the rest are
+    # skipped. Block-epsilon certification still runs above this point; the
+    # adaptive selection supersedes it when enabled (the paper's bound
+    # E_key ≤ 2·V_max·(1-tau_cov) is tighter than the epsilon-only bound at
+    # the default tau_cov=0.995).
+    adaptive_topk_mask = None
+    k_star: torch.Tensor | None = None
+    tail_mass_est: torch.Tensor | None = None
+    tau_cov_actual: torch.Tensor | None = None
+    if tau_cov is not None and tau_cov > 0 and n_qblocks > 0:
+        # Restrict adaptive selection to the fully-quantised block range —
+        # the trailing partial block has no INT8 score and is force-attended
+        # below. Build the [H, n_blocks] mask by padding the fully-quantised
+        # selection with the trailing block forced in.
+        m_b_cert = m_b[:, :n_qblocks]
+        S_b_cert = S_b[:, :n_qblocks]
+        topk_mask_cert, k_star, tail_mass_est, tau_cov_actual = compute_adaptive_topk_mask(
+            m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=k_max,
+        )
+        # Skip = NOT top-K*; false for trailing partial block (force-attended).
+        skip_cert = ~topk_mask_cert
+        if cache.has_trailing_partial_block:
+            trailing = torch.zeros(num_q_heads, 1, dtype=torch.bool, device=q_all.device)
+            skip_mask = torch.cat([skip_cert, trailing], dim=1)
+            adaptive_topk_mask = torch.cat(
+                [topk_mask_cert, torch.ones(num_q_heads, 1, dtype=torch.bool, device=q_all.device)],
+                dim=1,
+            )
+        else:
+            skip_mask = skip_cert
+            adaptive_topk_mask = topk_mask_cert
 
     # Force-attend trailing partial block (it has no INT8 data for scoring)
     if cache.has_trailing_partial_block:
@@ -498,6 +601,15 @@ def certified_attention_layer(
             stats["rho_mean"] = rho.mean().item()
             stats["eta_int4"] = eta_int4
             stats["int4_error_bound"] = eta_int4 * rho.max().item()
+        # Adaptive K* telemetry (paper §3.3). Present only when enabled.
+        if k_star is not None:
+            stats["k_star_mean"] = float(k_star.float().mean().item())
+            stats["k_star_min"] = int(k_star.min().item())
+            stats["k_star_max"] = int(k_star.max().item())
+            stats["tau_cov"] = float(tau_cov) if tau_cov is not None else 0.0
+            stats["tau_cov_actual_mean"] = float(tau_cov_actual.mean().item())
+            stats["tail_mass_int8_est_mean"] = float(tail_mass_est.mean().item())
+            stats["tail_mass_int8_est_max"] = float(tail_mass_est.max().item())
         # Ranking-consistency fallback telemetry (Rung 3).
         # Populated by the detection block above when enabled; the trigger
         # count is still zero here because commit 2 is detection-only — the

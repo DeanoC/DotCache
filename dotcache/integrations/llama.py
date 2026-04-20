@@ -95,6 +95,12 @@ class CertifiedAttentionState:
     ranking_fallback: bool = False
     ranking_r: int = 1  # top-r positions that must agree between INT8 and FP16 rankings
     ranking_fallback_mode: str = "full"  # "full" = per-head dense recompute; "measure" = detect only
+    # Paper §3.3 adaptive top-K* selector. When tau_cov is not None, the
+    # block-skip mask is driven by the per-head cumulative-mass threshold
+    # instead of the block_epsilon certification.
+    tau_cov: float | None = None
+    k_min: int = 2
+    k_max: int = 128
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):
@@ -515,6 +521,9 @@ class DotCacheLlamaAttention(nn.Module):
             ranking_fallback=cert_state.ranking_fallback,
             ranking_r=cert_state.ranking_r,
             ranking_fallback_mode=cert_state.ranking_fallback_mode,
+            tau_cov=cert_state.tau_cov,
+            k_min=cert_state.k_min,
+            k_max=cert_state.k_max,
         )
 
         # Accumulate stats (only if collection enabled)

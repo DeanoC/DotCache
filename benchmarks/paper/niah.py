@@ -102,6 +102,9 @@ def run_niah_cell(
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
+    tau_cov: float | None = None,
+    k_min: int = 2,
+    k_max: int = 128,
 ) -> dict:
     """Run one NIAH cell: plant needle, generate, check retrieval.
 
@@ -156,10 +159,10 @@ def run_niah_cell(
         else:
             layer_epsilons = {}
 
-        # When ranking fallback is on we need stats collection so the
-        # aggregator can report disagree / trigger counts; otherwise keep
+        # Enable stats whenever a diagnostic feature is on (ranking fallback
+        # or adaptive K*) so the aggregator has data to report; otherwise keep
         # stats off to match the previous timed-run behaviour exactly.
-        collect_stats = bool(ranking_fallback)
+        collect_stats = bool(ranking_fallback) or (tau_cov is not None and tau_cov > 0)
         adapter.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
             layer_epsilons=layer_epsilons,
@@ -171,6 +174,9 @@ def run_niah_cell(
             ranking_fallback=ranking_fallback,
             ranking_r=ranking_r,
             ranking_fallback_mode=ranking_fallback_mode,
+            tau_cov=tau_cov,
+            k_min=k_min,
+            k_max=k_max,
         )
         adapter.set_mode("certified")
 
@@ -241,6 +247,9 @@ def run_niah_sweep(
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
+    tau_cov: float | None = None,
+    k_min: int = 2,
+    k_max: int = 128,
 ) -> dict:
     """Run full NIAH sweep across depths and context lengths."""
     if depths is None:
@@ -266,6 +275,9 @@ def run_niah_sweep(
                         ranking_fallback=ranking_fallback,
                         ranking_r=ranking_r,
                         ranking_fallback_mode=ranking_fallback_mode,
+                        tau_cov=tau_cov,
+                        k_min=k_min,
+                        k_max=k_max,
                     )
                     results[mode].append(r)
 
@@ -367,6 +379,13 @@ def main():
                         help="Top-r positions that must agree between INT8 and FP16 rankings (default: 1)")
     parser.add_argument("--ranking-fallback-mode", default="full", choices=["full", "measure"],
                         help="'full' = per-head dense FP16 recompute on disagreement (Option A); 'measure' = detect only, no action")
+    # Paper §3.3 adaptive K* selector. Defaults match the paper's experimental setup.
+    parser.add_argument("--tau-cov", type=float, default=0.995,
+                        help="Adaptive K*: minimum cumulative INT8-estimated mass per head (0=disable, use fixed top-k-fp16 floor)")
+    parser.add_argument("--k-min", type=int, default=2,
+                        help="Adaptive K* lower clamp (default 2)")
+    parser.add_argument("--k-max", type=int, default=128,
+                        help="Adaptive K* upper clamp (default 128)")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -391,7 +410,9 @@ def main():
     rf_tag = "off"
     if args.ranking_fallback:
         rf_tag = f"{args.ranking_fallback_mode}(r={args.ranking_r})"
-    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, default_epsilon={args.default_epsilon}, top_k_fp16={args.top_k_fp16}, ranking_fallback={rf_tag}")
+    tau_cov = args.tau_cov if args.tau_cov and args.tau_cov > 0 else None
+    adaptive_tag = f"tau_cov={tau_cov} k=[{args.k_min},{args.k_max}]" if tau_cov else "fixed"
+    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, default_epsilon={args.default_epsilon}, top_k_fp16={args.top_k_fp16}, adaptive={adaptive_tag}, ranking_fallback={rf_tag}")
     result = run_niah_sweep(
         model, tokenizer, adapter,
         context_lengths=args.contexts,
@@ -403,6 +424,9 @@ def main():
         ranking_fallback=args.ranking_fallback,
         ranking_r=args.ranking_r,
         ranking_fallback_mode=args.ranking_fallback_mode,
+        tau_cov=tau_cov,
+        k_min=args.k_min,
+        k_max=args.k_max,
     )
 
     print(f"\n{'='*50}")
