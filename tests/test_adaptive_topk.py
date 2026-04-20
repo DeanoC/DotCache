@@ -149,6 +149,35 @@ class TestCertifiedAttentionLayerAdaptive:
         )
         assert stats["rung1_triggered_heads"] == 0
 
+    def test_score_consistency_zero_on_well_formed_cache(self):
+        """Expected 0 violations on a clean cache — canary test."""
+        from dotcache.kernels.certified_attention import certified_attention_layer
+        cache = self._make_cache()
+        torch.manual_seed(3)
+        q_all = torch.randn(4, 32, dtype=torch.float16, device="cuda")
+        _, stats = certified_attention_layer(
+            cache, q_all, gqa_group=2,
+            collect_stats=True, score_consistency_check=True, eps_guard=0.01,
+        )
+        assert "score_consistency_violation_heads" in stats
+        assert stats["score_consistency_violation_heads"] == 0, (
+            f"Δ-bound violated on well-formed cache: stats={stats}"
+        )
+        assert stats["delta_bound_mean"] > 0
+
+    def test_score_consistency_violates_with_tiny_eps_and_small_delta(self):
+        """Force a violation by corrupting key_scales so |FP16 - INT8| > Δ."""
+        from dotcache.kernels.certified_attention import (
+            compute_delta_bound, score_consistency_violations,
+        )
+        # Construct synthetic scores with a big per-block gap
+        int8 = torch.tensor([[5.0, 3.0, 1.0]], device="cuda")
+        fp16 = torch.tensor([[7.0, 3.0, 1.0]], device="cuda")   # diff=2 on block 0
+        # Δ bound that's way smaller than the synthesised diff
+        delta = torch.tensor([0.1], device="cuda")
+        mask = score_consistency_violations(int8, fp16, delta, eps_guard=0.01)
+        assert mask.item() is True
+
     def test_adaptive_disabled_leaves_existing_behavior(self):
         from dotcache.kernels.certified_attention import certified_attention_layer
         cache = self._make_cache()

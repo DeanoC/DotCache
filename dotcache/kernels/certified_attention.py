@@ -259,6 +259,55 @@ def recompute_heads_dense_fp16(
     return output
 
 
+def compute_delta_bound(
+    q_all: torch.Tensor,        # [num_q_heads, head_dim]
+    key_scales: torch.Tensor,    # [num_kv_heads, num_blocks, head_dim] float32
+    gqa_group: int,
+    q_scale: float,
+) -> torch.Tensor:
+    """Per-head tight Δ bound (paper Eq. 4, runtime form).
+
+    Δ[h] = (1 / (2·√d)) · Σ_c |q[h,c]| · s_c · q_scale, where s_c is
+    conservatively the per-channel max scale over all blocks in that head's
+    KV head. Returns a [num_q_heads] float32 tensor on device.
+
+    The q_scale (= 1/√d) factor is folded in so the resulting Δ compares
+    apples-to-apples with the Phase-1 `m_b` (which is post-q_scale).
+    """
+    num_q_heads, head_dim = q_all.shape
+    if key_scales.numel() == 0:
+        return torch.zeros(num_q_heads, dtype=torch.float32, device=q_all.device)
+    # Worst-case per-channel scale over blocks, per KV head: [num_kv_heads, head_dim].
+    per_channel_scale = key_scales.amax(dim=1)
+    # Expand to per Q head via GQA mapping.
+    kv_per_h = torch.arange(num_q_heads, device=q_all.device) // gqa_group
+    s_per_h = per_channel_scale.index_select(0, kv_per_h)  # [H, head_dim]
+    # Δ = (1 / (2·√d)) · Σ_c |q_c| · s_c, and the paper's bound is on the
+    # post-q_scale logit, so multiply once more by q_scale (= 1/√d).
+    delta = (q_all.abs().float() * s_per_h.float()).sum(dim=1) / (2.0 * math.sqrt(head_dim))
+    return delta * float(q_scale)
+
+
+def score_consistency_violations(
+    int8_scores: torch.Tensor,     # [H, K] INT8 block scores on the re-ranked set
+    fp16_scores: torch.Tensor,     # [H, K] FP16 block scores on the same set
+    delta_per_head: torch.Tensor,  # [H] Δ bound (paper Eq. 4)
+    eps_guard: float = 0.01,
+) -> torch.Tensor:
+    """Per-head score-consistency (paper §6).
+
+    Returns a [H] bool tensor: True when any block's |FP16 - INT8| score
+    exceeds Δ + eps_guard. A non-zero count here indicates the Theorem-2
+    bound is empirically broken on this step — a correctness red flag
+    (stale quant metadata, cache corruption, etc.), not a quality knob.
+    """
+    if int8_scores.numel() == 0:
+        return torch.zeros(int8_scores.shape[0], dtype=torch.bool, device=int8_scores.device)
+    diff = (fp16_scores - int8_scores).abs().float()
+    threshold = (delta_per_head + float(eps_guard)).unsqueeze(1)  # [H, 1]
+    return (diff > threshold).any(dim=1)
+
+
 def detect_ranking_disagreement(
     int8_scores: torch.Tensor,     # [num_q_heads, K]
     fp16_scores: torch.Tensor,     # [num_q_heads, K]
@@ -367,6 +416,8 @@ def certified_attention_layer(
     k_max: int = DEFAULT_K_MAX,
     rung1_threshold: float = DEFAULT_RUNG1_THRESHOLD,
     rung1_multiplier: float = DEFAULT_RUNG1_MULTIPLIER,
+    score_consistency_check: bool = False,
+    eps_guard: float = 0.01,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -506,10 +557,13 @@ def certified_attention_layer(
     fp16_block_scores: torch.Tensor | None = None
     top_block_indices: torch.Tensor | None = None
     ranking_k = 0
-    if ranking_fallback and n_qblocks > 0:
-        # Rank the top-K blocks per head by INT8 m_b (descending). K is picked
-        # to cover at least `ranking_r` with a small cushion so argsort has
-        # enough resolution to catch close-score swaps.
+    score_consistency_violation_heads = 0
+    score_consistency_violation_mask: torch.Tensor | None = None
+    delta_bound_mean = 0.0
+    # The FP16 block re-scoring is needed for either Rung-3 ranking check or
+    # the score-consistency check. Compute it once when either is enabled.
+    need_fp16_scores = (ranking_fallback or score_consistency_check) and n_qblocks > 0
+    if need_fp16_scores:
         ranking_k = min(max(ranking_r, top_k_fp16_keys, 4), n_qblocks)
         int8_scores = m_b[:, :n_qblocks]
         top_block_indices = int8_scores.topk(ranking_k, dim=1).indices  # [H, K]
@@ -517,15 +571,31 @@ def certified_attention_layer(
         fp16_block_scores = compute_fp16_block_scores(
             cache, q_all, top_block_indices, n_qblocks, gqa_group, q_scale,
         )
-        ranking_disagree_mask = detect_ranking_disagreement(
-            top_int8_scores, fp16_block_scores, ranking_r,
-        )
-        ranking_disagree_r1_heads = int(
-            detect_ranking_disagreement(top_int8_scores, fp16_block_scores, 1).sum().item()
-        )
-        ranking_disagree_r3_heads = int(
-            detect_ranking_disagreement(top_int8_scores, fp16_block_scores, 3).sum().item()
-        )
+        if ranking_fallback:
+            ranking_disagree_mask = detect_ranking_disagreement(
+                top_int8_scores, fp16_block_scores, ranking_r,
+            )
+            ranking_disagree_r1_heads = int(
+                detect_ranking_disagreement(top_int8_scores, fp16_block_scores, 1).sum().item()
+            )
+            ranking_disagree_r3_heads = int(
+                detect_ranking_disagreement(top_int8_scores, fp16_block_scores, 3).sum().item()
+            )
+        if score_consistency_check:
+            # Paper §6 instability-detection: |FP16 - INT8| per block bounded
+            # by Δ + eps_guard. Any violation means Theorem 2 was empirically
+            # broken on this step — a canary for stale metadata / cache
+            # corruption, expected 0-count on well-behaved runs.
+            delta_per_head = compute_delta_bound(
+                q_all, cache.keys_scale[:, :n_qblocks, :], gqa_group, q_scale,
+            )
+            delta_bound_mean = float(delta_per_head.mean().item())
+            score_consistency_violation_mask = score_consistency_violations(
+                top_int8_scores, fp16_block_scores, delta_per_head, eps_guard,
+            )
+            score_consistency_violation_heads = int(
+                score_consistency_violation_mask.sum().item()
+            )
 
     # Entropy gating: if attention is diffuse (no block dominates),
     # disable skipping for that head — small-mass blocks may carry critical
@@ -652,6 +722,12 @@ def certified_attention_layer(
             stats["rung1_triggered_heads"] = int(rung1_triggered_heads)
             stats["rung1_threshold"] = float(rung1_threshold)
             stats["rung1_multiplier"] = float(rung1_multiplier)
+        # Score-consistency violation counters (paper §6). Always emitted
+        # when the feature is enabled so runs can confirm the 0-count baseline.
+        if score_consistency_check:
+            stats["score_consistency_violation_heads"] = int(score_consistency_violation_heads)
+            stats["delta_bound_mean"] = float(delta_bound_mean)
+            stats["eps_guard"] = float(eps_guard)
         # Ranking-consistency fallback telemetry (Rung 3).
         # Populated by the detection block above when enabled; the trigger
         # count is still zero here because commit 2 is detection-only — the

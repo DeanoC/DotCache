@@ -106,6 +106,11 @@ class CertifiedAttentionState:
     # heads that tripped it. Set threshold to 1.0 (or higher) to disable.
     rung1_threshold: float = 0.02
     rung1_multiplier: float = 2.0
+    # Score-consistency check (paper §6): defence-in-depth per-block Δ bound.
+    # Expected trigger rate is exactly 0 on well-behaved runs; non-zero counts
+    # indicate Theorem-2 was empirically violated (stale metadata / corruption).
+    score_consistency_check: bool = False
+    eps_guard: float = 0.01
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):
@@ -146,6 +151,11 @@ class CertifiedAttentionState:
             agg["ranking_disagree_rate_r1"] = (disagree_r1 / heads_total) if heads_total else 0.0
             agg["ranking_disagree_rate_r3"] = (disagree_r3 / heads_total) if heads_total else 0.0
             agg["ranking_fallback_rate"] = (triggered / heads_total) if heads_total else 0.0
+        # Score-consistency violation totals (defence-in-depth canary).
+        if any("score_consistency_violation_heads" in s for s in self.step_stats):
+            agg["score_consistency_violation_heads_total"] = sum(
+                s.get("score_consistency_violation_heads", 0) for s in self.step_stats
+            )
         return agg
 
 
@@ -531,6 +541,8 @@ class DotCacheLlamaAttention(nn.Module):
             k_max=cert_state.k_max,
             rung1_threshold=cert_state.rung1_threshold,
             rung1_multiplier=cert_state.rung1_multiplier,
+            score_consistency_check=cert_state.score_consistency_check,
+            eps_guard=cert_state.eps_guard,
         )
 
         # Accumulate stats (only if collection enabled)
