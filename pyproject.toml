@@ -28,6 +28,11 @@ hf = [
   "transformers>=5.5.0",
   "sentencepiece>=0.2.1",
   "safetensors>=0.7.0",
+  # INT8 model weights + device_map="auto" path used by the paper benchmarks.
+  "accelerate>=1.0",
+  "bitsandbytes>=0.46",
+  # PG-19 perplexity + any HF dataset-driven harness.
+  "datasets>=4.0",
 ]
 longbench = [
   "jieba>=0.42.1",
