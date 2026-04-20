@@ -12,6 +12,7 @@ The V-format decision uses Phase 1 outputs at zero additional cost:
 """
 from __future__ import annotations
 
+import math
 import torch
 import torch.nn.functional as F
 from typing import Any
@@ -36,6 +37,12 @@ TOP_K_BLOCKS = 4
 DEFAULT_TAU_COV = 0.995
 DEFAULT_K_MIN = 2
 DEFAULT_K_MAX = 128
+
+# Rung-1 fallback defaults (paper §3.4). When the adaptive selector's tail
+# mass exceeds DEFAULT_RUNG1_THRESHOLD (k_max hit, τ_cov not reached), expand
+# the top-K set by multiplying K* by DEFAULT_RUNG1_MULTIPLIER.
+DEFAULT_RUNG1_THRESHOLD = 0.02
+DEFAULT_RUNG1_MULTIPLIER = 2.0
 
 
 def compute_tier2_residual_mass(
@@ -358,6 +365,8 @@ def certified_attention_layer(
     tau_cov: float | None = None,
     k_min: int = DEFAULT_K_MIN,
     k_max: int = DEFAULT_K_MAX,
+    rung1_threshold: float = DEFAULT_RUNG1_THRESHOLD,
+    rung1_multiplier: float = DEFAULT_RUNG1_MULTIPLIER,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -432,6 +441,7 @@ def certified_attention_layer(
     k_star: torch.Tensor | None = None
     tail_mass_est: torch.Tensor | None = None
     tau_cov_actual: torch.Tensor | None = None
+    rung1_triggered_heads = 0
     if tau_cov is not None and tau_cov > 0 and n_qblocks > 0:
         # Restrict adaptive selection to the fully-quantised block range —
         # the trailing partial block has no INT8 score and is force-attended
@@ -442,6 +452,33 @@ def certified_attention_layer(
         topk_mask_cert, k_star, tail_mass_est, tau_cov_actual = compute_adaptive_topk_mask(
             m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=k_max,
         )
+
+        # Rung-1 (paper §3.4): if any head's tail mass exceeded the configured
+        # threshold — typically because k_max capped the selection before
+        # tau_cov was reached on a diffuse head — expand the budget and re-pick.
+        # The expansion uses a larger k_max = min(k_max * multiplier, n_qblocks);
+        # heads whose selection was already good at the original k_max will just
+        # land on the same (or a smaller) K* because the tau_cov threshold is
+        # unchanged. Accounting: count heads that triggered the expansion.
+        if rung1_threshold is not None and rung1_threshold >= 0:
+            rung1_trigger_mask = tail_mass_est > rung1_threshold  # [H] bool
+            if bool(rung1_trigger_mask.any().item()):
+                rung1_triggered_heads = int(rung1_trigger_mask.sum().item())
+                expanded_k_max = min(int(math.ceil(k_max * float(rung1_multiplier))), n_qblocks)
+                topk_mask_cert2, k_star2, tail_mass_est2, tau_cov_actual2 = compute_adaptive_topk_mask(
+                    m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=expanded_k_max,
+                )
+                # Only apply the expanded selection to triggered heads so
+                # non-triggered heads keep their original K* (avoiding
+                # unnecessary bandwidth). The selector is deterministic on the
+                # same m_b/S_b so the original top-K entries are a subset of
+                # the expanded top-K entries for triggered heads.
+                trig = rung1_trigger_mask.unsqueeze(1)
+                topk_mask_cert = torch.where(trig, topk_mask_cert2, topk_mask_cert)
+                k_star = torch.where(rung1_trigger_mask, k_star2, k_star)
+                tail_mass_est = torch.where(rung1_trigger_mask, tail_mass_est2, tail_mass_est)
+                tau_cov_actual = torch.where(rung1_trigger_mask, tau_cov_actual2, tau_cov_actual)
+
         # Skip = NOT top-K*; false for trailing partial block (force-attended).
         skip_cert = ~topk_mask_cert
         if cache.has_trailing_partial_block:
@@ -610,6 +647,11 @@ def certified_attention_layer(
             stats["tau_cov_actual_mean"] = float(tau_cov_actual.mean().item())
             stats["tail_mass_int8_est_mean"] = float(tail_mass_est.mean().item())
             stats["tail_mass_int8_est_max"] = float(tail_mass_est.max().item())
+            # Rung-1 fallback (expand K*) counters. Only relevant when adaptive
+            # K* is active; zero on steps where no head hit the tail-mass gate.
+            stats["rung1_triggered_heads"] = int(rung1_triggered_heads)
+            stats["rung1_threshold"] = float(rung1_threshold)
+            stats["rung1_multiplier"] = float(rung1_multiplier)
         # Ranking-consistency fallback telemetry (Rung 3).
         # Populated by the detection block above when enabled; the trigger
         # count is still zero here because commit 2 is detection-only — the

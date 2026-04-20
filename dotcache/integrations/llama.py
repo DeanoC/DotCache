@@ -101,6 +101,11 @@ class CertifiedAttentionState:
     tau_cov: float | None = None
     k_min: int = 2
     k_max: int = 128
+    # Rung-1 expand-coverage fallback (paper §3.4). rung1_threshold is the tail
+    # mass above which k_max is temporarily scaled by rung1_multiplier for
+    # heads that tripped it. Set threshold to 1.0 (or higher) to disable.
+    rung1_threshold: float = 0.02
+    rung1_multiplier: float = 2.0
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):
@@ -524,6 +529,8 @@ class DotCacheLlamaAttention(nn.Module):
             tau_cov=cert_state.tau_cov,
             k_min=cert_state.k_min,
             k_max=cert_state.k_max,
+            rung1_threshold=cert_state.rung1_threshold,
+            rung1_multiplier=cert_state.rung1_multiplier,
         )
 
         # Accumulate stats (only if collection enabled)

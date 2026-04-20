@@ -105,6 +105,8 @@ def run_niah_cell(
     tau_cov: float | None = None,
     k_min: int = 2,
     k_max: int = 128,
+    rung1_threshold: float = 0.02,
+    rung1_multiplier: float = 2.0,
 ) -> dict:
     """Run one NIAH cell: plant needle, generate, check retrieval.
 
@@ -177,6 +179,8 @@ def run_niah_cell(
             tau_cov=tau_cov,
             k_min=k_min,
             k_max=k_max,
+            rung1_threshold=rung1_threshold,
+            rung1_multiplier=rung1_multiplier,
         )
         adapter.set_mode("certified")
 
@@ -250,6 +254,8 @@ def run_niah_sweep(
     tau_cov: float | None = None,
     k_min: int = 2,
     k_max: int = 128,
+    rung1_threshold: float = 0.02,
+    rung1_multiplier: float = 2.0,
 ) -> dict:
     """Run full NIAH sweep across depths and context lengths."""
     if depths is None:
@@ -278,6 +284,8 @@ def run_niah_sweep(
                         tau_cov=tau_cov,
                         k_min=k_min,
                         k_max=k_max,
+                        rung1_threshold=rung1_threshold,
+                        rung1_multiplier=rung1_multiplier,
                     )
                     results[mode].append(r)
 
@@ -386,6 +394,10 @@ def main():
                         help="Adaptive K* lower clamp (default 2)")
     parser.add_argument("--k-max", type=int, default=128,
                         help="Adaptive K* upper clamp (default 128)")
+    parser.add_argument("--rung1-threshold", type=float, default=0.02,
+                        help="Rung 1 (expand K*): tail-mass above which K* is expanded for that head (default 0.02). Set 1.0 to disable.")
+    parser.add_argument("--rung1-multiplier", type=float, default=2.0,
+                        help="Rung 1 (expand K*): k_max multiplier on trigger (default 2.0)")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -427,6 +439,8 @@ def main():
         tau_cov=tau_cov,
         k_min=args.k_min,
         k_max=args.k_max,
+        rung1_threshold=args.rung1_threshold,
+        rung1_multiplier=args.rung1_multiplier,
     )
 
     print(f"\n{'='*50}")

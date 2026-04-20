@@ -121,6 +121,34 @@ class TestCertifiedAttentionLayerAdaptive:
         assert 2 <= stats["k_star_min"] <= stats["k_star_max"] <= 8
         assert 0.0 <= stats["tau_cov_actual_mean"] <= 1.0
 
+    def test_rung1_expands_on_diffuse_head(self):
+        """Low k_max + diffuse attention → Rung 1 should trigger."""
+        from dotcache.kernels.certified_attention import certified_attention_layer
+        cache = self._make_cache(N=512, kv_heads=2, head_dim=32, block_size=16)
+        torch.manual_seed(7)
+        q_all = torch.randn(4, 32, dtype=torch.float16, device="cuda")
+        # Small k_max forces tau_cov=0.995 to be unreachable → tail mass high → trigger.
+        _, stats_cap = certified_attention_layer(
+            cache, q_all, gqa_group=2,
+            collect_stats=True, tau_cov=0.995, k_min=2, k_max=4,
+            rung1_threshold=0.02, rung1_multiplier=4.0,
+        )
+        assert stats_cap["rung1_triggered_heads"] >= 1, stats_cap
+        # With rung1 expansion in place, k_star should exceed the original k_max
+        # for at least the triggered heads.
+        assert stats_cap["k_star_max"] > 4
+
+    def test_rung1_disabled_by_high_threshold(self):
+        from dotcache.kernels.certified_attention import certified_attention_layer
+        cache = self._make_cache()
+        q_all = torch.randn(4, 32, dtype=torch.float16, device="cuda")
+        _, stats = certified_attention_layer(
+            cache, q_all, gqa_group=2,
+            collect_stats=True, tau_cov=0.995, k_min=2, k_max=8,
+            rung1_threshold=1.0,  # never triggers
+        )
+        assert stats["rung1_triggered_heads"] == 0
+
     def test_adaptive_disabled_leaves_existing_behavior(self):
         from dotcache.kernels.certified_attention import certified_attention_layer
         cache = self._make_cache()
