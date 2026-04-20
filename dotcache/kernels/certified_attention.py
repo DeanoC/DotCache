@@ -86,6 +86,86 @@ def decide_v_format(
     return "int4" if int4_error < tolerance else "fp16"
 
 
+def compute_fp16_block_scores(
+    cache: TieredKeyCacheLayer,
+    q_all: torch.Tensor,           # [num_q_heads, head_dim]
+    block_indices: torch.Tensor,   # [num_q_heads, K] int64 block ids to score
+    num_scoring_blocks: int,       # upper bound on valid block id (fully-quantized blocks)
+    gqa_group: int,
+    q_scale: float,
+) -> torch.Tensor:
+    """Compute per-head per-block FP16 max-logit for the given block set.
+
+    Mirrors Phase-1's m_b (the per-block max pre-softmax logit) but uses the
+    FP16 keys from the tiered cache's GPU mirror (or CPU if no mirror). Only
+    blocks in [0, num_scoring_blocks) are valid; others receive -inf.
+
+    Returns: [num_q_heads, K] float32 block scores suitable for ranking.
+    """
+    num_q_heads, head_dim = q_all.shape
+    _, K = block_indices.shape
+    bs = cache.block_size
+    device = q_all.device
+
+    # Total tokens covered by the fully-quantized block range.
+    nt = num_scoring_blocks * bs
+
+    neg_inf = torch.full((num_q_heads, K), float("-inf"), dtype=torch.float32, device=device)
+    if nt == 0 or K == 0:
+        return neg_inf
+
+    if cache.keys_fp16_gpu is not None:
+        keys = cache.keys_fp16_gpu[:, :nt, :]
+    else:
+        keys = cache.keys_fp16_cpu[:, :nt, :].to(device=device, non_blocking=True)
+    if keys.dtype != q_all.dtype:
+        keys = keys.to(dtype=q_all.dtype)
+
+    # [num_q_heads, K, bs, head_dim] gather: for each (h, k) pick tokens
+    # [block*bs, block*bs + bs) from keys[kv_h].
+    kv_per_h = torch.arange(num_q_heads, device=device) // gqa_group          # [H]
+    kv_per_hk = kv_per_h.unsqueeze(1).expand(-1, K)                            # [H, K]
+    starts = block_indices.to(torch.long) * bs                                 # [H, K]
+    token_offsets = torch.arange(bs, device=device)                            # [bs]
+    token_idx = starts.unsqueeze(-1) + token_offsets                           # [H, K, bs]
+    valid = (token_idx < nt) & (starts.unsqueeze(-1) >= 0)                     # [H, K, bs]
+    # Clamp out-of-range indices so the gather is always valid; masked later.
+    token_idx_clamped = token_idx.clamp(min=0, max=max(nt - 1, 0))
+
+    # keys[kv, t]: fancy indexing with [H, K, bs] index tensors.
+    kv_idx = kv_per_hk.unsqueeze(-1).expand(-1, -1, bs)                        # [H, K, bs]
+    k_gathered = keys[kv_idx, token_idx_clamped]                               # [H, K, bs, head_dim]
+
+    # Dot with q_h: q_all [H, head_dim] → [H, 1, 1, head_dim]
+    q_expanded = q_all.unsqueeze(1).unsqueeze(1)
+    logits = (k_gathered.float() * q_expanded.float()).sum(dim=-1) * q_scale   # [H, K, bs]
+    neg_inf_tok = torch.full_like(logits, float("-inf"))
+    logits = torch.where(valid, logits, neg_inf_tok)
+    scores = logits.amax(dim=-1)                                               # [H, K]
+    return scores
+
+
+def detect_ranking_disagreement(
+    int8_scores: torch.Tensor,     # [num_q_heads, K]
+    fp16_scores: torch.Tensor,     # [num_q_heads, K]
+    r: int,
+) -> torch.Tensor:
+    """Per-head: does the top-r INT8 ranking match the top-r FP16 ranking?
+
+    Returns a [num_q_heads] bool tensor; True = rankings disagree on at least
+    one of the top-r positions. Uses argsort over the scoring set rather than
+    global block ids so the two rankings share a vocabulary.
+    """
+    if int8_scores.numel() == 0 or r <= 0:
+        return torch.zeros(int8_scores.shape[0], dtype=torch.bool, device=int8_scores.device)
+    k = int8_scores.shape[1]
+    r_eff = min(r, k)
+    rank_int8 = int8_scores.argsort(dim=1, descending=True)[:, :r_eff]
+    rank_fp16 = fp16_scores.argsort(dim=1, descending=True)[:, :r_eff]
+    # Ordered top-r must match position-by-position (rank_int8[i] == rank_fp16[i])
+    return (rank_int8 != rank_fp16).any(dim=1)
+
+
 def sdpa_attend_with_skip(
     cache: TieredKeyCacheLayer,
     q_all: torch.Tensor,           # [num_q_heads, head_dim] (model dtype, e.g. BF16)
@@ -235,6 +315,37 @@ def certified_attention_layer(
     if cache.has_trailing_partial_block:
         skip_mask[:, cache.trailing_block_idx] = 0
 
+    # Rung-3 ranking-consistency detection. Runs over the fully-quantized
+    # block range (excludes the trailing partial block, which has no INT8
+    # score). Populates the telemetry counters below; commit 3 will add the
+    # per-head fallback action that sets skip_mask[h, :] = False on disagree.
+    ranking_disagree_r1_heads = 0
+    ranking_disagree_r3_heads = 0
+    ranking_disagree_mask: torch.Tensor | None = None
+    fp16_block_scores: torch.Tensor | None = None
+    top_block_indices: torch.Tensor | None = None
+    ranking_k = 0
+    if ranking_fallback and n_qblocks > 0:
+        # Rank the top-K blocks per head by INT8 m_b (descending). K is picked
+        # to cover at least `ranking_r` with a small cushion so argsort has
+        # enough resolution to catch close-score swaps.
+        ranking_k = min(max(ranking_r, top_k_fp16_keys, 4), n_qblocks)
+        int8_scores = m_b[:, :n_qblocks]
+        top_block_indices = int8_scores.topk(ranking_k, dim=1).indices  # [H, K]
+        top_int8_scores = int8_scores.gather(1, top_block_indices)       # [H, K]
+        fp16_block_scores = compute_fp16_block_scores(
+            cache, q_all, top_block_indices, n_qblocks, gqa_group, q_scale,
+        )
+        ranking_disagree_mask = detect_ranking_disagreement(
+            top_int8_scores, fp16_block_scores, ranking_r,
+        )
+        ranking_disagree_r1_heads = int(
+            detect_ranking_disagreement(top_int8_scores, fp16_block_scores, 1).sum().item()
+        )
+        ranking_disagree_r3_heads = int(
+            detect_ranking_disagreement(top_int8_scores, fp16_block_scores, 3).sum().item()
+        )
+
     # Entropy gating: if attention is diffuse (no block dominates),
     # disable skipping for that head — small-mass blocks may carry critical
     # information (e.g., needle retrieval with weak signal).
@@ -326,15 +437,35 @@ def certified_attention_layer(
             stats["eta_int4"] = eta_int4
             stats["int4_error_bound"] = eta_int4 * rho.max().item()
         # Ranking-consistency fallback telemetry (Rung 3).
-        # Populated by the detection block above; zero when the feature is off
-        # so downstream aggregators see a stable schema.
+        # Populated by the detection block above when enabled; the trigger
+        # count is still zero here because commit 2 is detection-only — the
+        # per-head fallback action arrives in the next commit.
         if ranking_fallback:
             stats["ranking_heads_total"] = num_q_heads
-            stats["ranking_disagree_r1"] = 0
-            stats["ranking_disagree_r3"] = 0
+            stats["ranking_disagree_r1"] = int(ranking_disagree_r1_heads)
+            stats["ranking_disagree_r3"] = int(ranking_disagree_r3_heads)
             stats["ranking_fallback_triggered"] = 0
             stats["ranking_r"] = int(ranking_r)
+            stats["ranking_k"] = int(ranking_k)
             stats["ranking_fallback_mode"] = ranking_fallback_mode
+            # Score-gap diagnostics (spec §5) — only emitted when we actually
+            # computed FP16 scores for at least one block per head.
+            if fp16_block_scores is not None and fp16_block_scores.shape[1] > 0:
+                # Top-1/top-2 gap on the FP16 re-rank: measures ranking fragility.
+                # Larger gap → more stable ranking → disagreement less likely.
+                if fp16_block_scores.shape[1] >= 2:
+                    sorted_fp16 = fp16_block_scores.sort(dim=1, descending=True).values
+                    gap_top12 = (sorted_fp16[:, 0] - sorted_fp16[:, 1]).float()
+                    stats["score_gap_top12_mean"] = float(gap_top12.mean().item())
+                    stats["score_gap_top12_min"] = float(gap_top12.min().item())
+                int8_top1 = m_b[:, :n_qblocks].gather(
+                    1, top_block_indices[:, :1]
+                ).squeeze(1).float()
+                fp16_top1 = fp16_block_scores.gather(
+                    1, fp16_block_scores.argsort(dim=1, descending=True)[:, :1]
+                ).squeeze(1).float()
+                stats["s_int8_top1_mean"] = float(int8_top1.mean().item())
+                stats["s_fp16_top1_mean"] = float(fp16_top1.mean().item())
     else:
         stats = {}
 
