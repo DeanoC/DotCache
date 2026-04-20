@@ -269,7 +269,12 @@ def run_cell(cell: dict, smoke: bool = False, dry_run: bool = False) -> dict:
         "system": _extract_system(bench, config, native),
         "native": native,
         "meta": {
-            "model": "meta-llama/Llama-3.1-8B-Instruct",
+            # The spec calls for meta-llama/Llama-3.1-8B-Instruct; the
+            # benchmark scripts default to NousResearch's non-gated mirror
+            # of the base (non-Instruct) weights because HF_TOKEN is unset
+            # on this pod. Record what was actually run so the paper can
+            # caveat honestly.
+            "model": "NousResearch/Meta-Llama-3.1-8B",
             "model_quant": "int8-bitsandbytes",
             "hardware": _hw_tag(),
             "timestamp": ended,
