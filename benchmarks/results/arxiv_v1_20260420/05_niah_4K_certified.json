@@ -1,0 +1,82 @@
+{
+  "benchmark": "niah",
+  "context_length": 4096,
+  "config": "certified",
+  "smoke": false,
+  "quality": {
+    "metric": "accuracy",
+    "value": 0.8666666666666667,
+    "dense_value": 0.8333333333333334,
+    "delta": 0.033333333333333326,
+    "critical_failures": 0
+  },
+  "system": {
+    "ranking_disagree_rate_r1": 0.0011814249802839117,
+    "ranking_disagree_rate_r3": 0.02580959187697161,
+    "ranking_fallback_rate": 0.0011814249802839117,
+    "heads_total": 1298432
+  },
+  "native": {
+    "heatmaps": {
+      "dense": {
+        "4K_d0.0": 1.0,
+        "4K_d0.1": 0.6666666666666666,
+        "4K_d0.2": 0.6666666666666666,
+        "4K_d0.3": 0.6666666666666666,
+        "4K_d0.4": 1.0,
+        "4K_d0.5": 0.6666666666666666,
+        "4K_d0.6": 0.6666666666666666,
+        "4K_d0.7": 1.0,
+        "4K_d0.8": 1.0,
+        "4K_d0.9": 1.0
+      },
+      "certified": {
+        "4K_d0.0": 1.0,
+        "4K_d0.1": 0.6666666666666666,
+        "4K_d0.2": 0.6666666666666666,
+        "4K_d0.3": 0.6666666666666666,
+        "4K_d0.4": 1.0,
+        "4K_d0.5": 0.6666666666666666,
+        "4K_d0.6": 1.0,
+        "4K_d0.7": 1.0,
+        "4K_d0.8": 1.0,
+        "4K_d0.9": 1.0
+      }
+    },
+    "dense_accuracy": 0.8333333333333334,
+    "certified_accuracy": 0.8666666666666667,
+    "critical_failures": 0,
+    "ranking_fallback_summary": {
+      "mode": "full",
+      "r": 1,
+      "heads_total": 1298432,
+      "disagree_r1": 1534,
+      "disagree_r3": 33512,
+      "triggered": 1534,
+      "disagree_rate_r1": 0.0011814249802839117,
+      "disagree_rate_r3": 0.02580959187697161,
+      "fallback_rate": 0.0011814249802839117
+    }
+  },
+  "meta": {
+    "model": "NousResearch/Meta-Llama-3.1-8B",
+    "model_quant": "int8-bitsandbytes",
+    "hardware": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition sm_120",
+    "timestamp": "2026-04-20T18:46:17.596863+00:00",
+    "started": "2026-04-20T18:40:52.132906+00:00",
+    "wall_seconds": 325.46395596675575,
+    "git_sha": "ab76549a",
+    "exit_code": 0,
+    "params": {
+      "v_tol": "0.05",
+      "tau_cov": "0.995",
+      "k_min": "2",
+      "k_max": "128",
+      "ranking_r": "1",
+      "eps_guard": "0.01",
+      "exploration_rate": "0.02",
+      "rung1_threshold": "0.02",
+      "rung1_multiplier": "2.0"
+    }
+  }
+}
