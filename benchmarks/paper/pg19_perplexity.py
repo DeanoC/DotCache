@@ -105,6 +105,18 @@ def compute_certified_perplexity(
     top_k_override: int = None,
     concentration_threshold: float = 0.0,
     device: str = "cuda",
+    # Paper-alignment features (T4/T7/Rung1/T9/T10).
+    tau_cov: float | None = None,
+    k_min: int = 2,
+    k_max: int | None = None,
+    ranking_fallback: bool = False,
+    ranking_r: int = 1,
+    ranking_fallback_mode: str = "full",
+    score_consistency_check: bool = False,
+    eps_guard: float = 0.01,
+    exploration_rate: float = 0.0,
+    rung1_threshold: float = 0.02,
+    rung1_multiplier: float = 2.0,
 ) -> dict:
     """Compute perplexity using certified attention decode.
 
@@ -186,6 +198,17 @@ def compute_certified_perplexity(
             append_kv=True,
             top_k_fp16_keys=top_k,
             concentration_threshold=concentration_threshold,
+            tau_cov=tau_cov,
+            k_min=k_min,
+            k_max=k_max,
+            ranking_fallback=ranking_fallback,
+            ranking_r=ranking_r,
+            ranking_fallback_mode=ranking_fallback_mode,
+            score_consistency_check=score_consistency_check,
+            eps_guard=eps_guard,
+            exploration_rate=exploration_rate,
+            rung1_threshold=rung1_threshold,
+            rung1_multiplier=rung1_multiplier,
         )
         adapter.set_mode("certified")
 
@@ -283,6 +306,21 @@ def main():
                         help="Override top_k_fp16_keys (default: 4)")
     parser.add_argument("--concentration-threshold", type=float, default=0.0,
                         help="If max block mass fraction < this, disable skip for that head (0=off, 0.02=2%%)")
+    # Paper-alignment flags (T4/T7/Rung1/T9/T10).
+    parser.add_argument("--tau-cov", type=float, default=0.0,
+                        help="Adaptive K* cumulative-mass threshold (0 or omitted = disabled; paper default 0.995)")
+    parser.add_argument("--k-min", type=int, default=2)
+    parser.add_argument("--k-max", type=int, default=None,
+                        help="Adaptive K* upper clamp (None = no cap)")
+    parser.add_argument("--ranking-fallback", action="store_true",
+                        help="Enable Rung-3 ranking-consistency fallback")
+    parser.add_argument("--ranking-r", type=int, default=1)
+    parser.add_argument("--ranking-fallback-mode", default="full", choices=["full", "measure"])
+    parser.add_argument("--score-consistency-check", action="store_true")
+    parser.add_argument("--eps-guard", type=float, default=0.01)
+    parser.add_argument("--exploration-rate", type=float, default=0.0)
+    parser.add_argument("--rung1-threshold", type=float, default=0.02)
+    parser.add_argument("--rung1-multiplier", type=float, default=2.0)
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -334,6 +372,17 @@ def main():
             epsilon_override=args.epsilon_override,
             top_k_override=args.top_k_override,
             concentration_threshold=args.concentration_threshold,
+            tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
+            k_min=args.k_min,
+            k_max=args.k_max,
+            ranking_fallback=args.ranking_fallback,
+            ranking_r=args.ranking_r,
+            ranking_fallback_mode=args.ranking_fallback_mode,
+            score_consistency_check=args.score_consistency_check,
+            eps_guard=args.eps_guard,
+            exploration_rate=args.exploration_rate,
+            rung1_threshold=args.rung1_threshold,
+            rung1_multiplier=args.rung1_multiplier,
         )
         t_cert = time.perf_counter() - t0
         print(f"Certified: ppl={cert_result['perplexity']:.2f} "
