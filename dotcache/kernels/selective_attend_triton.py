@@ -49,10 +49,12 @@ def _multihead_selective_attend_kernel(
         v_offs = tl.arange(0, TILE_V)
         v_mask = v_offs < d_v
 
-        # Online softmax state
-        m = tl.full((), float("-inf"), dtype=tl.float32)
-        l = tl.full((), 0.0, dtype=tl.float32)
-        acc = tl.zeros((TILE_V,), dtype=tl.float32)
+        # Online softmax state — FP64 per paper §9.9 (avoids catastrophic
+        # cancellation when scale_old is very small). Intermediate compute
+        # (scores, exp, weights) stays FP32; only the running state is FP64.
+        m = tl.full((), float("-inf"), dtype=tl.float64)
+        l = tl.full((), 0.0, dtype=tl.float64)
+        acc = tl.zeros((TILE_V,), dtype=tl.float64)
 
         for bid in range(num_blocks):
             skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
@@ -71,14 +73,14 @@ def _multihead_selective_attend_kernel(
                     scores += tl.sum(k_tile * q_tile[None, :], axis=1)
                 scores = scores * q_scale
 
-                # Online softmax update
-                block_max = tl.max(scores)
-                new_m = tl.maximum(m, block_max)
-                alpha = tl.exp(m - new_m)
+                # Online softmax update (FP64 state, FP32 intermediates)
+                block_max = tl.max(scores)                          # fp32
+                new_m = tl.maximum(m, block_max.to(tl.float64))     # fp64
+                alpha = tl.exp(m - new_m)                           # fp64
                 acc = acc * alpha
                 l = l * alpha
-                weights = tl.exp(scores - new_m)
-                l += tl.sum(weights)
+                weights = tl.exp(scores - new_m.to(tl.float32))     # fp32 intermediate
+                l += tl.sum(weights).to(tl.float64)
 
                 # V accumulation
                 v_row_ptrs = V_ptr + (base_tok + t_offs) * stride_v
@@ -86,13 +88,13 @@ def _multihead_selective_attend_kernel(
                 vm = v_off < d_v
                 v_ptrs = v_row_ptrs[:, None] + v_off[None, :]
                 v_tile = tl.load(v_ptrs, mask=vm[None, :], other=0).to(tl.float32)
-                w_v = tl.sum(weights[:, None] * v_tile, axis=0)
-                acc += w_v
+                w_v = tl.sum(weights[:, None] * v_tile, axis=0)     # fp32
+                acc += w_v.to(tl.float64)
                 m = new_m
 
-        # Normalise and store
+        # Normalise in fp64; cast down at the store.
         safe_l = tl.where(l > 0.0, l, 1.0)
-        output = acc / safe_l
+        output = (acc / safe_l).to(tl.float32)
         tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
 
 
@@ -135,10 +137,10 @@ def _multihead_selective_attend_int8_kernel(
         v_offs = tl.arange(0, TILE_V)
         v_mask = v_offs < d_v
 
-        # Online softmax state
-        m = tl.full((), float("-inf"), dtype=tl.float32)
-        l = tl.full((), 0.0, dtype=tl.float32)
-        acc = tl.zeros((TILE_V,), dtype=tl.float32)
+        # Online softmax state — FP64 per paper §9.9.
+        m = tl.full((), float("-inf"), dtype=tl.float64)
+        l = tl.full((), 0.0, dtype=tl.float64)
+        acc = tl.zeros((TILE_V,), dtype=tl.float64)
 
         for bid in range(num_blocks):
             skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
@@ -161,28 +163,28 @@ def _multihead_selective_attend_int8_kernel(
                     scores += tl.sum(k_tile * q_tile[None, :], axis=1)
                 scores = scores * q_scale
 
-                # Online softmax update
+                # Online softmax update (FP64 state, FP32 intermediates)
                 block_max = tl.max(scores)
-                new_m = tl.maximum(m, block_max)
+                new_m = tl.maximum(m, block_max.to(tl.float64))
                 alpha = tl.exp(m - new_m)
                 acc = acc * alpha
                 l = l * alpha
-                weights = tl.exp(scores - new_m)
-                l += tl.sum(weights)
+                weights = tl.exp(scores - new_m.to(tl.float32))
+                l += tl.sum(weights).to(tl.float64)
 
-                # V accumulation (FP16 values → float32)
+                # V accumulation (FP16 values → float32 → float64)
                 v_row_ptrs = V_ptr + (base_tok + t_offs) * stride_v
                 v_off = v_offs
                 vm = v_off < d_v
                 v_ptrs = v_row_ptrs[:, None] + v_off[None, :]
                 v_tile = tl.load(v_ptrs, mask=vm[None, :], other=0).to(tl.float32)
                 w_v = tl.sum(weights[:, None] * v_tile, axis=0)
-                acc += w_v
+                acc += w_v.to(tl.float64)
                 m = new_m
 
-        # Normalise and store
+        # Normalise in fp64; cast down at the store.
         safe_l = tl.where(l > 0.0, l, 1.0)
-        output = acc / safe_l
+        output = (acc / safe_l).to(tl.float32)
         tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
 
 
@@ -281,9 +283,10 @@ def _multihead_selective_attend_int8k_int4v_kernel(
         v_offs = tl.arange(0, TILE_V)
         v_mask = v_offs < d_v
 
-        m = tl.full((), float("-inf"), dtype=tl.float32)
-        l = tl.full((), 0.0, dtype=tl.float32)
-        acc = tl.zeros((TILE_V,), dtype=tl.float32)
+        # Online softmax state — FP64 per paper §9.9.
+        m = tl.full((), float("-inf"), dtype=tl.float64)
+        l = tl.full((), 0.0, dtype=tl.float64)
+        acc = tl.zeros((TILE_V,), dtype=tl.float64)
 
         for bid in range(num_blocks):
             skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
@@ -305,14 +308,14 @@ def _multihead_selective_attend_int8k_int4v_kernel(
                     scores += tl.sum(k_tile * q_tile[None, :], axis=1)
                 scores = scores * q_scale
 
-                # ── Online softmax ──
+                # ── Online softmax (FP64 state, FP32 intermediates) ──
                 block_max = tl.max(scores)
-                new_m = tl.maximum(m, block_max)
+                new_m = tl.maximum(m, block_max.to(tl.float64))
                 alpha = tl.exp(m - new_m)
                 acc = acc * alpha
                 l = l * alpha
-                weights = tl.exp(scores - new_m)
-                l += tl.sum(weights)
+                weights = tl.exp(scores - new_m.to(tl.float32))
+                l += tl.sum(weights).to(tl.float64)
 
                 # ── V accumulation (INT4 per-group in-register dequant) ──
                 # Load packed uint8 [block_size, d_v//2], unpack to [block_size, d_v]
@@ -348,17 +351,23 @@ def _multihead_selective_attend_int8k_int4v_kernel(
                     # Dequantise: val = int4 * scale + zero
                     v_tile = v_int4 * v_scale + v_zero  # [block_size, TILE_V]
 
-                    # Weighted accumulation
-                    w_v = tl.sum(weights[:, None] * v_tile, axis=0)  # [TILE_V]
+                    # Weighted accumulation (cast up to fp64 before add-in)
+                    w_v = tl.sum(weights[:, None] * v_tile, axis=0)  # fp32 [TILE_V]
+                    w_v64 = w_v.to(tl.float64)
 
-                    # Add to accumulator at the right offset
-                    # Since TILE_V >= d_v for our case, this is the only iteration
-                    acc = tl.where(vm_local, acc + w_v, acc) if v_start > 0 else acc + tl.where(vm_local, w_v, tl.zeros_like(w_v))
+                    # Add to accumulator at the right offset. TILE_V >= d_v in
+                    # practice so this is the only iteration; the guard exists
+                    # for future tiling.
+                    if v_start > 0:
+                        acc = tl.where(vm_local, acc + w_v64, acc)
+                    else:
+                        zeros64 = tl.zeros_like(w_v64)
+                        acc = acc + tl.where(vm_local, w_v64, zeros64)
 
                 m = new_m
 
         safe_l = tl.where(l > 0.0, l, 1.0)
-        output = acc / safe_l
+        output = (acc / safe_l).to(tl.float32)
         tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
 
 
@@ -465,9 +474,10 @@ def _multihead_selective_attend_hybrid_kernel(
         v_offs = tl.arange(0, TILE_V)
         v_mask = v_offs < d_v
 
-        m = tl.full((), float("-inf"), dtype=tl.float32)
-        l = tl.full((), 0.0, dtype=tl.float32)
-        acc = tl.zeros((TILE_V,), dtype=tl.float32)
+        # Online softmax state — FP64 per paper §9.9.
+        m = tl.full((), float("-inf"), dtype=tl.float64)
+        l = tl.full((), 0.0, dtype=tl.float64)
+        acc = tl.zeros((TILE_V,), dtype=tl.float64)
 
         for bid in range(num_blocks):
             skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
@@ -505,12 +515,12 @@ def _multihead_selective_attend_hybrid_kernel(
                 scores = scores * q_scale
 
                 block_max = tl.max(scores)
-                new_m = tl.maximum(m, block_max)
+                new_m = tl.maximum(m, block_max.to(tl.float64))
                 alpha = tl.exp(m - new_m)
                 acc = acc * alpha
                 l = l * alpha
-                weights = tl.exp(scores - new_m)
-                l += tl.sum(weights)
+                weights = tl.exp(scores - new_m.to(tl.float32))
+                l += tl.sum(weights).to(tl.float64)
 
                 v_row_ptrs = V_ptr + (base_tok + t_offs) * stride_v
                 v_off = v_offs
@@ -518,11 +528,11 @@ def _multihead_selective_attend_hybrid_kernel(
                 v_ptrs = v_row_ptrs[:, None] + v_off[None, :]
                 v_tile = tl.load(v_ptrs, mask=vm[None, :], other=0).to(tl.float32)
                 w_v = tl.sum(weights[:, None] * v_tile, axis=0)
-                acc += w_v
+                acc += w_v.to(tl.float64)
                 m = new_m
 
         safe_l = tl.where(l > 0.0, l, 1.0)
-        output = acc / safe_l
+        output = (acc / safe_l).to(tl.float32)
         tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
 
 
