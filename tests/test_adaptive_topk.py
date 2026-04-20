@@ -67,6 +67,17 @@ class TestAdaptiveTopK:
         assert mask[0].sum().item() == 1
         assert mask[1].sum().item() == 5
 
+    def test_k_max_none_uses_num_blocks_as_upper(self):
+        """k_max=None → no cap; clamp to num_blocks."""
+        from dotcache.kernels.certified_attention import compute_adaptive_topk_mask
+        m = torch.zeros(1, 20, device="cuda")  # uniform, 20 blocks
+        S = torch.ones_like(m)
+        mask, k, tail, _ = compute_adaptive_topk_mask(m, S, tau_cov=0.995, k_min=2, k_max=None)
+        # tau_cov=0.995 on 20 uniform blocks needs all 20 → k = 20
+        assert int(k[0]) == 20
+        assert mask.sum().item() == 20
+        assert tail[0].item() <= 1e-6  # fully covered
+
     def test_empty_blocks_returns_empty(self):
         from dotcache.kernels.certified_attention import compute_adaptive_topk_mask
         m = torch.empty(3, 0, device="cuda")

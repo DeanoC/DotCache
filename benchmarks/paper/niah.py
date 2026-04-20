@@ -104,7 +104,7 @@ def run_niah_cell(
     ranking_fallback_mode: str = "full",
     tau_cov: float | None = None,
     k_min: int = 2,
-    k_max: int = 128,
+    k_max: int | None = None,
     rung1_threshold: float = 0.02,
     rung1_multiplier: float = 2.0,
     score_consistency_check: bool = False,
@@ -265,7 +265,7 @@ def run_niah_sweep(
     ranking_fallback_mode: str = "full",
     tau_cov: float | None = None,
     k_min: int = 2,
-    k_max: int = 128,
+    k_max: int | None = None,
     rung1_threshold: float = 0.02,
     rung1_multiplier: float = 2.0,
     score_consistency_check: bool = False,
@@ -410,8 +410,8 @@ def main():
                         help="Adaptive K*: minimum cumulative INT8-estimated mass per head (0=disable, use fixed top-k-fp16 floor)")
     parser.add_argument("--k-min", type=int, default=2,
                         help="Adaptive K* lower clamp (default 2)")
-    parser.add_argument("--k-max", type=int, default=128,
-                        help="Adaptive K* upper clamp (default 128)")
+    parser.add_argument("--k-max", type=int, default=None,
+                        help="Adaptive K* upper clamp (default None = no cap; pass an integer to cap)")
     parser.add_argument("--rung1-threshold", type=float, default=0.02,
                         help="Rung 1 (expand K*): tail-mass above which K* is expanded for that head (default 0.02). Set 1.0 to disable.")
     parser.add_argument("--rung1-multiplier", type=float, default=2.0,

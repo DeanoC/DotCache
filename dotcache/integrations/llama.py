@@ -100,7 +100,8 @@ class CertifiedAttentionState:
     # instead of the block_epsilon certification.
     tau_cov: float | None = None
     k_min: int = 2
-    k_max: int = 128
+    # k_max=None: no upper cap — tau_cov alone dictates K* per head.
+    k_max: int | None = None
     # Rung-1 expand-coverage fallback (paper §3.4). rung1_threshold is the tail
     # mass above which k_max is temporarily scaled by rung1_multiplier for
     # heads that tripped it. Set threshold to 1.0 (or higher) to disable.

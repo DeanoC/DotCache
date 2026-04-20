@@ -36,7 +36,8 @@ TOP_K_BLOCKS = 4
 # Adaptive top-K* defaults (paper §3.3).
 DEFAULT_TAU_COV = 0.995
 DEFAULT_K_MIN = 2
-DEFAULT_K_MAX = 128
+# None = no upper clamp; the selector lets tau_cov fully dictate K* per head.
+DEFAULT_K_MAX: int | None = None
 
 # Rung-1 fallback defaults (paper §3.4). When the adaptive selector's tail
 # mass exceeds DEFAULT_RUNG1_THRESHOLD (k_max hit, τ_cov not reached), expand
@@ -103,7 +104,7 @@ def compute_adaptive_topk_mask(
     S_b: torch.Tensor,       # [num_q_heads, num_blocks] Phase-1 block sum
     tau_cov: float = DEFAULT_TAU_COV,
     k_min: int = DEFAULT_K_MIN,
-    k_max: int = DEFAULT_K_MAX,
+    k_max: int | None = DEFAULT_K_MAX,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Paper §3.3 adaptive top-K* selector (cumulative-mass threshold).
 
@@ -141,8 +142,9 @@ def compute_adaptive_topk_mask(
     # since cumsum is non-decreasing in [0, 1], that index = (K* - 1).
     tau_vec = torch.full((num_q_heads, 1), float(tau_cov), device=device, dtype=cumsum.dtype)
     k_star = torch.searchsorted(cumsum, tau_vec).squeeze(1) + 1    # [H]
-    # Clamp to [k_min, min(k_max, num_blocks)].
-    hi = min(int(k_max), num_blocks)
+    # Clamp to [k_min, min(k_max, num_blocks)]. k_max=None means no cap
+    # beyond num_blocks — let tau_cov alone dictate K* per head.
+    hi = num_blocks if k_max is None else min(int(k_max), num_blocks)
     lo = min(int(k_min), hi)
     k_star = k_star.clamp(min=lo, max=hi).to(torch.int32)
 
@@ -441,7 +443,7 @@ def certified_attention_layer(
     ranking_fallback_mode: str = "full",
     tau_cov: float | None = None,
     k_min: int = DEFAULT_K_MIN,
-    k_max: int = DEFAULT_K_MAX,
+    k_max: int | None = DEFAULT_K_MAX,
     rung1_threshold: float = DEFAULT_RUNG1_THRESHOLD,
     rung1_multiplier: float = DEFAULT_RUNG1_MULTIPLIER,
     score_consistency_check: bool = False,
@@ -542,10 +544,18 @@ def certified_attention_layer(
         # heads whose selection was already good at the original k_max will just
         # land on the same (or a smaller) K* because the tau_cov threshold is
         # unchanged. Accounting: count heads that triggered the expansion.
-        if rung1_threshold is not None and rung1_threshold >= 0:
+        # k_max=None means no upper cap so the adaptive selector already hit
+        # tau_cov fully → no expansion to do, skip the whole check (also the
+        # cheap path sync-wise).
+        if (
+            rung1_threshold is not None and rung1_threshold >= 0
+            and k_max is not None
+        ):
             rung1_trigger_mask = tail_mass_est > rung1_threshold  # [H] bool
-            if bool(rung1_trigger_mask.any().item()):
-                rung1_triggered_heads = int(rung1_trigger_mask.sum().item())
+            # One .sum().item() sync covers both "any?" and "how many?" — no
+            # need for a separate .any().item() gate.
+            rung1_triggered_heads = int(rung1_trigger_mask.sum().item())
+            if rung1_triggered_heads > 0:
                 expanded_k_max = min(int(math.ceil(k_max * float(rung1_multiplier))), n_qblocks)
                 topk_mask_cert2, k_star2, tail_mass_est2, tau_cov_actual2 = compute_adaptive_topk_mask(
                     m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=expanded_k_max,
@@ -617,15 +627,24 @@ def certified_attention_layer(
             cache, q_all, top_block_indices, n_qblocks, gqa_group, q_scale,
         )
         if ranking_fallback:
-            ranking_disagree_mask = detect_ranking_disagreement(
-                top_int8_scores, fp16_block_scores, ranking_r,
-            )
-            ranking_disagree_r1_heads = int(
-                detect_ranking_disagreement(top_int8_scores, fp16_block_scores, 1).sum().item()
-            )
-            ranking_disagree_r3_heads = int(
-                detect_ranking_disagreement(top_int8_scores, fp16_block_scores, 3).sum().item()
-            )
+            # Single pair of argsorts covers r=1, r=3, and r=ranking_r — no
+            # need to call detect_ranking_disagreement three times (each call
+            # was redoing the same sort).
+            k_for_rank = top_int8_scores.shape[1]
+            if k_for_rank > 0 and ranking_r > 0:
+                rank_int8 = top_int8_scores.argsort(dim=1, descending=True)
+                rank_fp16 = fp16_block_scores.argsort(dim=1, descending=True)
+                rank_diff = rank_int8 != rank_fp16  # [H, K]
+                r_main = min(int(ranking_r), k_for_rank)
+                r1 = min(1, k_for_rank)
+                r3 = min(3, k_for_rank)
+                ranking_disagree_mask = rank_diff[:, :r_main].any(dim=1)
+                ranking_disagree_r1_heads = int(rank_diff[:, :r1].any(dim=1).sum().item())
+                ranking_disagree_r3_heads = int(rank_diff[:, :r3].any(dim=1).sum().item())
+            else:
+                ranking_disagree_mask = torch.zeros(
+                    num_q_heads, dtype=torch.bool, device=q_all.device,
+                )
         if score_consistency_check:
             # Paper §6 instability-detection: |FP16 - INT8| per block bounded
             # by Δ + eps_guard. Any violation means Theorem 2 was empirically
@@ -718,24 +737,26 @@ def certified_attention_layer(
 
     # Rung-3 action: for every head whose INT8/FP16 rankings disagree on the
     # top-r positions, replace its output with a full FP16 dense attention.
-    # Non-disagreeing heads keep their Phase-2 output exactly.
+    # Non-disagreeing heads keep their Phase-2 output exactly. torch.nonzero
+    # already does the device→host transfer needed to shape the index
+    # tensor, so a separate .any().item() guard would be a redundant sync.
     ranking_fallback_heads = 0
     if (
         ranking_fallback
         and ranking_fallback_mode == "full"
         and ranking_disagree_mask is not None
-        and bool(ranking_disagree_mask.any().item())
     ):
         disagree_heads = torch.nonzero(ranking_disagree_mask, as_tuple=True)[0]
-        output = recompute_heads_dense_fp16(
-            cache=cache,
-            q_all=q_all,
-            output=output,
-            head_indices=disagree_heads,
-            gqa_group=gqa_group,
-            q_scale=q_scale,
-        )
-        ranking_fallback_heads = int(disagree_heads.numel())
+        if disagree_heads.numel() > 0:
+            output = recompute_heads_dense_fp16(
+                cache=cache,
+                q_all=q_all,
+                output=output,
+                head_indices=disagree_heads,
+                gqa_group=gqa_group,
+                q_scale=q_scale,
+            )
+            ranking_fallback_heads = int(disagree_heads.numel())
 
     # Stats
     if collect_stats:
