@@ -145,6 +145,47 @@ def compute_fp16_block_scores(
     return scores
 
 
+def recompute_heads_dense_fp16(
+    cache: TieredKeyCacheLayer,
+    q_all: torch.Tensor,               # [num_q_heads, head_dim]
+    output: torch.Tensor,              # [num_q_heads, d_v] to be patched in-place
+    head_indices: torch.Tensor,        # [num_to_recompute] int64 q-head ids
+    gqa_group: int,
+    q_scale: float,
+) -> torch.Tensor:
+    """Rung-3 recompute: for each listed head, replace output[h] with a full
+    FP16 dense attention using the cache's FP16 keys + FP16 values (dequantised
+    from INT4 if that's the value tier).
+
+    The recompute only touches listed heads — non-disagreeing heads keep their
+    Phase-2 output unchanged. This is intentional: the spec calls for per-head
+    granularity so only the heads that paid the detection are corrected.
+    """
+    if head_indices.numel() == 0:
+        return output
+    nt = cache.num_tokens
+    device = q_all.device
+    if cache.keys_fp16_gpu is not None:
+        keys = cache.keys_fp16_gpu[:, :nt, :]
+    else:
+        keys = cache.keys_fp16_cpu[:, :nt, :].to(device=device, non_blocking=True)
+    values_f32 = cache.get_values_f32()[:, :nt, :]  # FP32 from VRAM (either tier)
+    keys_f32 = keys.to(device=device, dtype=torch.float32)
+
+    # Loop-free per-head recompute: pull the rows we need and vectorise the
+    # dot-products. head_indices is typically small (≤ num_q_heads).
+    heads = head_indices.to(device=device, dtype=torch.long)
+    kv_ids = heads // gqa_group                                        # [M]
+    q_sel = q_all.index_select(0, heads).float()                        # [M, head_dim]
+    k_sel = keys_f32.index_select(0, kv_ids)                            # [M, nt, head_dim]
+    v_sel = values_f32.index_select(0, kv_ids)                          # [M, nt, d_v]
+    logits = torch.einsum("mnd,md->mn", k_sel, q_sel) * q_scale        # [M, nt]
+    weights = torch.softmax(logits, dim=1)                              # [M, nt]
+    head_out = torch.einsum("mn,mnd->md", weights, v_sel)              # [M, d_v]
+    output.index_copy_(0, heads, head_out.to(output.dtype))
+    return output
+
+
 def detect_ranking_disagreement(
     int8_scores: torch.Tensor,     # [num_q_heads, K]
     fp16_scores: torch.Tensor,     # [num_q_heads, K]
@@ -420,6 +461,27 @@ def certified_attention_layer(
     else:
         raise ValueError("No values available in cache")
 
+    # Rung-3 action: for every head whose INT8/FP16 rankings disagree on the
+    # top-r positions, replace its output with a full FP16 dense attention.
+    # Non-disagreeing heads keep their Phase-2 output exactly.
+    ranking_fallback_heads = 0
+    if (
+        ranking_fallback
+        and ranking_fallback_mode == "full"
+        and ranking_disagree_mask is not None
+        and bool(ranking_disagree_mask.any().item())
+    ):
+        disagree_heads = torch.nonzero(ranking_disagree_mask, as_tuple=True)[0]
+        output = recompute_heads_dense_fp16(
+            cache=cache,
+            q_all=q_all,
+            output=output,
+            head_indices=disagree_heads,
+            gqa_group=gqa_group,
+            q_scale=q_scale,
+        )
+        ranking_fallback_heads = int(disagree_heads.numel())
+
     # Stats
     if collect_stats:
         total_blocks = num_q_heads * cache.num_blocks
@@ -444,7 +506,7 @@ def certified_attention_layer(
             stats["ranking_heads_total"] = num_q_heads
             stats["ranking_disagree_r1"] = int(ranking_disagree_r1_heads)
             stats["ranking_disagree_r3"] = int(ranking_disagree_r3_heads)
-            stats["ranking_fallback_triggered"] = 0
+            stats["ranking_fallback_triggered"] = int(ranking_fallback_heads)
             stats["ranking_r"] = int(ranking_r)
             stats["ranking_k"] = int(ranking_k)
             stats["ranking_fallback_mode"] = ranking_fallback_mode

@@ -174,8 +174,8 @@ class TestCertifiedAttentionLayerTelemetry:
         assert "s_int8_top1_mean" in stats
         assert "s_fp16_top1_mean" in stats
 
-    def test_output_is_identical_whether_ranking_enabled(self):
-        """Commit 2 is detection-only — enabling must not change the output."""
+    def test_measure_mode_leaves_output_identical(self):
+        """mode='measure' must detect disagreement without touching the output."""
         from dotcache.kernels.certified_attention import certified_attention_layer
         cache = self._make_cache()
         q_all = torch.randn(4, 32, dtype=torch.float16, device="cuda")
@@ -183,9 +183,142 @@ class TestCertifiedAttentionLayerTelemetry:
             cache, q_all, gqa_group=2,
             collect_stats=True, ranking_fallback=False,
         )
-        out_on, _ = certified_attention_layer(
+        out_measure, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, ranking_fallback=True, ranking_r=1,
+            ranking_fallback_mode="measure",
         )
-        assert torch.allclose(out_off, out_on, atol=0.0, rtol=0.0), \
-            "detection-only path must not alter the output tensor"
+        assert torch.allclose(out_off, out_measure, atol=0.0, rtol=0.0), \
+            "measure mode must not alter the output tensor"
+        assert stats["ranking_fallback_triggered"] == 0
+
+    def test_full_mode_only_changes_disagreeing_heads(self):
+        """mode='full' must replace output[h] only for heads where detection fired."""
+        from dotcache.kernels.certified_attention import (
+            certified_attention_layer,
+            detect_ranking_disagreement,
+            compute_fp16_block_scores,
+        )
+        cache = self._make_cache()
+        q_all = torch.randn(4, 32, dtype=torch.float16, device="cuda")
+
+        out_off, _ = certified_attention_layer(
+            cache, q_all, gqa_group=2,
+            collect_stats=True, ranking_fallback=False,
+        )
+        out_full, stats = certified_attention_layer(
+            cache, q_all, gqa_group=2,
+            collect_stats=True, ranking_fallback=True, ranking_r=1,
+            ranking_fallback_mode="full",
+        )
+
+        # Determine which heads should have been replaced by re-running detection
+        # directly on the same inputs. certified_attention_layer is deterministic
+        # here so the disagree mask reproduces.
+        from dotcache.kernels.fused_score_certify import fused_score_certify_multihead
+        n_qblocks = cache.num_quantized_blocks
+        bs = cache.block_size
+        q_scale = 1.0 / (32 ** 0.5)
+        m_b, _, _ = fused_score_certify_multihead(
+            K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
+            K_scale=cache.keys_scale[:, :n_qblocks, :],
+            q_all=q_all,
+            correction=cache.correction[:, :n_qblocks],
+            gqa_group=2,
+            block_size=bs,
+            q_scale=q_scale,
+            block_epsilon=0.001,
+        )
+        K = max(1, stats["ranking_k"])
+        top_idx = m_b[:, :n_qblocks].topk(K, dim=1).indices
+        top_int8 = m_b[:, :n_qblocks].gather(1, top_idx)
+        top_fp16 = compute_fp16_block_scores(
+            cache, q_all, top_idx, n_qblocks, gqa_group=2, q_scale=q_scale,
+        )
+        disagree = detect_ranking_disagreement(top_int8, top_fp16, r=1)
+
+        # Non-disagreeing heads stay bitwise-identical
+        agree = ~disagree
+        if agree.any():
+            assert torch.allclose(
+                out_off[agree], out_full[agree], atol=0.0, rtol=0.0,
+            ), "non-disagreeing heads must keep their Phase-2 output"
+
+        # Trigger count matches the disagree mask
+        assert stats["ranking_fallback_triggered"] == int(disagree.sum().item())
+
+    def test_full_mode_matches_dense_on_triggered_heads(self):
+        """When fallback fires for a head, output[h] must equal FP16 dense attention."""
+        from dotcache.kernels.certified_attention import certified_attention_layer
+        cache = self._make_cache(N=512, kv_heads=2, head_dim=32, block_size=16)
+        q_scale = 1.0 / (32 ** 0.5)
+
+        # Search seeds until we find an input that actually triggers disagreement
+        # (a larger context + larger K than the other tests makes this near-certain).
+        q_all = None
+        out_full = None
+        stats = None
+        for seed in range(64):
+            torch.manual_seed(1000 + seed)
+            q_all = torch.randn(4, 32, dtype=torch.float16, device="cuda")
+            out_full, stats = certified_attention_layer(
+                cache, q_all, gqa_group=2, q_scale=q_scale,
+                collect_stats=True, ranking_fallback=True, ranking_r=3,
+                ranking_fallback_mode="full",
+            )
+            if stats["ranking_fallback_triggered"] > 0:
+                break
+        assert stats["ranking_fallback_triggered"] > 0, (
+            "Detection never fired across 64 seeds — the detection path is likely broken"
+        )
+
+        # Reference: full FP16 dense attention for every head.
+        nt = cache.num_tokens
+        keys = (cache.keys_fp16_gpu if cache.keys_fp16_gpu is not None
+                else cache.keys_fp16_cpu.to("cuda"))[:, :nt, :].float()
+        values = cache.get_values_f32()[:, :nt, :]
+        ref = torch.zeros_like(out_full)
+        for h in range(q_all.shape[0]):
+            kv = h // 2
+            logits = (keys[kv] @ q_all[h].float()) * q_scale
+            w = torch.softmax(logits, dim=0)
+            ref[h] = (w.unsqueeze(1) * values[kv]).sum(dim=0)
+
+        # The test's strongest claim: on triggered heads, certified output
+        # equals the dense reference to near-float precision. Use cosine
+        # since the Phase-2 path keeps some intermediates in float32 while
+        # the reference accumulates differently.
+        # Re-derive the disagree mask deterministically.
+        from dotcache.kernels.certified_attention import (
+            detect_ranking_disagreement, compute_fp16_block_scores,
+        )
+        from dotcache.kernels.fused_score_certify import fused_score_certify_multihead
+        n_qblocks = cache.num_quantized_blocks
+        bs = cache.block_size
+        m_b, _, _ = fused_score_certify_multihead(
+            K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
+            K_scale=cache.keys_scale[:, :n_qblocks, :],
+            q_all=q_all,
+            correction=cache.correction[:, :n_qblocks],
+            gqa_group=2,
+            block_size=bs,
+            q_scale=q_scale,
+            block_epsilon=0.001,
+        )
+        K = max(1, stats["ranking_k"])
+        top_idx = m_b[:, :n_qblocks].topk(K, dim=1).indices
+        top_int8 = m_b[:, :n_qblocks].gather(1, top_idx)
+        top_fp16 = compute_fp16_block_scores(
+            cache, q_all, top_idx, n_qblocks, gqa_group=2, q_scale=q_scale,
+        )
+        disagree = detect_ranking_disagreement(top_int8, top_fp16, r=3)
+
+        disagree_heads = torch.nonzero(disagree, as_tuple=True)[0]
+        assert disagree_heads.numel() > 0
+        for h in disagree_heads.tolist():
+            cos = torch.nn.functional.cosine_similarity(
+                out_full[h].unsqueeze(0), ref[h].unsqueeze(0), dim=1,
+            ).item()
+            assert cos > 0.9999, (
+                f"head {h}: fallback output should equal FP16 dense (cos={cos:.6f})"
+            )
