@@ -366,7 +366,19 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
                        calibrated_profile=None, default_epsilon: float = 1e-4,
                        top_k_fp16_keys: int = 4,
                        concentration_threshold: float = 0.02,
-                       device: str = "cuda") -> tuple[str, int]:
+                       device: str = "cuda",
+                       # Paper-alignment features (T4/T7/Rung1/T9/T10).
+                       tau_cov: float | None = None,
+                       k_min: int = 2,
+                       k_max: int | None = None,
+                       ranking_fallback: bool = False,
+                       ranking_r: int = 1,
+                       ranking_fallback_mode: str = "full",
+                       score_consistency_check: bool = False,
+                       eps_guard: float = 0.01,
+                       exploration_rate: float = 0.0,
+                       rung1_threshold: float = 0.02,
+                       rung1_multiplier: float = 2.0) -> tuple[str, int, dict]:
     from dotcache.integrations.llama import (
         _ensure_certified_imports, CertifiedAttentionState,
     )
@@ -395,14 +407,31 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     else:
         layer_epsilons = {}
 
+    collect_stats = (
+        bool(ranking_fallback)
+        or (tau_cov is not None and tau_cov > 0)
+        or bool(score_consistency_check)
+        or (exploration_rate and exploration_rate > 0)
+    )
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered_caches,
         layer_epsilons=layer_epsilons,
         default_epsilon=default_epsilon,
-        collect_stats=False,
+        collect_stats=collect_stats,
         append_kv=True,
         top_k_fp16_keys=top_k_fp16_keys,
         concentration_threshold=concentration_threshold,
+        tau_cov=tau_cov,
+        k_min=k_min,
+        k_max=k_max,
+        ranking_fallback=ranking_fallback,
+        ranking_r=ranking_r,
+        ranking_fallback_mode=ranking_fallback_mode,
+        score_consistency_check=score_consistency_check,
+        eps_guard=eps_guard,
+        exploration_rate=exploration_rate,
+        rung1_threshold=rung1_threshold,
+        rung1_multiplier=rung1_multiplier,
     )
     adapter.set_mode("certified")
 
@@ -424,11 +453,14 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
         cache_position = cache_position + 1
 
     text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+    # Drain aggregate stats (ranking / adaptive / exploration / score-consistency)
+    # before clearing state — the orchestrator pulls these for the arXiv v1 JSON.
+    cell_agg = adapter.certified_state.aggregate_step_stats() if collect_stats else {}
     adapter.certified_state = None
     adapter.set_mode("dense")
     gc.collect()
     torch.cuda.empty_cache()
-    return text, seq_len
+    return text, seq_len, cell_agg
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +473,18 @@ def run_ruler(
     calibrated_profile=None, default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4, concentration_threshold: float = 0.02,
     seed_base: int = 20260416, device: str = "cuda",
+    # Paper-alignment features.
+    tau_cov: float | None = None,
+    k_min: int = 2,
+    k_max: int | None = None,
+    ranking_fallback: bool = False,
+    ranking_r: int = 1,
+    ranking_fallback_mode: str = "full",
+    score_consistency_check: bool = False,
+    eps_guard: float = 0.01,
+    exploration_rate: float = 0.0,
+    rung1_threshold: float = 0.02,
+    rung1_multiplier: float = 2.0,
 ) -> dict:
     results = []
     total = len(subtasks) * len(contexts) * num_samples * 2
@@ -467,13 +511,21 @@ def run_ruler(
                 print(f"  [{done}/{total}] dense     {subtask:<18} "
                       f"{ctx_len//1024}K s={sidx} -> {status_d}")
 
-                cert_text, seq_cert = generate_certified(
+                cert_text, seq_cert, cert_stats = generate_certified(
                     model, tokenizer, adapter, prompt, max_new,
                     calibrated_profile=calibrated_profile,
                     default_epsilon=default_epsilon,
                     top_k_fp16_keys=top_k_fp16_keys,
                     concentration_threshold=concentration_threshold,
                     device=device,
+                    tau_cov=tau_cov, k_min=k_min, k_max=k_max,
+                    ranking_fallback=ranking_fallback, ranking_r=ranking_r,
+                    ranking_fallback_mode=ranking_fallback_mode,
+                    score_consistency_check=score_consistency_check,
+                    eps_guard=eps_guard,
+                    exploration_rate=exploration_rate,
+                    rung1_threshold=rung1_threshold,
+                    rung1_multiplier=rung1_multiplier,
                 )
                 cert_score = score_string_match_all(cert_text, refs)
                 done += 1
@@ -490,6 +542,7 @@ def run_ruler(
                     "dense_score": dense_score, "dense_gen": dense_text[:200],
                     "cert_score": cert_score, "cert_gen": cert_text[:200],
                     "critical": bool(crit),
+                    "cert_stats": cert_stats,
                 })
 
     # Aggregate
@@ -530,6 +583,19 @@ def main():
     parser.add_argument("--top-k-fp16", type=int, default=4)
     parser.add_argument("--concentration-threshold", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=20260416)
+    # Paper-alignment flags (T4/T7/Rung1/T9/T10).
+    parser.add_argument("--tau-cov", type=float, default=0.0,
+                        help="Adaptive K* cumulative-mass threshold (0 = disabled; paper default 0.995)")
+    parser.add_argument("--k-min", type=int, default=2)
+    parser.add_argument("--k-max", type=int, default=None)
+    parser.add_argument("--ranking-fallback", action="store_true")
+    parser.add_argument("--ranking-r", type=int, default=1)
+    parser.add_argument("--ranking-fallback-mode", default="full", choices=["full", "measure"])
+    parser.add_argument("--score-consistency-check", action="store_true")
+    parser.add_argument("--eps-guard", type=float, default=0.01)
+    parser.add_argument("--exploration-rate", type=float, default=0.0)
+    parser.add_argument("--rung1-threshold", type=float, default=0.02)
+    parser.add_argument("--rung1-multiplier", type=float, default=2.0)
     args = parser.parse_args()
 
     for st in args.subtasks:
@@ -569,6 +635,17 @@ def main():
         top_k_fp16_keys=args.top_k_fp16,
         concentration_threshold=args.concentration_threshold,
         seed_base=args.seed,
+        tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
+        k_min=args.k_min,
+        k_max=args.k_max,
+        ranking_fallback=args.ranking_fallback,
+        ranking_r=args.ranking_r,
+        ranking_fallback_mode=args.ranking_fallback_mode,
+        score_consistency_check=args.score_consistency_check,
+        eps_guard=args.eps_guard,
+        exploration_rate=args.exploration_rate,
+        rung1_threshold=args.rung1_threshold,
+        rung1_multiplier=args.rung1_multiplier,
     )
     wall = time.perf_counter() - t0
 
