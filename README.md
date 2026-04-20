@@ -196,6 +196,25 @@ source scripts/env_cuda.sh
 bash scripts/bootstrap_nvidia_llama_dev.sh
 ```
 
+### Qwen3.5 fast-path (optional, for the paper benchmarks)
+
+The paper benchmarks on `feature/interval-ellipsoidal-bounds` expect the Qwen3.5 linear-attention fast path (`flash-attn` + `causal-conv1d` + `flash-linear-attention`). When any of those three are missing, `fla` prints `The fast path is not available because one of the required library is not installed. Falling back to torch implementation.` and the benchmark numbers become torch-fallback numbers, not fast-path numbers.
+
+Two pod-specific gotchas are baked into the install scripts:
+
+- `causal-conv1d==1.6.1`'s `setup.py` hard-codes a `-gencode` flag for every supported SM and the usual `TORCH_CUDA_ARCH_LIST` env var does **not** override them — a fresh install would compile for every arch and take an unreasonable amount of time. `scripts/install_causal_conv1d_patched.sh` clones the release tag, patches `setup.py` to emit only the pod's actual SM (detected from `torch.cuda`), and installs from source.
+- `flash-attn==2.8.3` honors `FLASH_ATTN_CUDA_ARCHS`, but on runpod-style pods its prebuilt-wheel download hits `Invalid cross-device link` because `/tmp` (overlay) and `/workspace/.cache` (MooseFS) are different mounts. `scripts/install_flash_attn_cuda.sh` sets `TMPDIR` inside the repo tree so pip can finalize the wheel.
+
+After the base bootstrap, install the fast-path stack with:
+
+```bash
+bash scripts/install_causal_conv1d_patched.sh
+bash scripts/install_flash_attn_cuda.sh
+.venv/bin/pip install "flash-linear-attention==0.4.2" "fla-core==0.4.2"
+```
+
+Both scripts auto-detect the SM from `torch.cuda.get_device_properties(0)` (override with `SM=...` if needed), print a tiny forward smoke at the end, and are safe to rerun.
+
 For a local no-download smoke run on this machine, use:
 
 ```bash
