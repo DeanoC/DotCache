@@ -259,6 +259,34 @@ def recompute_heads_dense_fp16(
     return output
 
 
+def augment_mask_with_exploration(
+    topk_mask: torch.Tensor,         # [H, B] bool — top-K* mask from adaptive selector
+    exploration_rate: float,
+    generator: torch.Generator | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Paper §6 exploration budget: randomly promote `exploration_rate` of
+    the non-promoted blocks per head to FP16 for monitoring purposes.
+
+    Returns (augmented_mask, exploration_mask, total_explored).
+
+    Uses a rejection-free per-element Bernoulli so the number of exploration
+    picks is a random variable around `rate · non_promoted`. Fully on device,
+    no sync. Pass a `generator` to keep the exploration reproducible.
+    """
+    if exploration_rate <= 0.0 or topk_mask.numel() == 0:
+        empty = torch.zeros_like(topk_mask)
+        return topk_mask, empty, 0
+    # Per-element Bernoulli(exploration_rate) on the non-promoted blocks only.
+    non_promoted = ~topk_mask
+    # Draw one uniform per block per head; no CPU sync.
+    rand = torch.rand(topk_mask.shape, device=topk_mask.device, generator=generator)
+    draw = rand < float(exploration_rate)
+    exploration_mask = non_promoted & draw
+    augmented = topk_mask | exploration_mask
+    # Running total is on device until the caller decides to item() it.
+    return augmented, exploration_mask, int(exploration_mask.sum().item())
+
+
 def compute_delta_bound(
     q_all: torch.Tensor,        # [num_q_heads, head_dim]
     key_scales: torch.Tensor,    # [num_kv_heads, num_blocks, head_dim] float32
@@ -418,6 +446,8 @@ def certified_attention_layer(
     rung1_multiplier: float = DEFAULT_RUNG1_MULTIPLIER,
     score_consistency_check: bool = False,
     eps_guard: float = 0.01,
+    exploration_rate: float = 0.0,
+    exploration_generator: torch.Generator | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -493,6 +523,7 @@ def certified_attention_layer(
     tail_mass_est: torch.Tensor | None = None
     tau_cov_actual: torch.Tensor | None = None
     rung1_triggered_heads = 0
+    explored_blocks_count = 0
     if tau_cov is not None and tau_cov > 0 and n_qblocks > 0:
         # Restrict adaptive selection to the fully-quantised block range —
         # the trailing partial block has no INT8 score and is force-attended
@@ -529,6 +560,20 @@ def certified_attention_layer(
                 k_star = torch.where(rung1_trigger_mask, k_star2, k_star)
                 tail_mass_est = torch.where(rung1_trigger_mask, tail_mass_est2, tail_mass_est)
                 tau_cov_actual = torch.where(rung1_trigger_mask, tau_cov_actual2, tau_cov_actual)
+
+        # Paper §6 exploration budget: randomly promote a small fraction of
+        # the non-top-K* blocks so their FP16 scores can be cross-checked
+        # against the INT8 estimates. Defence-in-depth only — does not
+        # affect the paper's certified bounds because the explored blocks
+        # are *added* to the attended set (never demote a top-K* block).
+        exploration_mask_cert: torch.Tensor | None = None
+        explored_blocks_count = 0
+        if exploration_rate > 0.0:
+            topk_mask_cert, exploration_mask_cert, explored_blocks_count = (
+                augment_mask_with_exploration(
+                    topk_mask_cert, exploration_rate, exploration_generator,
+                )
+            )
 
         # Skip = NOT top-K*; false for trailing partial block (force-attended).
         skip_cert = ~topk_mask_cert
@@ -722,6 +767,11 @@ def certified_attention_layer(
             stats["rung1_triggered_heads"] = int(rung1_triggered_heads)
             stats["rung1_threshold"] = float(rung1_threshold)
             stats["rung1_multiplier"] = float(rung1_multiplier)
+            # Exploration-budget telemetry (paper §6): blocks randomly added
+            # to the attended set beyond adaptive K*. Does not affect the
+            # certified bound; purely for monitoring.
+            stats["exploration_rate"] = float(exploration_rate)
+            stats["exploration_blocks"] = int(explored_blocks_count)
         # Score-consistency violation counters (paper §6). Always emitted
         # when the feature is enabled so runs can confirm the 0-count baseline.
         if score_consistency_check:

@@ -178,6 +178,44 @@ class TestCertifiedAttentionLayerAdaptive:
         mask = score_consistency_violations(int8, fp16, delta, eps_guard=0.01)
         assert mask.item() is True
 
+    def test_exploration_rate_adds_blocks(self):
+        """Non-zero exploration rate should attend extra blocks beyond top-K*."""
+        from dotcache.kernels.certified_attention import certified_attention_layer
+        cache = self._make_cache(N=512, kv_heads=2, head_dim=32, block_size=16)
+        torch.manual_seed(11)
+        q_all = torch.randn(4, 32, dtype=torch.float16, device="cuda")
+        gen = torch.Generator(device="cuda").manual_seed(0)
+
+        _, stats_off = certified_attention_layer(
+            cache, q_all, gqa_group=2,
+            collect_stats=True, tau_cov=0.995, k_min=2, k_max=8,
+            exploration_rate=0.0,
+        )
+        _, stats_on = certified_attention_layer(
+            cache, q_all, gqa_group=2,
+            collect_stats=True, tau_cov=0.995, k_min=2, k_max=8,
+            exploration_rate=0.1, exploration_generator=gen,
+        )
+        assert stats_off["exploration_blocks"] == 0
+        assert stats_on["exploration_blocks"] > 0
+        # Exploration never shrinks the attended set.
+        assert (
+            stats_on["total_blocks"] - stats_on["skipped_blocks"]
+            >= stats_off["total_blocks"] - stats_off["skipped_blocks"]
+        )
+
+    def test_exploration_requires_adaptive(self):
+        """When tau_cov is off, exploration_rate should be a no-op (no adaptive_topk_mask)."""
+        from dotcache.kernels.certified_attention import certified_attention_layer
+        cache = self._make_cache()
+        q_all = torch.randn(4, 32, dtype=torch.float16, device="cuda")
+        _, stats = certified_attention_layer(
+            cache, q_all, gqa_group=2,
+            collect_stats=True, tau_cov=None, exploration_rate=0.5,
+        )
+        # No exploration_blocks key because adaptive K* didn't run
+        assert "exploration_blocks" not in stats
+
     def test_adaptive_disabled_leaves_existing_behavior(self):
         from dotcache.kernels.certified_attention import certified_attention_layer
         cache = self._make_cache()

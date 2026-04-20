@@ -109,6 +109,7 @@ def run_niah_cell(
     rung1_multiplier: float = 2.0,
     score_consistency_check: bool = False,
     eps_guard: float = 0.01,
+    exploration_rate: float = 0.0,
 ) -> dict:
     """Run one NIAH cell: plant needle, generate, check retrieval.
 
@@ -164,13 +165,14 @@ def run_niah_cell(
             layer_epsilons = {}
 
         # Enable stats whenever a diagnostic feature is on (ranking fallback,
-        # adaptive K*, or score-consistency) so the aggregator has data to
-        # report; otherwise keep stats off to match the previous timed-run
-        # behaviour exactly.
+        # adaptive K*, score-consistency, or exploration) so the aggregator
+        # has data to report; otherwise keep stats off to match the previous
+        # timed-run behaviour exactly.
         collect_stats = (
             bool(ranking_fallback)
             or (tau_cov is not None and tau_cov > 0)
             or bool(score_consistency_check)
+            or (exploration_rate and exploration_rate > 0)
         )
         adapter.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
@@ -190,6 +192,7 @@ def run_niah_cell(
             rung1_multiplier=rung1_multiplier,
             score_consistency_check=score_consistency_check,
             eps_guard=eps_guard,
+            exploration_rate=exploration_rate,
         )
         adapter.set_mode("certified")
 
@@ -267,6 +270,7 @@ def run_niah_sweep(
     rung1_multiplier: float = 2.0,
     score_consistency_check: bool = False,
     eps_guard: float = 0.01,
+    exploration_rate: float = 0.0,
 ) -> dict:
     """Run full NIAH sweep across depths and context lengths."""
     if depths is None:
@@ -299,6 +303,7 @@ def run_niah_sweep(
                         rung1_multiplier=rung1_multiplier,
                         score_consistency_check=score_consistency_check,
                         eps_guard=eps_guard,
+                        exploration_rate=exploration_rate,
                     )
                     results[mode].append(r)
 
@@ -415,6 +420,8 @@ def main():
                         help="Paper §6 defence-in-depth: compare FP16 vs INT8 block scores on promoted blocks; expected 0 violations")
     parser.add_argument("--eps-guard", type=float, default=0.01,
                         help="Score-consistency tolerance above the theoretical Δ bound (default 0.01)")
+    parser.add_argument("--exploration-rate", type=float, default=0.0,
+                        help="Paper §6 exploration budget: per-step fraction of non-top-K* blocks promoted to FP16 for monitoring (default 0.0 = off; 0.02 = 2%%)")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -460,6 +467,7 @@ def main():
         rung1_multiplier=args.rung1_multiplier,
         score_consistency_check=args.score_consistency_check,
         eps_guard=args.eps_guard,
+        exploration_rate=args.exploration_rate,
     )
 
     print(f"\n{'='*50}")

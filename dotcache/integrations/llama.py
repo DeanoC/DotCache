@@ -111,6 +111,9 @@ class CertifiedAttentionState:
     # indicate Theorem-2 was empirically violated (stale metadata / corruption).
     score_consistency_check: bool = False
     eps_guard: float = 0.01
+    # Exploration budget (paper §6): per-step Bernoulli promotion of a small
+    # fraction of non-top-K* blocks to FP16. Monitoring only; 0.0 disables.
+    exploration_rate: float = 0.0
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):
@@ -155,6 +158,10 @@ class CertifiedAttentionState:
         if any("score_consistency_violation_heads" in s for s in self.step_stats):
             agg["score_consistency_violation_heads_total"] = sum(
                 s.get("score_consistency_violation_heads", 0) for s in self.step_stats
+            )
+        if any("exploration_blocks" in s for s in self.step_stats):
+            agg["exploration_blocks_total"] = sum(
+                s.get("exploration_blocks", 0) for s in self.step_stats
             )
         return agg
 
@@ -543,6 +550,7 @@ class DotCacheLlamaAttention(nn.Module):
             rung1_multiplier=cert_state.rung1_multiplier,
             score_consistency_check=cert_state.score_consistency_check,
             eps_guard=cert_state.eps_guard,
+            exploration_rate=cert_state.exploration_rate,
         )
 
         # Accumulate stats (only if collection enabled)
