@@ -89,6 +89,12 @@ class CertifiedAttentionState:
     append_kv: bool = False  # append new K/V tokens to tiered cache during decode
     top_k_fp16_keys: int = 4  # top-K blocks use FP16 keys for quality
     concentration_threshold: float = 0.0  # if max block mass < this, don't skip (diffuse attention safety)
+    # Rung-3 ranking-consistency fallback (detect INT8 vs FP16 ranking disagreement
+    # on the top-K blocks and, on disagreement, recompute that head with full FP16
+    # keys + values). See docs: Ranking-Consistency Fallback Spec.
+    ranking_fallback: bool = False
+    ranking_r: int = 1  # top-r positions that must agree between INT8 and FP16 rankings
+    ranking_fallback_mode: str = "full"  # "full" = per-head dense recompute; "measure" = detect only
     step_stats: list = None  # per-step stats accumulator
 
     def __post_init__(self):
@@ -106,7 +112,7 @@ class CertifiedAttentionState:
             return {"skip_rate": 0.0, "total_blocks": 0, "skipped_blocks": 0}
         total = sum(s["total_blocks"] for s in self.step_stats)
         skipped = sum(s["skipped_blocks"] for s in self.step_stats)
-        return {
+        agg = {
             "skip_rate": skipped / total if total > 0 else 0.0,
             "total_blocks": total,
             "skipped_blocks": skipped,
@@ -114,6 +120,22 @@ class CertifiedAttentionState:
                 s["layer"]: s["skip_rate"] for s in self.step_stats
             },
         }
+        # Ranking-consistency fallback aggregates (Rung 3). Only populated when
+        # ranking_fallback is enabled; absent stats default to zero so dense /
+        # non-fallback runs still aggregate cleanly.
+        if any("ranking_heads_total" in s for s in self.step_stats):
+            heads_total = sum(s.get("ranking_heads_total", 0) for s in self.step_stats)
+            disagree_r1 = sum(s.get("ranking_disagree_r1", 0) for s in self.step_stats)
+            disagree_r3 = sum(s.get("ranking_disagree_r3", 0) for s in self.step_stats)
+            triggered = sum(s.get("ranking_fallback_triggered", 0) for s in self.step_stats)
+            agg["ranking_heads_total"] = heads_total
+            agg["ranking_disagree_r1"] = disagree_r1
+            agg["ranking_disagree_r3"] = disagree_r3
+            agg["ranking_fallback_triggered"] = triggered
+            agg["ranking_disagree_rate_r1"] = (disagree_r1 / heads_total) if heads_total else 0.0
+            agg["ranking_disagree_rate_r3"] = (disagree_r3 / heads_total) if heads_total else 0.0
+            agg["ranking_fallback_rate"] = (triggered / heads_total) if heads_total else 0.0
+        return agg
 
 
 @dataclass(slots=True)
@@ -490,6 +512,9 @@ class DotCacheLlamaAttention(nn.Module):
             collect_stats=collect,
             top_k_fp16_keys=cert_state.top_k_fp16_keys,
             concentration_threshold=cert_state.concentration_threshold,
+            ranking_fallback=cert_state.ranking_fallback,
+            ranking_r=cert_state.ranking_r,
+            ranking_fallback_mode=cert_state.ranking_fallback_mode,
         )
 
         # Accumulate stats (only if collection enabled)

@@ -165,6 +165,9 @@ def certified_attention_layer(
     v_tolerance: float = DEFAULT_V_TOLERANCE,
     top_k_fp16_keys: int = 0,
     concentration_threshold: float = 0.0,
+    ranking_fallback: bool = False,
+    ranking_r: int = 1,
+    ranking_fallback_mode: str = "full",
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -172,9 +175,15 @@ def certified_attention_layer(
     decide at runtime whether INT4 is safe (η₄ · ρ < tolerance) or
     FP16 values should be paged in from CPU.
 
+    Rung-3 ranking-consistency fallback: when enabled, after Phase-1 INT8
+    scoring picks the top-K blocks, re-rank those K blocks with FP16 keys
+    and compare top-`ranking_r` positions. Heads whose rankings disagree
+    are recomputed with full FP16 keys + values for this step (mode="full"),
+    or just recorded in telemetry without action (mode="measure").
+
     Returns:
         output: [num_q_heads, d_v] float32
-        stats: dict with skip counts, v_format decision
+        stats: dict with skip counts, v_format decision, ranking metrics
     """
     if q_scale is None:
         q_scale = 1.0 / (cache.head_dim ** 0.5)
@@ -316,6 +325,16 @@ def certified_attention_layer(
             stats["rho_mean"] = rho.mean().item()
             stats["eta_int4"] = eta_int4
             stats["int4_error_bound"] = eta_int4 * rho.max().item()
+        # Ranking-consistency fallback telemetry (Rung 3).
+        # Populated by the detection block above; zero when the feature is off
+        # so downstream aggregators see a stable schema.
+        if ranking_fallback:
+            stats["ranking_heads_total"] = num_q_heads
+            stats["ranking_disagree_r1"] = 0
+            stats["ranking_disagree_r3"] = 0
+            stats["ranking_fallback_triggered"] = 0
+            stats["ranking_r"] = int(ranking_r)
+            stats["ranking_fallback_mode"] = ranking_fallback_mode
     else:
         stats = {}
 

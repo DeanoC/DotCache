@@ -99,6 +99,9 @@ def run_niah_cell(
     default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4,
     concentration_threshold: float = 0.0,
+    ranking_fallback: bool = False,
+    ranking_r: int = 1,
+    ranking_fallback_mode: str = "full",
 ) -> dict:
     """Run one NIAH cell: plant needle, generate, check retrieval.
 
@@ -111,6 +114,8 @@ def run_niah_cell(
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True,
                        max_length=context_tokens).to(device)
     seq_len = inputs["input_ids"].shape[1]
+
+    cell_agg: dict = {}
 
     if mode == "dense":
         # Dense: standard HF generation
@@ -151,14 +156,21 @@ def run_niah_cell(
         else:
             layer_epsilons = {}
 
+        # When ranking fallback is on we need stats collection so the
+        # aggregator can report disagree / trigger counts; otherwise keep
+        # stats off to match the previous timed-run behaviour exactly.
+        collect_stats = bool(ranking_fallback)
         adapter.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
             layer_epsilons=layer_epsilons,
             default_epsilon=default_epsilon,
-            collect_stats=False,
+            collect_stats=collect_stats,
             append_kv=True,  # Append new K/V tokens during decode
             top_k_fp16_keys=top_k_fp16_keys,
             concentration_threshold=concentration_threshold,
+            ranking_fallback=ranking_fallback,
+            ranking_r=ranking_r,
+            ranking_fallback_mode=ranking_fallback_mode,
         )
         adapter.set_mode("certified")
 
@@ -183,6 +195,7 @@ def run_niah_cell(
 
         generated_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
 
+        cell_agg = adapter.certified_state.aggregate_step_stats() if collect_stats else {}
         adapter.certified_state = None
         adapter.set_mode("dense")
     else:
@@ -193,7 +206,7 @@ def run_niah_cell(
     gc.collect()
     torch.cuda.empty_cache()
 
-    return {
+    result = {
         "context_tokens": seq_len,
         "target_context": context_tokens,
         "depth": depth,
@@ -203,6 +216,16 @@ def run_niah_cell(
         "expected": expected_answer,
         "generated": generated_text[:200],
     }
+    # Surface Rung-3 ranking-fallback counters (if collected) so the sweep
+    # can sum them across cells. Keys are absent on dense runs and on certified
+    # runs with ranking_fallback disabled.
+    for key in (
+        "ranking_heads_total", "ranking_disagree_r1", "ranking_disagree_r3",
+        "ranking_fallback_triggered",
+    ):
+        if key in cell_agg:
+            result[key] = int(cell_agg[key])
+    return result
 
 
 def run_niah_sweep(
@@ -215,6 +238,9 @@ def run_niah_sweep(
     default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4,
     concentration_threshold: float = 0.0,
+    ranking_fallback: bool = False,
+    ranking_r: int = 1,
+    ranking_fallback_mode: str = "full",
 ) -> dict:
     """Run full NIAH sweep across depths and context lengths."""
     if depths is None:
@@ -237,6 +263,9 @@ def run_niah_sweep(
                         default_epsilon=default_epsilon,
                         top_k_fp16_keys=top_k_fp16_keys,
                         concentration_threshold=concentration_threshold,
+                        ranking_fallback=ranking_fallback,
+                        ranking_r=ranking_r,
+                        ranking_fallback_mode=ranking_fallback_mode,
                     )
                     results[mode].append(r)
 
@@ -287,13 +316,30 @@ def run_niah_sweep(
             print(f"  {c['target_context']//1024}K d={c['depth']:.1f} n={c['needle_idx']}: "
                   f"expected '{c['expected']}', got '{c['generated'][:50]}'")
 
-    return {
+    sweep_result = {
         "results": results,
         "heatmaps": heatmaps,
         "critical_failures": len(critical),
         "dense_accuracy": sum(1 for r in results["dense"] if r["correct"]) / max(len(results["dense"]), 1),
         "certified_accuracy": sum(1 for r in results["certified"] if r["correct"]) / max(len(results["certified"]), 1),
     }
+    if ranking_fallback:
+        heads_total = sum(r.get("ranking_heads_total", 0) for r in results["certified"])
+        disagree_r1 = sum(r.get("ranking_disagree_r1", 0) for r in results["certified"])
+        disagree_r3 = sum(r.get("ranking_disagree_r3", 0) for r in results["certified"])
+        triggered = sum(r.get("ranking_fallback_triggered", 0) for r in results["certified"])
+        sweep_result["ranking_fallback_summary"] = {
+            "mode": ranking_fallback_mode,
+            "r": int(ranking_r),
+            "heads_total": int(heads_total),
+            "disagree_r1": int(disagree_r1),
+            "disagree_r3": int(disagree_r3),
+            "triggered": int(triggered),
+            "disagree_rate_r1": (disagree_r1 / heads_total) if heads_total else 0.0,
+            "disagree_rate_r3": (disagree_r3 / heads_total) if heads_total else 0.0,
+            "fallback_rate": (triggered / heads_total) if heads_total else 0.0,
+        }
+    return sweep_result
 
 
 def main():
@@ -315,6 +361,12 @@ def main():
                         help="Top-K blocks use FP16 keys (999=all FP16, 0=all INT8)")
     parser.add_argument("--concentration-threshold", type=float, default=0.0,
                         help="If max block mass fraction < this, disable skip for that head (0=off, 0.02=2%%)")
+    parser.add_argument("--ranking-fallback", action="store_true",
+                        help="Enable Rung-3 ranking-consistency fallback (detect INT8 vs FP16 top-K ranking disagreement and recompute per head)")
+    parser.add_argument("--ranking-r", type=int, default=1,
+                        help="Top-r positions that must agree between INT8 and FP16 rankings (default: 1)")
+    parser.add_argument("--ranking-fallback-mode", default="full", choices=["full", "measure"],
+                        help="'full' = per-head dense FP16 recompute on disagreement (Option A); 'measure' = detect only, no action")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -336,7 +388,10 @@ def main():
         profile = CalibratedProfile.load(args.profile)
         print(f"Loaded profile: {profile.summary()[:200]}")
 
-    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, default_epsilon={args.default_epsilon}, top_k_fp16={args.top_k_fp16}")
+    rf_tag = "off"
+    if args.ranking_fallback:
+        rf_tag = f"{args.ranking_fallback_mode}(r={args.ranking_r})"
+    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, default_epsilon={args.default_epsilon}, top_k_fp16={args.top_k_fp16}, ranking_fallback={rf_tag}")
     result = run_niah_sweep(
         model, tokenizer, adapter,
         context_lengths=args.contexts,
@@ -345,6 +400,9 @@ def main():
         default_epsilon=args.default_epsilon,
         top_k_fp16_keys=args.top_k_fp16,
         concentration_threshold=args.concentration_threshold,
+        ranking_fallback=args.ranking_fallback,
+        ranking_r=args.ranking_r,
+        ranking_fallback_mode=args.ranking_fallback_mode,
     )
 
     print(f"\n{'='*50}")
@@ -354,13 +412,22 @@ def main():
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "heatmaps": result["heatmaps"],
+        "dense_accuracy": result["dense_accuracy"],
+        "certified_accuracy": result["certified_accuracy"],
+        "critical_failures": result["critical_failures"],
+    }
+    if "ranking_fallback_summary" in result:
+        payload["ranking_fallback_summary"] = result["ranking_fallback_summary"]
+        s = result["ranking_fallback_summary"]
+        print(f"Ranking fallback: mode={s['mode']} r={s['r']} "
+              f"disagree_r1={s['disagree_rate_r1']:.1%} "
+              f"disagree_r3={s['disagree_rate_r3']:.1%} "
+              f"triggered={s['fallback_rate']:.1%} "
+              f"({s['triggered']}/{s['heads_total']})")
     with open(out_path, "w") as f:
-        json.dump({
-            "heatmaps": result["heatmaps"],
-            "dense_accuracy": result["dense_accuracy"],
-            "certified_accuracy": result["certified_accuracy"],
-            "critical_failures": result["critical_failures"],
-        }, f, indent=2)
+        json.dump(payload, f, indent=2)
     print(f"JSON -> {out_path}")
 
 
