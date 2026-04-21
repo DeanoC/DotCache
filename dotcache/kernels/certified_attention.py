@@ -702,6 +702,9 @@ def certified_attention_layer(
         # the blocks we pass to the kernel.
         n_active_blocks_hybrid = n_qblocks
         keys_scale_active = cache.keys_scale_active()
+        # Valid tokens in the LAST block passed to the kernel. When no
+        # trailing partial block exists, the last block is full → block_size.
+        last_block_valid = bs
         if cache.has_trailing_partial_block:
             n_active_blocks_hybrid = n_qblocks + 1
             # keys_scale is [kv_heads, num_blocks, head_dim]; the trailing
@@ -710,6 +713,8 @@ def certified_attention_layer(
             # and tl.where selects FP16 cleanly.
             cache.keys_scale[:, cache.trailing_block_idx, :].zero_()
             keys_scale_active = cache.keys_scale[:, :n_active_blocks_hybrid, :]
+            last_block_valid = cache.num_tokens - n_qblocks * bs
+            assert 1 <= last_block_valid < bs, last_block_valid
 
         hybrid_topk = adaptive_topk_mask[:, :n_active_blocks_hybrid].to(torch.int32).contiguous()
         # Force-attend every block — Paper 1: no skipping.
@@ -732,6 +737,7 @@ def certified_attention_layer(
             gqa_group=gqa_group,
             block_size=bs,
             q_scale=q_scale,
+            last_block_valid=last_block_valid,
         )
     elif cache.values_fp16 is not None:
         # Legacy path: SDPA-with-skip. Tail blocks are masked to -inf (block

@@ -459,6 +459,11 @@ def _multihead_selective_attend_hybrid_kernel(
     num_q_heads: tl.constexpr,
     num_kv_heads: tl.constexpr,
     gqa_group: tl.constexpr,
+    # Valid token count within the LAST block (trailing partial block).
+    # Positions t_offs >= last_block_valid inside the last block are masked
+    # to -inf before the softmax so they contribute zero mass. Pass
+    # block_size when the last block is full (no masking).
+    last_block_valid: tl.constexpr,
     TILE_D: tl.constexpr,
     TILE_V: tl.constexpr,
 ):
@@ -514,6 +519,15 @@ def _multihead_selective_attend_hybrid_kernel(
                     scores += tl.sum(k_tile * q_tile[None, :], axis=1)
                 scores = scores * q_scale
 
+                # Mask out-of-range tokens in the trailing partial block. For
+                # non-last blocks or a fully-valid last block (last_block_valid
+                # == block_size) this is a no-op. The mask sets invalid
+                # positions to -inf *before* block_max so they cannot win the
+                # softmax argmax and cannot contribute to l or acc.
+                if bid == num_blocks - 1:
+                    valid_tok = t_offs < last_block_valid
+                    scores = tl.where(valid_tok, scores, float("-inf"))
+
                 block_max = tl.max(scores)
                 new_m = tl.maximum(m, block_max.to(tl.float64))
                 alpha = tl.exp(m - new_m)
@@ -547,6 +561,7 @@ def selective_attend_multihead_hybrid(
     gqa_group: int,
     block_size: int = 16,
     q_scale: float = 1.0,
+    last_block_valid: int | None = None,
 ) -> torch.Tensor:
     """Hybrid INT8/FP16 keys: reads INT8 for most blocks, FP16 for top-K.
 
@@ -568,6 +583,7 @@ def selective_attend_multihead_hybrid(
     TILE_D = triton.next_power_of_2(head_dim)
     TILE_V = triton.next_power_of_2(d_v)
 
+    lbv = block_size if last_block_valid is None else int(last_block_valid)
     _multihead_selective_attend_hybrid_kernel[(num_q_heads,)](
         K_int8_flat, keys_scale.contiguous(),
         K_fp16_flat,
@@ -585,6 +601,7 @@ def selective_attend_multihead_hybrid(
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
         gqa_group=gqa_group,
+        last_block_valid=lbv,
         TILE_D=TILE_D,
         TILE_V=TILE_V,
     )
