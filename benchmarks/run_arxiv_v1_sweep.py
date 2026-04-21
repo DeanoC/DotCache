@@ -56,7 +56,7 @@ SAMPLES = {
               "ruler": {"num_samples": 50}},
 }
 
-CTX_LENGTHS = [4096, 8192, 16384]
+CTX_LENGTHS = [4096, 8192, 16384, 32768]
 CONFIGS = ["dense", "certified"]
 BENCHES = ["pg19", "niah", "ruler"]
 
