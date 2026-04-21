@@ -683,9 +683,59 @@ def certified_attention_layer(
     # in dense mode.  Using SDPA here ensures identical numerical behaviour.
     v_format = "fp16"
 
-    if cache.values_fp16 is not None:
-        # SDPA path: uses FP16 keys from CPU + FP16 values from VRAM
-        # with the block-level skip_mask, matching dense SDPA precision
+    # Paper §3.3 hybrid attend — Algorithm 1 Phase 2. When adaptive K* is
+    # active and the cache has FP16 values in VRAM, route to the mask-gated
+    # INT8/FP16 kernel so **every** block contributes to the output (top-K*
+    # with FP16 keys, the rest with INT8 keys; no blocks are dropped). The
+    # prior default SDPA-with-skip path drops tail blocks to mask=-inf,
+    # which is a different algorithm (block skipping) and breaks the
+    # paper's error bound.
+    use_paper_hybrid = (
+        adaptive_topk_mask is not None
+        and cache.values_fp16 is not None
+    )
+    if use_paper_hybrid:
+        # Iterate only fully-quantised blocks; the trailing partial block
+        # (if any) has no INT8 data. We zero-out its scale before the call
+        # so any speculative INT8 load is safe, then force topk_mask[trail]=1
+        # so the kernel selects FP16 there. n_active_blocks_hybrid counts
+        # the blocks we pass to the kernel.
+        n_active_blocks_hybrid = n_qblocks
+        keys_scale_active = cache.keys_scale_active()
+        if cache.has_trailing_partial_block:
+            n_active_blocks_hybrid = n_qblocks + 1
+            # keys_scale is [kv_heads, num_blocks, head_dim]; the trailing
+            # slot may be uninit from torch.empty allocation. Zero it so the
+            # INT8 tile × scale path produces zeros regardless of int8 data,
+            # and tl.where selects FP16 cleanly.
+            cache.keys_scale[:, cache.trailing_block_idx, :].zero_()
+            keys_scale_active = cache.keys_scale[:, :n_active_blocks_hybrid, :]
+
+        hybrid_topk = adaptive_topk_mask[:, :n_active_blocks_hybrid].to(torch.int32).contiguous()
+        # Force-attend every block — Paper 1: no skipping.
+        no_skip = torch.zeros(
+            num_q_heads, n_active_blocks_hybrid, dtype=torch.int32, device=q_all.device,
+        )
+        nt_hybrid = n_active_blocks_hybrid * bs
+        from dotcache.kernels.selective_attend_triton import selective_attend_multihead_hybrid
+        keys_fp16_gpu = cache.keys_fp16_gpu
+        if keys_fp16_gpu is None:
+            keys_fp16_gpu = cache.keys_fp16_cpu.to(device=q_all.device, non_blocking=True)
+        output = selective_attend_multihead_hybrid(
+            keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
+            keys_scale=keys_scale_active.contiguous(),
+            keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
+            topk_mask=hybrid_topk,
+            values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
+            q_all=q_all,
+            skip_mask_i32=no_skip,
+            gqa_group=gqa_group,
+            block_size=bs,
+            q_scale=q_scale,
+        )
+    elif cache.values_fp16 is not None:
+        # Legacy path: SDPA-with-skip. Tail blocks are masked to -inf (block
+        # skipping — Paper 2 semantics). Used when adaptive K* is disabled.
         output = sdpa_attend_with_skip(
             cache, q_all, skip_mask, gqa_group, q_scale,
         )
