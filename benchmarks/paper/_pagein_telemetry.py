@@ -139,6 +139,12 @@ class PageinTelemetry:
         cached_peak = max((h.get("meminfo_cached_kb", 0) for h in self.host_samples), default=0)
         cached_min = min((h.get("meminfo_cached_kb", 0) for h in self.host_samples if "meminfo_cached_kb" in h), default=0)
         gpu_mem_peak = max((h.get("gpu_mem_peak_mb", 0.0) for h in self.host_samples), default=0.0)
+        # FP16 cache rollup (only present when bounded cache is active).
+        cache_hits = sum(s.get("fp16_cache_hits", 0) for s in self.per_step)
+        cache_misses = sum(s.get("fp16_cache_misses", 0) for s in self.per_step)
+        cache_access = cache_hits + cache_misses
+        cache_capacity = int(self.per_step[0].get("fp16_cache_capacity_blocks", 0))
+        cache_evictions = sum(s.get("fp16_cache_evictions", 0) for s in self.per_step)
         return {
             "enabled": True,
             "n_steps": n,
@@ -160,6 +166,12 @@ class PageinTelemetry:
             "meminfo_cached_min_kb": cached_min,
             "meminfo_cached_delta_kb": cached_peak - cached_min if cached_min else 0,
             "gpu_mem_peak_mb": gpu_mem_peak,
+            "fp16_cache_capacity_blocks": cache_capacity,
+            "fp16_cache_total_hits": int(cache_hits),
+            "fp16_cache_total_misses": int(cache_misses),
+            "fp16_cache_hit_rate": float(cache_hits / cache_access) if cache_access else 0.0,
+            "fp16_cache_total_evictions": int(cache_evictions),
+            "fp16_cache_avg_misses_per_step": float(cache_misses / n) if n else 0.0,
         }
 
     def write_json(self, path: str | Path):

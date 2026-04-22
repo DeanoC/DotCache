@@ -199,6 +199,20 @@ class CertifiedAttentionState:
                 agg[rung_k.replace("fired", "fired_layers")] = int(sum(
                     1 for s in entries if bool(s.get(rung_k))
                 ))
+        # FP16 key cache rollup (paper §3.2 tiered memory). Sum hits/misses
+        # across layers for this step; capacity is a constant per layer.
+        if any("fp16_cache_capacity_blocks" in s for s in entries):
+            agg["fp16_cache_capacity_blocks"] = int(entries[0].get("fp16_cache_capacity_blocks", 0))
+            agg["fp16_cache_hits"] = int(sum(s.get("fp16_cache_hits_step", 0) for s in entries))
+            agg["fp16_cache_misses"] = int(sum(s.get("fp16_cache_misses_step", 0) for s in entries))
+            agg["fp16_cache_evictions"] = int(sum(s.get("fp16_cache_evictions_step", 0) for s in entries))
+            agg["fp16_cache_resident_blocks_sum"] = int(sum(
+                s.get("fp16_cache_resident_blocks", 0) for s in entries
+            ))
+            total_acc = agg["fp16_cache_hits"] + agg["fp16_cache_misses"]
+            agg["fp16_cache_hit_rate"] = (
+                float(agg["fp16_cache_hits"]) / total_acc if total_acc else 0.0
+            )
         # K* rollup (mean across layers, when adaptive is active).
         k_star_means = [s.get("k_star_mean") for s in entries if s.get("k_star_mean") is not None]
         if k_star_means:

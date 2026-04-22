@@ -522,6 +522,12 @@ def certified_attention_layer(
     h2d_value_bytes = 0
     h2d_value_blocks = 0
     rung2_fired = False
+    # FP16 key cache telemetry (populated in the hybrid path when the cache
+    # is bounded). Zero when the cache is in full-mirror mode or not used.
+    fp16_cache_hits_step = 0
+    fp16_cache_misses_step = 0
+    fp16_cache_evictions_step = 0
+    fp16_cache_needed_blocks = 0
 
     # Phase 1: INT8 scoring only on fully quantized blocks
     if n_qblocks > 0:
@@ -842,11 +848,26 @@ def certified_attention_layer(
         if keys_fp16_gpu is None:
             with _PhaseTimer(phase_timings, "h2d_pagein"):
                 keys_fp16_gpu = cache.keys_fp16_cpu.to(device=q_all.device, non_blocking=True)
-            # H2D bookkeeping: semantic bytes actually consumed by the hybrid
-            # kernel (nt_hybrid tokens × kv_heads × head_dim × element_size).
+            # Full-tensor H2D fallback (no VRAM buffer at all — rare).
             kv_k, _, hd_k = cache.keys_fp16_cpu.shape
             h2d_key_bytes += kv_k * nt_hybrid * hd_k * cache.keys_fp16_cpu.element_size()
             h2d_key_blocks += n_active_blocks_hybrid
+        elif cache.fp16_key_cache_capacity is not None:
+            # Paper-matching bounded FP16 cache: top-K blocks (union across
+            # heads) must be resident in the VRAM scratch before the kernel
+            # reads them. Miss → H2D from keys_fp16_cpu, evict LRU if full.
+            # Trailing partial block is kept current by append_token writes
+            # and doesn't need cache tracking.
+            top_union = adaptive_topk_mask[:, :n_qblocks].any(dim=0)
+            needed_blocks = top_union.nonzero().flatten().tolist()
+            with _PhaseTimer(phase_timings, "h2d_pagein"):
+                c_hits, c_misses, c_bytes, c_evict = cache.ensure_fp16_keys_resident(needed_blocks)
+            h2d_key_bytes += c_bytes
+            h2d_key_blocks += c_misses
+            fp16_cache_hits_step += c_hits
+            fp16_cache_misses_step += c_misses
+            fp16_cache_evictions_step += c_evict
+            fp16_cache_needed_blocks += len(needed_blocks)
         with _PhaseTimer(phase_timings, "phase2_fused_attend"):
             output = selective_attend_multihead_hybrid(
                 keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
@@ -969,6 +990,20 @@ def certified_attention_layer(
         stats["h2d_value_bytes"] = int(h2d_value_bytes)
         stats["h2d_value_blocks"] = int(h2d_value_blocks)
         stats["h2d_total_bytes"] = int(h2d_key_bytes + h2d_value_bytes)
+        # FP16 key cache behavior (paper §3.2 tiered memory model). Populated
+        # only when the cache is in bounded-capacity mode; in full-mirror mode
+        # the attention path bypasses ensure_fp16_keys_resident entirely.
+        if cache.fp16_key_cache_capacity is not None:
+            stats["fp16_cache_capacity_blocks"] = int(cache.fp16_key_cache_capacity)
+            stats["fp16_cache_resident_blocks"] = int(len(cache._fp16_key_resident))
+            stats["fp16_cache_hits_step"] = int(fp16_cache_hits_step)
+            stats["fp16_cache_misses_step"] = int(fp16_cache_misses_step)
+            stats["fp16_cache_evictions_step"] = int(fp16_cache_evictions_step)
+            stats["fp16_cache_needed_blocks_step"] = int(fp16_cache_needed_blocks)
+            total_access = fp16_cache_hits_step + fp16_cache_misses_step
+            stats["fp16_cache_hit_rate_step"] = (
+                float(fp16_cache_hits_step) / total_access if total_access else 0.0
+            )
         # VRAM-resident FP16 cache sizes (semantic bytes — kv_heads × nt × dim × 2).
         vram_fp16_key_cache_bytes = 0
         if cache.keys_fp16_gpu is not None:

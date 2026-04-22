@@ -65,8 +65,23 @@ class TieredKeyCacheLayer:
     # CPU warm tier — FP16 values for fallback when INT4 error too high
     values_fp16_cpu: torch.Tensor | None = None  # [kv_heads, N, d_v] float16, pinned CPU
 
-    # VRAM mirror of keys_fp16_cpu — avoids CPU→GPU copy per layer per decode step
+    # VRAM-side FP16 key buffer. Two modes:
+    #   - Full mirror (keys_fp16_gpu non-None, fp16_key_cache_capacity is None):
+    #     legacy behaviour — all blocks pre-populated, ensure_fp16_keys_resident
+    #     is a no-op. Not paper-faithful.
+    #   - Bounded page cache (keys_fp16_gpu non-None used as scratch, capacity set):
+    #     only `fp16_key_cache_capacity` blocks are valid at any time; LRU
+    #     eviction. This IS the paper's tiered architecture — FP16 lives on
+    #     CPU pinned RAM (keys_fp16_cpu), the VRAM buffer is a transparent
+    #     cache that reduces H2D via locality.
     keys_fp16_gpu: torch.Tensor | None = None    # [kv_heads, N, head_dim] model dtype, cuda
+    fp16_key_cache_capacity: int | None = None   # None = full mirror; int = bounded cache (# blocks)
+    _fp16_key_resident: set = field(default_factory=set)    # block_ids currently valid in keys_fp16_gpu
+    _fp16_key_lru: list = field(default_factory=list)       # block_ids in LRU order (front = most recent)
+    _fp16_key_cache_hits: int = 0
+    _fp16_key_cache_misses: int = 0
+    _fp16_key_cache_h2d_bytes: int = 0
+    _fp16_key_cache_evictions: int = 0
 
     @classmethod
     def from_fp16_cache(
@@ -76,6 +91,7 @@ class TieredKeyCacheLayer:
         block_size: int = 16,
         max_pagein_blocks: int = 64,
         max_new_tokens: int = 512,
+        fp16_key_cache_capacity: int | None = None,
     ) -> "TieredKeyCacheLayer":
         """Create tiered cache from existing FP16 KV tensors.
 
@@ -148,9 +164,16 @@ class TieredKeyCacheLayer:
         keys_fp16_cpu_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=kv_dtype, pin_memory=True)
         keys_fp16_cpu_buf[:, :N, :] = keys_fp16_cpu
 
-        # GPU mirror so decode-time attend avoids a CPU→GPU copy per step
+        # VRAM scratch for the FP16 key cache. Two modes:
+        #   - fp16_key_cache_capacity is None → legacy full mirror: pre-populated
+        #     with every prefill block, zero H2D during decode.
+        #   - fp16_key_cache_capacity = K → paper-matching bounded cache: the
+        #     scratch is allocated but NOT pre-populated; ensure_fp16_keys_resident
+        #     fetches blocks from keys_fp16_cpu on demand via H2D, evicting LRU
+        #     once K blocks are resident.
         keys_fp16_gpu_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=kv_dtype, device=device)
-        keys_fp16_gpu_buf[:, :N, :] = keys_fp16.to(dtype=kv_dtype, device=device)
+        if fp16_key_cache_capacity is None:
+            keys_fp16_gpu_buf[:, :N, :] = keys_fp16.to(dtype=kv_dtype, device=device)
 
         # Pre-compute dequant into buffer
         # Per-channel: k_scale is [kv_heads, num_blocks, head_dim], broadcast over token dim
@@ -176,7 +199,13 @@ class TieredKeyCacheLayer:
             _pagein_buffer=pagein_buffer,
             _keys_deq_f32=keys_deq_buf,
             keys_fp16_gpu=keys_fp16_gpu_buf,
+            fp16_key_cache_capacity=fp16_key_cache_capacity,
         )
+        # Legacy full-mirror mode: mark every prefill block as resident so
+        # ensure_fp16_keys_resident short-circuits to all-hit.
+        if fp16_key_cache_capacity is None:
+            result._fp16_key_resident = set(range(num_blocks))
+            result._fp16_key_lru = list(range(num_blocks))
         return result
 
     @classmethod
@@ -280,6 +309,19 @@ class TieredKeyCacheLayer:
         k_scale_l2 = k_scale.norm(dim=-1)  # [kv_heads]
         delta = k_scale_l2 / 127.0
         self.correction[:, block_idx] = torch.exp(2.0 * delta)
+
+        # Register the newly-completed block in the FP16 VRAM cache. Its
+        # FP16 data was already written to keys_fp16_gpu at the right
+        # offset during append_token; we just need to mark it resident and
+        # (in bounded-capacity mode) evict an LRU victim to make room.
+        if self.fp16_key_cache_capacity is not None and block_idx not in self._fp16_key_resident:
+            if len(self._fp16_key_resident) >= int(self.fp16_key_cache_capacity):
+                if self._fp16_key_lru:
+                    victim = self._fp16_key_lru.pop()
+                    self._fp16_key_resident.discard(victim)
+                    self._fp16_key_cache_evictions += 1
+            self._fp16_key_resident.add(block_idx)
+            self._fp16_key_lru.insert(0, block_idx)
 
         # Update dequant buffer with INT8-dequantised values (replaces the exact FP16)
         if self._keys_deq_f32 is not None:
@@ -456,6 +498,89 @@ class TieredKeyCacheLayer:
             total += self.values_fp16_cpu.nelement() * 2
         return total
 
+    def ensure_fp16_keys_resident(
+        self,
+        block_ids,  # iterable of int block indices needing FP16 data
+    ) -> tuple[int, int, int, int]:
+        """Bring `block_ids` into the bounded FP16 VRAM key cache.
+
+        No-op when `fp16_key_cache_capacity is None` (full mirror mode): all
+        blocks are already in `keys_fp16_gpu`.
+
+        Cache mode: per-block check residency.
+          - hit:  the block's FP16 data is already at the correct offset in
+                  keys_fp16_gpu; bump LRU.
+          - miss: H2D copy from keys_fp16_cpu[:, b*bs : (b+1)*bs, :] into
+                  keys_fp16_gpu at the same offset. Evict LRU victim if the
+                  cache is at capacity. Record bytes transferred.
+
+        Returns (hits, misses, bytes, evictions) for this call so the
+        attention path can roll per-step telemetry.
+        """
+        if self.fp16_key_cache_capacity is None or self.keys_fp16_gpu is None:
+            return (0, 0, 0, 0)
+
+        bs = self.block_size
+        el = self.keys_fp16_gpu.element_size()
+        bytes_per_block = self.kv_heads * bs * self.head_dim * el
+        device = self.keys_fp16_gpu.device
+
+        hits = 0
+        misses = 0
+        h2d_bytes = 0
+        evictions = 0
+
+        # Dedup while preserving order of first occurrence.
+        seen: set = set()
+        ordered_ids: list = []
+        for b in block_ids:
+            bi = int(b)
+            if bi in seen:
+                continue
+            seen.add(bi)
+            ordered_ids.append(bi)
+
+        for bid in ordered_ids:
+            if bid in self._fp16_key_resident:
+                hits += 1
+                # Bump to front of LRU (most recently used).
+                try:
+                    self._fp16_key_lru.remove(bid)
+                except ValueError:
+                    pass
+                self._fp16_key_lru.insert(0, bid)
+                continue
+
+            # Miss — evict LRU victim if cache is full.
+            if len(self._fp16_key_resident) >= int(self.fp16_key_cache_capacity):
+                if self._fp16_key_lru:
+                    victim = self._fp16_key_lru.pop()  # tail = least recent
+                    self._fp16_key_resident.discard(victim)
+                    evictions += 1
+
+            # H2D copy: CPU pinned → GPU scratch at the block's offset. The
+            # offset is (bid*bs : (bid+1)*bs) along the token dim, for all
+            # kv_heads and head_dim channels.
+            start = bid * bs
+            end = start + bs
+            if end > self.num_tokens:
+                end = self.num_tokens  # trailing partial block guard
+            if end > start and self.keys_fp16_cpu is not None:
+                src = self.keys_fp16_cpu[:, start:end, :]
+                self.keys_fp16_gpu[:, start:end, :] = src.to(
+                    device=device, non_blocking=True
+                )
+                h2d_bytes += self.kv_heads * (end - start) * self.head_dim * el
+                misses += 1
+                self._fp16_key_resident.add(bid)
+                self._fp16_key_lru.insert(0, bid)
+
+        self._fp16_key_cache_hits += hits
+        self._fp16_key_cache_misses += misses
+        self._fp16_key_cache_h2d_bytes += h2d_bytes
+        self._fp16_key_cache_evictions += evictions
+        return (hits, misses, h2d_bytes, evictions)
+
     def page_in_blocks(
         self,
         kv_head_idx: int,
@@ -529,6 +654,7 @@ def create_tiered_cache_from_model(
     layer_ids: list[int],
     block_size: int = 16,
     max_new_tokens: int = 512,
+    fp16_key_cache_capacity: int | None = None,
 ) -> dict[int, TieredKeyCacheLayer]:
     """Create tiered caches from a HuggingFace model's past_key_values.
 
@@ -561,6 +687,7 @@ def create_tiered_cache_from_model(
         cache = TieredKeyCacheLayer.from_fp16_cache(
             keys_aligned, values_aligned, block_size=block_size,
             max_new_tokens=max_new_tokens + (seq_len - aligned_len),
+            fp16_key_cache_capacity=fp16_key_cache_capacity,
         )
 
         # Append the trailing (non-block-aligned) tokens — they stay FP16

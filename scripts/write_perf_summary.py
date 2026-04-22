@@ -20,17 +20,17 @@ def _fmt_mb(bytes_: int) -> str:
 
 def main() -> int:
     out_dir = Path("benchmarks/results/perf_tests_20260422")
-    t1 = _load(out_dir / "test1_throughput.json")
-    t2 = _load(out_dir / "test2_phase_breakdown.json")
+    t1 = _load(out_dir / "test1_throughput_paper.json")
+    t2 = _load(out_dir / "test2_phase_breakdown_paper.json")
     t3 = {
-        "pg19": _load(out_dir / "test3_pg19_8k.pagein.json"),
-        "niah": _load(out_dir / "test3_niah_8k.pagein.json"),
-        "ruler": _load(out_dir / "test3_ruler_8k.pagein.json"),
+        "pg19": _load(out_dir / "test3_pg19_8k_paper.pagein.json"),
+        "niah": _load(out_dir / "test3_niah_8k_paper.pagein.json"),
+        "ruler": _load(out_dir / "test3_ruler_8k_paper.pagein.json"),
     }
     t3_quality = {
-        "pg19": _load(out_dir / "test3_pg19_8k.json"),
-        "niah": _load(out_dir / "test3_niah_8k.json"),
-        "ruler": _load(out_dir / "test3_ruler_8k.json"),
+        "pg19": _load(out_dir / "test3_pg19_8k_paper.json"),
+        "niah": _load(out_dir / "test3_niah_8k_paper.json"),
+        "ruler": _load(out_dir / "test3_ruler_8k_paper.json"),
     }
 
     lines: list[str] = []
@@ -136,6 +136,24 @@ def main() -> int:
           f"{(s.get('k_star_mean') or 0):.1f} | {s.get('k_star_max',0)} | "
           f"{s.get('host_rss_peak_kb',0)/1024:.0f} MB | "
           f"{s.get('meminfo_cached_delta_kb',0)/1024:.0f} MB |")
+    W("")
+    W("### FP16 VRAM cache behaviour (paper §3.2)")
+    W("")
+    W("| Benchmark | Cache cap (blocks) | Hits | Misses | Hit rate | Evictions | Misses/step mean |")
+    W("|---|---|---|---|---|---|---|")
+    for bench in ("pg19", "niah", "ruler"):
+        tele = t3[bench]
+        if not tele:
+            W(f"| {bench} | — | — | — | — | — | — |")
+            continue
+        s = tele.get("summary", {})
+        cap = s.get("fp16_cache_capacity_blocks", 0)
+        hits = s.get("fp16_cache_total_hits", 0)
+        misses = s.get("fp16_cache_total_misses", 0)
+        evicts = s.get("fp16_cache_total_evictions", 0)
+        hit_rate = s.get("fp16_cache_hit_rate", 0.0)
+        miss_per_step = s.get("fp16_cache_avg_misses_per_step", 0.0)
+        W(f"| {bench} | {cap} | {hits} | {misses} | {hit_rate:.2%} | {evicts} | {miss_per_step:.2f} |")
     W("")
 
     # Quality cross-check.

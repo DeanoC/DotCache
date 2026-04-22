@@ -171,8 +171,10 @@ def compute_certified_perplexity(
         # Phase 2: Build tiered cache with enough room for eval tokens
         _ensure_certified_imports()
         layer_ids = list(range(model.config.num_hidden_layers))
+        _cap = int(os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS", "0")) or None
         tiered_caches = create_tiered_cache_from_model(
             past_kv, layer_ids, max_new_tokens=eval_len + 16,
+            fp16_key_cache_capacity=_cap,
         )
         del past_kv
         gc.collect()

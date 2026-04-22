@@ -135,7 +135,10 @@ def run_one_repeat(
     else:
         _ensure_certified_imports()
         layer_ids = list(range(model.config.num_hidden_layers))
-        tiered_caches = create_tiered_cache_from_model(past_kv, layer_ids)
+        _cap = int(os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS", "0")) or None
+        tiered_caches = create_tiered_cache_from_model(
+            past_kv, layer_ids, fp16_key_cache_capacity=_cap,
+        )
         del past_kv
         gc.collect()
         torch.cuda.empty_cache()
