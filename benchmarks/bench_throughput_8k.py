@@ -57,7 +57,30 @@ def build_prefill(tokenizer, context_tokens: int) -> str:
     return FILLER * nb + question
 
 
+def load_pg19_prefill_and_ref(tokenizer, context_tokens: int, ref_tokens: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """Load the first (context_tokens + ref_tokens) tokens of the first
+    long enough PG-19 test-split book. Returns (prefill, ref) where
+    prefill is [1, context_tokens] and ref is [ref_tokens] (the ground-
+    truth continuation used for teacher-forced decode).
+    """
+    from datasets import load_dataset
+    ds = load_dataset("emozilla/pg19", split="test", streaming=True)
+    need = context_tokens + ref_tokens
+    for book in ds:
+        tokens = tokenizer.encode(book["text"], add_special_tokens=False)
+        if len(tokens) >= need:
+            prefill = torch.tensor(tokens[:context_tokens], dtype=torch.long).unsqueeze(0)
+            ref = torch.tensor(tokens[context_tokens:context_tokens + ref_tokens], dtype=torch.long)
+            return prefill, ref
+    raise RuntimeError(f"no PG-19 book with >= {need} tokens found")
+
+
 def load_pg19_prefill(tokenizer, context_tokens: int) -> torch.Tensor:
+    prefill, _ = load_pg19_prefill_and_ref(tokenizer, context_tokens, ref_tokens=0)
+    return prefill
+
+
+def _legacy_load_pg19_prefill(tokenizer, context_tokens: int) -> torch.Tensor:
     """Load the first context_tokens-token chunk of PG-19's test split.
 
     Returns a pre-tokenised [1, N] tensor ready to feed into the model.
@@ -125,6 +148,8 @@ def run_one_repeat(
     model, tokenizer, adapter, config: str,
     prefill_input_ids: torch.Tensor, decode_tokens: int, warmup_tokens: int,
     device: str,
+    ref_tokens: torch.Tensor | None = None,
+    time_only_first: int | None = None,
 ) -> dict[str, Any]:
     """Run one prefill + decode pass, return timing dict."""
     from dotcache.integrations.llama import CertifiedAttentionState, _ensure_certified_imports
@@ -199,7 +224,13 @@ def run_one_repeat(
         torch.cuda.synchronize()
         per_tok_ms.append(start_evt.elapsed_time(end_evt))
 
-        tid = out.logits[:, -1, :].argmax(dim=-1)
+        # Teacher-forced mode: feed the ref sequence's next token instead of
+        # argmax. Keeps the certified attention path exercising concentrated
+        # pg19 patterns the way pg19_perplexity.py's scoring loop does.
+        if ref_tokens is not None and t < ref_tokens.shape[0]:
+            tid = ref_tokens[t].to(device).view(1)
+        else:
+            tid = out.logits[:, -1, :].argmax(dim=-1)
         current_input = tid.view(1, 1)
         cache_position = cache_position + 1
         gen_count += 1
@@ -236,8 +267,12 @@ def run_one_repeat(
 
     gpu_mem_peak_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
 
-    # Warmup-discarded timings.
-    timed = per_tok_ms[warmup_tokens:]
+    # Warmup-discarded timings. When time_only_first is set (pre-drift
+    # window mode), further restrict to tokens [warmup, time_only_first).
+    if time_only_first is not None:
+        timed = per_tok_ms[warmup_tokens:time_only_first]
+    else:
+        timed = per_tok_ms[warmup_tokens:]
     total_ms = sum(timed)
     n = len(timed)
     tok_per_sec = 1000.0 * n / total_ms if total_ms > 0 else 0.0
@@ -281,6 +316,14 @@ def main() -> int:
     ap.add_argument("--prompt-source", choices=["filler", "pg19"], default="filler",
                     help="'filler' = repetitive history-of-mathematics text (scattered attention), "
                          "'pg19' = first PG-19 test-split book (concentrated attention).")
+    ap.add_argument("--teacher-forced", action="store_true",
+                    help="Feed ground-truth pg19 tokens as the next input each step "
+                         "(requires --prompt-source pg19). Exercises the same "
+                         "concentrated-attention pattern as pg19_perplexity.py.")
+    ap.add_argument("--time-only-first", type=int, default=None,
+                    help="Only time the first N decode tokens (after warmup). Used "
+                         "for the pre-drift window sweep after the drift knee is "
+                         "identified by the per-token cache trace.")
     args = ap.parse_args()
 
     os.environ.setdefault("DOTCACHE_V_TOL", "0.05")
@@ -302,7 +345,18 @@ def main() -> int:
     adapter = LlamaDotCacheModelAdapter(model, cfg)
     device = next(model.parameters()).device
 
-    if args.prompt_source == "pg19":
+    ref_tokens = None
+    if args.teacher_forced:
+        if args.prompt_source != "pg19":
+            raise SystemExit("--teacher-forced requires --prompt-source pg19")
+        print("Loading PG-19 prefill + reference continuation for teacher-forced decode…")
+        pg19_ids, ref_tokens = load_pg19_prefill_and_ref(
+            tokenizer, args.context_length, ref_tokens=args.decode_tokens + 4,
+        )
+        pg19_ids = pg19_ids.to(device)
+        ref_tokens = ref_tokens.to(device)
+        ids = {"input_ids": pg19_ids}
+    elif args.prompt_source == "pg19":
         print("Loading PG-19 prefill…")
         pg19_ids = load_pg19_prefill(tokenizer, args.context_length).to(device)
         ids = {"input_ids": pg19_ids}
@@ -311,7 +365,8 @@ def main() -> int:
         ids = tokenizer(prompt, return_tensors="pt", truncation=True,
                         max_length=args.context_length).to(device)
     seq_len = ids["input_ids"].shape[1]
-    print(f"Prefill seq_len = {seq_len}  ({args.prompt_source})")
+    mode_tag = "pg19+teacher-forced" if args.teacher_forced else args.prompt_source
+    print(f"Prefill seq_len = {seq_len}  ({mode_tag})")
     print(f"Configs: {args.configs}  repeats={args.repeats}  decode={args.decode_tokens}  warmup={args.warmup_tokens}")
 
     # Warm the loader with one throwaway prefill.
@@ -333,6 +388,8 @@ def main() -> int:
                     decode_tokens=args.decode_tokens,
                     warmup_tokens=args.warmup_tokens,
                     device=str(device),
+                    ref_tokens=ref_tokens,
+                    time_only_first=args.time_only_first,
                 )
                 per_config[config].append(rep)
                 print(f"  [{r+1}/{args.repeats}] tok/s={rep['tok_per_sec']:.2f}  "
