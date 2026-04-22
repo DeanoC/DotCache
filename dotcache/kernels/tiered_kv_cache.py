@@ -667,10 +667,17 @@ def create_tiered_cache_int4v_from_model(
         keys_aligned = keys[:, :aligned_len, :].contiguous()
         values_aligned = values[:, :aligned_len, :].contiguous()
 
+        # Constructor requires N % block_size == 0; pass the aligned slices.
+        # (Prior code computed the aligned tensors then passed the unaligned
+        # originals, which blew up on any seq_len not a multiple of block_size.)
         caches[layer_id] = TieredKeyCacheLayer.from_fp16_cache_int4v(
-            keys, values, block_size=block_size, group_size=group_size,
+            keys_aligned, values_aligned, block_size=block_size, group_size=group_size,
         )
-        caches[layer_id].num_tokens = seq_len
+        # num_tokens tracks what the INT4 packed tensor actually covers;
+        # the trailing (seq_len - aligned_len) tokens weren't quantised and
+        # don't exist in the INT4 buffers, so exposing num_tokens = seq_len
+        # would tell downstream kernels to read past the end of the data.
+        caches[layer_id].num_tokens = aligned_len
     return caches
 
 

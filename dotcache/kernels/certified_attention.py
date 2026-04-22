@@ -141,20 +141,35 @@ def compute_value_error_bound(
     Returns: [num_q_heads] float32, the per-head tight bound. Callers
     typically take .max() across heads for a per-layer step decision.
     """
-    num_q_heads, num_blocks = mass_frac.shape
+    num_q_heads, num_blocks_mass = mass_frac.shape
+    num_kv_heads, num_blocks_eta = eta_per_block.shape
+
+    # Trailing partial blocks appear in mass_frac (the residual-mass path
+    # cats a pad row for them) but have no INT4 data in eta_per_block —
+    # they're always FP16-attended, so they contribute zero to E_val and
+    # trimming to num_blocks_eta is equivalent. Any blocks past
+    # num_blocks_eta are either (a) the trailing partial, always in
+    # top-K → residual False anyway, or (b) skipped → residual False.
+    num_blocks = min(num_blocks_mass, num_blocks_eta)
+    mass_frac_q = mass_frac[:, :num_blocks]
+    skip_mask_q = skip_mask[:, :num_blocks]
+    eta_q = eta_per_block[:, :num_blocks]
 
     # Residual mask: not top-K AND not skipped (these are the blocks we
     # attend to with INT4 values — i.e. where η_b contributes to the bound).
-    residual = torch.ones_like(mass_frac, dtype=torch.bool)
-    residual.scatter_(1, topk_idx, False)
-    residual &= ~skip_mask
+    residual = torch.ones_like(mass_frac_q, dtype=torch.bool)
+    # topk_idx may index into the (possibly padded) num_blocks_mass range;
+    # clamp it so we don't scatter past the trimmed extent.
+    topk_trim = topk_idx.clamp(max=num_blocks - 1)
+    residual.scatter_(1, topk_trim, False)
+    residual &= ~skip_mask_q
 
     # Broadcast η from [num_kv_heads, num_blocks] → [num_q_heads, num_blocks]
     # via the GQA mapping kv_of(qh) = qh // gqa_group.
     kv_idx = torch.arange(num_q_heads, device=mass_frac.device) // gqa_group
-    eta_per_qhead = eta_per_block[kv_idx]  # [num_q_heads, num_blocks]
+    eta_per_qhead = eta_q[kv_idx]  # [num_q_heads, num_blocks]
 
-    e_val = (mass_frac * eta_per_qhead * residual.to(mass_frac.dtype)).sum(dim=1)
+    e_val = (mass_frac_q * eta_per_qhead * residual.to(mass_frac.dtype)).sum(dim=1)
     return e_val
 
 
@@ -597,7 +612,9 @@ def certified_attention_layer(
     # Σ_b ρ_b · η_b per head and uses its max for decide_v_format. Tight
     # will flip INT4 more often than loose (strictly less conservative).
     # Either way, telemetry emits e_val_max/e_val_mean from the tight bound.
-    value_error_mode: str = "loose",
+    # Default "tight" (paper-correct); see CertifiedAttentionState for the
+    # sweep that confirmed the flip is safe at v_tolerance=0.5.
+    value_error_mode: str = "tight",
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 

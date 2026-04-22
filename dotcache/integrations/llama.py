@@ -126,7 +126,13 @@ class CertifiedAttentionState:
     #             will choose INT4 more often at the same v_tolerance)
     # Both modes always emit e_val_max/e_val_mean telemetry so runs can
     # compare the two side-by-side without switching modes.
-    value_error_mode: str = "loose"
+    #
+    # Default "tight". A sweep at 8K PG-19 showed max tight/loose ratio
+    # = 0.90 and max tight = 0.271 << v_tolerance=0.5, so at the current
+    # calibration neither bound crosses the threshold and flipping the
+    # default has zero observable effect on v_format decisions. See
+    # benchmarks/sweep_value_error_bound.py for the measurement.
+    value_error_mode: str = "tight"
     step_stats: list = None  # per-step stats accumulator
     # Monotonic sequence number that increments on every clear_step_stats()
     # call. External per-step telemetry collectors (PageinTelemetry) can use
