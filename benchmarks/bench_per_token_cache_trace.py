@@ -34,6 +34,8 @@ def main() -> int:
     ap.add_argument("--cache-blocks", type=int, default=64,
                     help="Cache capacity to measure at (choose low enough that hits/misses are both visible).")
     ap.add_argument("--prompt-source", choices=["pg19", "filler"], default="pg19")
+    ap.add_argument("--teacher-forced", action="store_true",
+                    help="Feed ground-truth pg19 tokens instead of argmax (requires --prompt-source pg19).")
     ap.add_argument("--output", default="benchmarks/results/perf_tests_20260422/per_token_trace_pg19_cap64.json")
     args = ap.parse_args()
 
@@ -60,14 +62,21 @@ def main() -> int:
     device = next(model.parameters()).device
 
     # Prefill
+    ref_tokens = None
     if args.prompt_source == "pg19":
         from datasets import load_dataset
         ds = load_dataset("emozilla/pg19", split="test", streaming=True)
         text = None
+        need = args.context_length + (args.decode_tokens + 4 if args.teacher_forced else 0)
         for book in ds:
             tokens = tokenizer.encode(book["text"], add_special_tokens=False)
-            if len(tokens) >= args.context_length:
+            if len(tokens) >= need:
                 text = tokens[:args.context_length]
+                if args.teacher_forced:
+                    ref_tokens = torch.tensor(
+                        tokens[args.context_length:args.context_length + args.decode_tokens + 4],
+                        dtype=torch.long, device=device,
+                    )
                 break
         if text is None:
             raise RuntimeError("no suitable pg19 book")
@@ -150,7 +159,10 @@ def main() -> int:
         per_token_h2d_bytes.append(b - prev_b)
         prev_h, prev_m, prev_b = h, m, b
 
-        tid = o.logits[:, -1, :].argmax(dim=-1)
+        if ref_tokens is not None and t < ref_tokens.shape[0]:
+            tid = ref_tokens[t].view(1)
+        else:
+            tid = o.logits[:, -1, :].argmax(dim=-1)
         gen_ids.append(int(tid.item()))
         current_input = tid.view(1, 1)
         cache_position = cache_position + 1
