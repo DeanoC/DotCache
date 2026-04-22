@@ -1042,12 +1042,25 @@ def certified_attention_layer(
     elif cache.values_int4_packed is not None:
         # INT4 values: must use Triton kernel (SDPA can't handle INT4)
         e_val_head: torch.Tensor | None = None
+        # Fail fast on typos — silently loosening a certification check
+        # because someone wrote "tigt" would invalidate the experiment
+        # without a signal.
+        if value_error_mode not in ("loose", "tight"):
+            raise ValueError(
+                f"value_error_mode must be 'loose' or 'tight', got {value_error_mode!r}"
+            )
         if collect_stats:
             with _PhaseTimer(phase_timings, "value_check"):
                 # Keep mass_frac + topk_idx so the tight bound can reuse
                 # them without recomputing the softmax mass partition.
+                # top_k here must match top_k_fp16_keys — the set of blocks
+                # this layer actually force-attends. Using the module
+                # default would make E_val's residual set diverge from the
+                # attended set, invalidating the bound.
                 rho, mass_frac, topk_idx = compute_tier2_residual_mass(
-                    m_b, S_b, skip_mask, return_details=True,
+                    m_b, S_b, skip_mask,
+                    top_k=top_k_fp16_keys,
+                    return_details=True,
                 )
                 eta_int4 = cache.values_int4_errors.max().item()
                 # Tight per-head bound Σ_b ρ_b · η_b. Always computed so

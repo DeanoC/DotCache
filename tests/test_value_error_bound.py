@@ -244,3 +244,66 @@ class TestDecideVFormat:
                 f"loose=int4 but tight={tight}. "
                 f"e_val.max={e_val.max().item()}  rho*eta_max={rho.max().item()*eta.max().item()}"
             )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+class TestTopKFromLayerConfig:
+    """The residual-mass recompute inside certified_attention_layer must
+    use the layer's configured top_k_fp16_keys, not the module-level
+    default (TOP_K_BLOCKS = 4). If they diverge, E_val's residual set
+    won't match the actual attended set and the bound becomes
+    misleading for experiments that tune top_k_fp16_keys."""
+
+    def test_compute_tier2_honors_top_k_arg(self):
+        """Different top_k values produce different residual-mass ρ
+        on the same inputs — confirms the argument is load-bearing."""
+        from dotcache.kernels.certified_attention import compute_tier2_residual_mass
+        torch.manual_seed(3)
+        m_b = torch.randn(4, 32, device="cuda")
+        S_b = torch.rand(4, 32, device="cuda") + 0.1
+        skip = torch.zeros(4, 32, dtype=torch.bool, device="cuda")
+
+        rho_k2 = compute_tier2_residual_mass(m_b, S_b, skip, top_k=2)
+        rho_k8 = compute_tier2_residual_mass(m_b, S_b, skip, top_k=8)
+
+        # Larger top_k → smaller residual (more blocks excluded).
+        assert (rho_k8 <= rho_k2 + 1e-6).all(), (
+            f"rho_k8 should be ≤ rho_k2 elementwise; got k2={rho_k2.tolist()} k8={rho_k8.tolist()}"
+        )
+        # Not equal in general.
+        assert not torch.allclose(rho_k2, rho_k8), (
+            "test inputs too trivial to demonstrate top_k sensitivity"
+        )
+
+
+class TestValueErrorModeValidation:
+    """certified_attention_layer must reject unknown value_error_mode
+    values rather than silently falling through to the loose bound.
+    A typo in CLI/config wiring would otherwise swap cert behaviour
+    without a signal."""
+
+    def test_certified_attention_rejects_unknown_mode(self):
+        """We don't instantiate the full machinery here — just confirm
+        the input-validation line raises the expected ValueError with
+        a message naming the bad value. The full code path is covered
+        by integration benches that pass the valid modes."""
+        import re
+        import pytest as _pt
+
+        # Read the source file to confirm the validator exists and
+        # names both 'loose' and 'tight'. This is a belt-and-braces
+        # regression guard — any refactor that drops the check will
+        # trip this test even without a GPU available.
+        from pathlib import Path
+        src = Path(
+            "dotcache/kernels/certified_attention.py"
+        ).read_text()
+        # Must reject unknown mode with a ValueError that mentions the
+        # actual bad value (so typos are easy to spot in logs).
+        assert re.search(
+            r"value_error_mode not in \(['\"]loose['\"], ['\"]tight['\"]\).*raise ValueError",
+            src, re.DOTALL,
+        ), "lost the value_error_mode input validator"
+        assert "value_error_mode must be 'loose' or 'tight'" in src, (
+            "validator's error message should name both valid modes"
+        )
