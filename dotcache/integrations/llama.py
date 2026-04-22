@@ -116,6 +116,12 @@ class CertifiedAttentionState:
     # fraction of non-top-K* blocks to FP16. Monitoring only; 0.0 disables.
     exploration_rate: float = 0.0
     step_stats: list = None  # per-step stats accumulator
+    # Monotonic sequence number that increments on every clear_step_stats()
+    # call. External per-step telemetry collectors (PageinTelemetry) can use
+    # this to detect that step_stats was drained+reset between their calls,
+    # so their slice-from-cursor aggregation doesn't silently return empty
+    # after a caller like pg19_perplexity.py clears the list per iteration.
+    _clear_seq: int = 0
     # Test 2 phase-timing accumulator. When not None, certified_attention_layer
     # records per-phase wall time (μs) via torch.cuda.Event timers into this
     # dict. ~5 GPU syncs per layer per step when enabled — do NOT use during
@@ -130,6 +136,7 @@ class CertifiedAttentionState:
     def clear_step_stats(self) -> list[dict]:
         stats = self.step_stats
         self.step_stats = []
+        self._clear_seq += 1
         return stats
 
     def aggregate_step_stats(self, since: int = 0) -> dict:

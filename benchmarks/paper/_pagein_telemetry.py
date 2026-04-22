@@ -41,6 +41,11 @@ class PageinTelemetry:
         # slice per-step without clearing, so the harness's cell-level
         # aggregate (e.g. ranking_fallback_summary) still sees the data.
         self._step_stats_cursor = 0
+        # Last-seen clear_seq on the CertifiedAttentionState. When the host
+        # harness drains+clears step_stats between our record_step calls
+        # (pg19_perplexity.py does this), the cursor becomes stale; we detect
+        # the change here and reset before slicing.
+        self._last_clear_seq = 0
 
     def start(self):
         if not self.enabled:
@@ -59,13 +64,23 @@ class PageinTelemetry:
             # Aggregate only the layer entries appended since the previous
             # record_step. Do NOT clear — other callers (e.g. niah.py's
             # end-of-cell ranking_fallback_summary) still need the full
-            # accumulator at cell boundaries. Defensively reset the cursor
-            # when step_stats has shrunk (some harnesses — e.g. pg19 — run
-            # their own aggregate+clear after each decode step); a stale
-            # cursor past len means "nothing new since last call" which is
-            # wrong on the iteration after the clear.
+            # accumulator at cell boundaries.
+            #
+            # Three cursor-invalidation cases to handle:
+            #   (a) step_stats shrank below cursor → reset to 0 (list cleared
+            #       and not yet refilled by a model forward).
+            #   (b) _clear_seq advanced since last call → the host harness
+            #       (pg19_perplexity.py) drained+cleared step_stats between
+            #       our calls; the refill is new data and cursor at len is
+            #       stale. Reset cursor to 0 so we capture the refill.
+            #   (c) Otherwise (cursor <= len, seq unchanged): normal
+            #       slice-from-cursor operation.
+            current_seq = int(getattr(cs, "_clear_seq", 0))
             if self._step_stats_cursor > len(cs.step_stats):
                 self._step_stats_cursor = 0
+            elif current_seq != self._last_clear_seq:
+                self._step_stats_cursor = 0
+            self._last_clear_seq = current_seq
             agg = cs.aggregate_step_stats(since=self._step_stats_cursor)
             self._step_stats_cursor = len(cs.step_stats)
         except Exception:
