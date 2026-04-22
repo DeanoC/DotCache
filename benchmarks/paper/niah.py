@@ -27,6 +27,11 @@ NEEDLES = [
     ("The primary backup server is located in Zurich.", "Zurich"),
     ("The annual budget for the initiative is $4.7 million.", "4.7 million"),
     ("The lead researcher's employee ID is RX-9031.", "RX-9031"),
+    ("The field team leader's callsign is Viper-Seven.", "Viper-Seven"),
+    ("The backup data vault is labelled Hotel-Echo-4.", "Hotel-Echo-4"),
+    ("The encryption key rotation interval is 47 minutes.", "47 minutes"),
+    ("The classified document's tracking ID is KGB-9982.", "KGB-9982"),
+    ("The compliance audit contact is Dr. Nakamura.", "Dr. Nakamura"),
 ]
 
 # Filler: repeated innocuous text (avoids any content that could match needles)
