@@ -657,6 +657,7 @@ def certified_attention_layer(
                 expanded_k_max = min(int(math.ceil(k_max * float(rung1_multiplier))), n_qblocks)
                 topk_mask_cert2, k_star2, tail_mass_est2, tau_cov_actual2 = compute_adaptive_topk_mask(
                     m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=expanded_k_max,
+                    per_kv_group_topk=per_kv_group_topk, gqa_group=gqa_group,
                 )
                 # Only apply the expanded selection to triggered heads so
                 # non-triggered heads keep their original K* (avoiding
