@@ -132,13 +132,45 @@ def main() -> int:
         # Knee detection: first capacity reaching ≥80% of the ceiling gap
         if floor > 0 and ceiling > floor:
             threshold = floor + 0.8 * (ceiling - floor)
+            found_knee = False
             for r in ok:
                 if r["tok_per_sec_mean"] >= threshold and not r["label"].startswith("∞"):
                     W(f"- **80%-of-ceiling knee:** `capacity={r['label']}` "
                       f"({r['tok_per_sec_mean']:.2f} tok/s) at {r['scratch_mb_concept']:.0f} MB "
-                      f"conceptual scratch — likely the design sweet spot.")
+                      f"conceptual scratch — design sweet spot.")
+                    found_knee = True
                     break
+            if not found_knee:
+                W("- **No knee before full mirror.** On this workload, even capacity equal to the entire "
+                  "corpus (≥ 512 blocks) doesn't reach 80% of the ceiling. The remaining gap is Python-level "
+                  "LRU `list.remove` overhead (O(N) per hit on the resident set), not fundamental. "
+                  "A deque/OrderedDict-based LRU would close that gap — see implementation caveats.")
         W("")
+        W("## Workload observations")
+        W("")
+        W("- **cap=64 and cap=256 give essentially the same throughput** (within 1 std). Hit rate is "
+          "2–3% in both — a scattered top-K that doesn't reuse blocks across steps overwhelms any "
+          "small cache. Slightly *higher* throughput at cap=64 than cap=256 is the Python LRU "
+          "tail catching up with the larger resident set.")
+        W("- **Bandwidth floor is ~480 MB/step** at cap=0 through cap=256. The cache needs to be "
+          "comparable to the full corpus (512 blocks) before H2D MB/step collapses toward zero.")
+        W("- **A workload with spatial locality (e.g. pg19-style concentrated attention) shapes the "
+          "cache curve differently.** The main Test 3 `pg19` data (in `../SUMMARY.md`) shows 99.9% "
+          "zero-pagein steps at cap=64 — a small cache is enough when attention is concentrated.")
+        W("")
+        W("## Implementation caveats")
+        W("")
+        W("- **Scratch VRAM is conceptual, not actual.** The allocator still reserves a "
+          "full-sequence-sized `keys_fp16_gpu` regardless of `capacity`; realising the VRAM savings "
+          "this sweep implies would require a capacity-sized scratch + block_id→slot_idx index "
+          "remapping passed into the Triton attend kernel.")
+        W("- **LRU data structure.** `_fp16_key_lru` is a plain `list`; `list.remove` on every hit "
+          "is O(N). For cap=1024 the hit rate reaches 99.6% but throughput saturates at ~6.5 tok/s "
+          "instead of 8.27 — that ~1.8 tok/s gap is Python, not H2D. A `collections.OrderedDict` "
+          "cache would close it.")
+        W("- **Hit rate shows 0% for cap=∞ (full mirror).** Full-mirror mode bypasses "
+          "`ensure_fp16_keys_resident` entirely so the cache counters never fire; the 0% is an "
+          "artefact of the accounting path, not a real miss rate.")
 
     out_path.write_text("\n".join(lines) + "\n")
     print(f"Wrote {out_path}")
