@@ -205,14 +205,19 @@ def main() -> int:
     W("## Paper-friendly observations")
     W("")
     W("- **The tiered architecture's cost is H2D, not INT8 dequant.** Phase-2 attend is 14%; H2D page-in is 59%. "
-      "On a workload with scattered top-K (niah, ruler), the bounded FP16 cache at 64 blocks hits only ~2% of "
-      "the time, forcing ~15k block misses per step. PG-19's more concentrated attention pattern hits the cache "
-      "almost entirely (99.9% zero-pagein steps) — the cache is **workload-shaped**, not a flat tax.")
+      "All three benchmarks (pg19, niah, ruler) exhibit the same scattered top-K pattern at cap=64: hit rate "
+      "~2–3%, ~15k block misses per decode step, ~470 MB/tok H2D bandwidth. The cache is **not** workload-"
+      "shaped on this model at this context length — prior claims of PG-19 concentration were a telemetry "
+      "artefact (`_clear_seq`-related cursor stale-ness, fixed in commit `d9e87084`).")
     W("- **Quality is preserved under the paper-faithful H2D-on-miss path.** Δ numbers reproduce the arXiv v1 "
-      "sweep (pg19 Δppl=-0.005, niah Δacc=-0.067, ruler Δacc=-0.02 on 10 samples). The cache is purely a "
+      "sweep (pg19 Δppl=-0.008, niah Δacc=-0.067, ruler Δacc=-0.02 on 10 samples). The cache is purely a "
       "performance optimisation; the certification math is invariant to the memory tier.")
     W("- **Rung-4 fires 0% across every benchmark.** The post-`79d1a0da` Δ-bound calibration and the "
       "ensure_fp16_keys_resident pre-fetch before score-consistency make Theorem-2 empirically airtight.")
+    W("- **Cache must be at least the corpus size (≥512 blocks for 8K context) to escape the H2D floor.** "
+      "The niah capacity sweep at `benchmarks/results/perf_tests_20260422/cache_sweep/SUMMARY.md` bracketed "
+      "the knee at exactly 512 blocks; hit rate jumps 5.7% → 99.6% between cap=384 and cap=512. Below the "
+      "corpus, capacity doesn't materially help; above it, extra capacity is pure waste.")
     W("")
     W("## Caveats")
     W("")
@@ -226,9 +231,14 @@ def main() -> int:
     W("- **Test 1 `triton-fp16` config is not implemented** — Phase 1 bypass would require a new adapter path.")
     W("- **Test 2 total-step time is inflated** by the phase timers' GPU syncs (~5 extra syncs/layer/step). "
       "Use Test 1's `certified` p50 as the true per-token latency; Test 2's per-phase **ratios** are reliable.")
-    W("- **Cache capacity (64 blocks ≈ 12.5% of the 512-block corpus) is a single operating point.** Higher "
-      "capacity would lift the hit rate and drop H2D cost; lower capacity would further stress the page-in "
-      "path. A capacity sweep would characterise the full perf curve but was not run.")
+    W("- **Historical correction:** the earlier version of this SUMMARY reported `pct_zero_pagein = 99.9%` "
+      "on pg19, with the narrative that pg19's concentrated attention hit the cache for free. That claim was "
+      "based on telemetry output where only step 0 was recorded and steps 1–1637 silently reported zero — "
+      "because `pg19_perplexity.py`'s pre-existing `aggregate_step_stats() + clear_step_stats()` pattern "
+      "invalidated my PageinTelemetry collector's cursor. Fixed by adding a `_clear_seq` counter on "
+      "CertifiedAttentionState that the collector watches for resets. Both argmax and teacher-forced decode, "
+      "measured via direct cache-counter snapshots (the per-token traces at "
+      "`per_token_trace_pg19_cap64*.json`), show flat ~2% hit rate on pg19 — identical to niah/ruler.")
 
     out_path = out_dir / "SUMMARY.md"
     out_path.write_text("\n".join(lines) + "\n")
