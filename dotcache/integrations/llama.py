@@ -115,6 +115,11 @@ class CertifiedAttentionState:
     # Exploration budget (paper §6): per-step Bernoulli promotion of a small
     # fraction of non-top-K* blocks to FP16. Monitoring only; 0.0 disables.
     exploration_rate: float = 0.0
+    # Experimental: compute ONE top-K per KV-head group (union of the 4 Q
+    # heads sharing a KV head, via summed mass) instead of per-Q-head. Bounds
+    # per-layer working set for the FP16 cache — see cache_sweep_tau/
+    # SUMMARY.md. Changes the §3.3 per-head bound to a per-group bound.
+    per_kv_group_topk: bool = False
     step_stats: list = None  # per-step stats accumulator
     # Monotonic sequence number that increments on every clear_step_stats()
     # call. External per-step telemetry collectors (PageinTelemetry) can use
@@ -614,6 +619,7 @@ class DotCacheLlamaAttention(nn.Module):
             eps_guard=cert_state.eps_guard,
             exploration_rate=cert_state.exploration_rate,
             phase_timings=cert_state.phase_timings,
+            per_kv_group_topk=cert_state.per_kv_group_topk,
         )
 
         # Accumulate stats (only if collection enabled)

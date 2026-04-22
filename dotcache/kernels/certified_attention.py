@@ -134,6 +134,8 @@ def compute_adaptive_topk_mask(
     tau_cov: float = DEFAULT_TAU_COV,
     k_min: int = DEFAULT_K_MIN,
     k_max: int | None = DEFAULT_K_MAX,
+    per_kv_group_topk: bool = False,
+    gqa_group: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Paper §3.3 adaptive top-K* selector (cumulative-mass threshold).
 
@@ -161,6 +163,43 @@ def compute_adaptive_topk_mask(
     mass = torch.exp(log_mass)
     total = mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
     mass_frac = mass / total                                       # [H, B]
+
+    # Per-KV-group selection (experimental, paper follow-up). With GQA,
+    # 4 Q heads share a KV head but independently pick their own top-K;
+    # the union across the group (from the cache's point of view) is
+    # ~350 blocks at k_max=128 even before rung-1. This option collapses
+    # the 4 Q heads into a single top-K decision: sum mass_frac across
+    # the group, pick top-K on the aggregated distribution, then broadcast
+    # the mask back to all 4 Q heads. Trades the per-head bound for a
+    # per-group bound; the paper would need to re-derive §3.3 for this
+    # variant. See cache_sweep_tau/SUMMARY.md for the measurement.
+    if per_kv_group_topk and gqa_group > 1 and num_q_heads % gqa_group == 0:
+        num_kv = num_q_heads // gqa_group
+        group_mass = mass_frac.view(num_kv, gqa_group, num_blocks).sum(dim=1)  # [num_kv, B]
+        group_total = group_mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
+        mass_frac_eff = (group_mass / group_total)  # [num_kv, B]
+        # Run the selection on mass_frac_eff, then broadcast back to [num_q_heads, B].
+        sorted_mass, sorted_idx = mass_frac_eff.sort(dim=1, descending=True)
+        cumsum = sorted_mass.cumsum(dim=1)
+        tau_vec = torch.full((num_kv, 1), float(tau_cov), device=device, dtype=cumsum.dtype)
+        k_star_group = torch.searchsorted(cumsum, tau_vec).squeeze(1) + 1
+        hi = num_blocks if k_max is None else min(int(k_max), num_blocks)
+        lo = min(int(k_min), hi)
+        k_star_group = k_star_group.clamp(min=lo, max=hi).to(torch.int32)
+        pos = torch.arange(num_blocks, device=device).unsqueeze(0)
+        keep_sorted = pos < k_star_group.unsqueeze(1).to(pos.dtype)
+        topk_mask_group = torch.zeros_like(mass_frac_eff, dtype=torch.bool)
+        topk_mask_group.scatter_(1, sorted_idx, keep_sorted)
+        # Tail / coverage per group.
+        k_idx = (k_star_group.long() - 1).clamp(min=0, max=num_blocks - 1).unsqueeze(1)
+        tau_actual_group = cumsum.gather(1, k_idx).squeeze(1).float()
+        tail_mass_group = (1.0 - tau_actual_group).clamp(min=0.0)
+        # Broadcast back to [num_q_heads, num_blocks].
+        topk_mask = topk_mask_group.unsqueeze(1).expand(-1, gqa_group, -1).reshape(num_q_heads, num_blocks).contiguous()
+        k_star = k_star_group.unsqueeze(1).expand(-1, gqa_group).reshape(num_q_heads).contiguous()
+        tail_mass = tail_mass_group.unsqueeze(1).expand(-1, gqa_group).reshape(num_q_heads).contiguous()
+        tau_actual = tau_actual_group.unsqueeze(1).expand(-1, gqa_group).reshape(num_q_heads).contiguous()
+        return topk_mask, k_star, tail_mass, tau_actual
 
     # Sort descending per head; cumulative mass in sorted order.
     sorted_mass, sorted_idx = mass_frac.sort(dim=1, descending=True)
@@ -487,6 +526,7 @@ def certified_attention_layer(
     exploration_rate: float = 0.0,
     exploration_generator: torch.Generator | None = None,
     phase_timings: dict | None = None,
+    per_kv_group_topk: bool = False,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -592,6 +632,7 @@ def certified_attention_layer(
         with _PhaseTimer(phase_timings, "adaptive_selection"):
             topk_mask_cert, k_star, tail_mass_est, tau_cov_actual = compute_adaptive_topk_mask(
                 m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=k_max,
+                per_kv_group_topk=per_kv_group_topk, gqa_group=gqa_group,
             )
 
         # Rung-1 (paper §3.4): if any head's tail mass exceeded the configured

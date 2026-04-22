@@ -99,17 +99,25 @@ def _legacy_load_pg19_prefill(tokenizer, context_tokens: int) -> torch.Tensor:
 
 
 def _cert_kwargs(config: str) -> dict[str, Any]:
-    """Parameters for CertifiedAttentionState by config."""
+    """Parameters for CertifiedAttentionState by config.
+
+    Honors env vars for the tau_cov / per-KV-group sweep:
+      DOTCACHE_TAU_COV            float, override default 0.995
+      DOTCACHE_PER_KV_GROUP_TOPK  '1' to enable per-KV-head group top-K
+    """
     if config == "dense":
         return {}
+    _tau = float(os.environ.get("DOTCACHE_TAU_COV", "0.995"))
+    _kvg = os.environ.get("DOTCACHE_PER_KV_GROUP_TOPK", "0") == "1"
     base = dict(
         default_epsilon=1e-4,
         top_k_fp16_keys=4,
-        tau_cov=0.995,
+        tau_cov=_tau,
         k_min=2,
         k_max=128,
         rung1_threshold=0.02,
         rung1_multiplier=2.0,
+        per_kv_group_topk=_kvg,
     )
     if config == "certified":
         base.update(dict(
