@@ -57,6 +57,24 @@ def build_prefill(tokenizer, context_tokens: int) -> str:
     return FILLER * nb + question
 
 
+def load_pg19_prefill(tokenizer, context_tokens: int) -> torch.Tensor:
+    """Load the first context_tokens-token chunk of PG-19's test split.
+
+    Returns a pre-tokenised [1, N] tensor ready to feed into the model.
+    Matches the prompt distribution used by benchmarks/paper/pg19_perplexity.py
+    — real book text, as opposed to the repetitive filler used by the
+    default prompt builder.
+    """
+    from datasets import load_dataset
+    ds = load_dataset("emozilla/pg19", split="test", streaming=True)
+    for book in ds:
+        text = book["text"]
+        tokens = tokenizer.encode(text, add_special_tokens=False)
+        if len(tokens) >= context_tokens:
+            return torch.tensor(tokens[:context_tokens], dtype=torch.long).unsqueeze(0)
+    raise RuntimeError("no PG-19 book with >= context_tokens tokens found")
+
+
 def _cert_kwargs(config: str) -> dict[str, Any]:
     """Parameters for CertifiedAttentionState by config."""
     if config == "dense":
@@ -260,6 +278,9 @@ def main() -> int:
     ap.add_argument("--configs", nargs="+",
                     default=["dense", "certified", "certified-no-fallback", "quantised-only"])
     ap.add_argument("--output", default="benchmarks/results/perf_tests_20260422/test1_throughput.json")
+    ap.add_argument("--prompt-source", choices=["filler", "pg19"], default="filler",
+                    help="'filler' = repetitive history-of-mathematics text (scattered attention), "
+                         "'pg19' = first PG-19 test-split book (concentrated attention).")
     args = ap.parse_args()
 
     os.environ.setdefault("DOTCACHE_V_TOL", "0.05")
@@ -281,11 +302,16 @@ def main() -> int:
     adapter = LlamaDotCacheModelAdapter(model, cfg)
     device = next(model.parameters()).device
 
-    prompt = build_prefill(tokenizer, args.context_length)
-    ids = tokenizer(prompt, return_tensors="pt", truncation=True,
-                    max_length=args.context_length).to(device)
+    if args.prompt_source == "pg19":
+        print("Loading PG-19 prefill…")
+        pg19_ids = load_pg19_prefill(tokenizer, args.context_length).to(device)
+        ids = {"input_ids": pg19_ids}
+    else:
+        prompt = build_prefill(tokenizer, args.context_length)
+        ids = tokenizer(prompt, return_tensors="pt", truncation=True,
+                        max_length=args.context_length).to(device)
     seq_len = ids["input_ids"].shape[1]
-    print(f"Prefill seq_len = {seq_len}")
+    print(f"Prefill seq_len = {seq_len}  ({args.prompt_source})")
     print(f"Configs: {args.configs}  repeats={args.repeats}  decode={args.decode_tokens}  warmup={args.warmup_tokens}")
 
     # Warm the loader with one throwaway prefill.
