@@ -45,3 +45,44 @@
 
 **(5) Triton kernel is still the bigger cost.** Even with per-KV-group at the best cache point (cap=4096, 99.2% hit), tok/s tops out at 0.64 — less than the full-mirror 1.93 tok/s. The kernel-vs-FlashAttention gap (10× at full mirror) outweighs the cache-vs-no-cache gap (3× within the kernel envelope). The paper's perf-section path forward should lead with 'optimise the Triton attend kernel' and have 'optimise the cache policy' as the secondary lever.
 
+## Attend-kernel optimisation (split-K, 2026-04-22)
+
+**Diagnosis** (from `test2_phase_breakdown_64k.json` at cap=∞): phase2 Triton attend took 560 ms of a 676 ms step — 83% share. The original `selective_attend_multihead_hybrid` launched only `num_q_heads = 32` programs (17% SM occupancy on 188-SM Blackwell) with FP64 softmax state (consumer Blackwell FP64 is ~1/32 FP32 rate).
+
+**Fix:** new `selective_attend_multihead_hybrid_split_k` kernel in `dotcache/kernels/selective_attend_triton.py`:
+- Partitions the block axis across `num_splits` programs per Q head (FlashDecoding-style). Grid expands from 32 to `32 × num_splits` (e.g., 512 at num_splits=16).
+- Per-split partials (m_i, l_i, acc_i) merged by a small reduction kernel using standard online-softmax recombination: `m* = max m_i`; `out = Σ exp(m_i - m*) · acc_i / Σ exp(m_i - m*) · l_i`.
+- FP32 state throughout (FlashAttention-style). Empty splits store `m = -inf`, which reduces to zero contribution via `exp(-inf) = 0`.
+
+Behind `DOTCACHE_FAST_ATTEND=1` (default on). `DOTCACHE_FAST_ATTEND=0` reverts to the original kernel for A/B.
+
+**Micro-bench** (`benchmarks/bench_hybrid_attend_kernel.py`, 64K synthetic inputs, isolated kernel):
+
+| Kernel | ms/launch | grid | vs SDPA dense FP16 |
+|---|---:|---:|---:|
+| original hybrid            | 13.4 | 32   | 8.0× slower |
+| split-K num_splits=1 (FP32 only) | 8.2 | 32 | 4.9× slower |
+| split-K num_splits=16       | 0.81 | 512  | 0.5× — i.e. **faster** than SDPA |
+| split-K num_splits=64       | 0.70 | 2048 | 0.4× |
+| SDPA dense FP16 (reference) | 1.68 | —    | — |
+
+The FP64→FP32 swap alone gave 1.6×; parallelism gave the remaining ~12×. At ns=16 we beat SDPA by avoiding the GQA key repeat-interleave the SDPA reference needs. Default autotune = `num_splits = round_up_pow2(num_blocks / 256)`.
+
+**End-to-end 64K breakdown** (`test2_phase_breakdown_64k_fast.json`):
+
+| Phase | before (ms) | after (ms) | Δ |
+|---|---:|---:|---:|
+| phase1_int8_scoring | 26.4 | 15.7 | −41% |
+| adaptive_selection  |  6.2 |  6.6 |  — |
+| ranking_check       |  5.5 |  5.8 |  — |
+| phase2_fused_attend | **560.4** | **192.3** | **−66%** |
+| overhead_other      | 77.4 | 79.2 |  — |
+| **Total step (timer-on)** | **675.9** | **299.4** | **−56%** |
+| tok/s (timer-on)    | 1.48 | 3.34 | **2.26×** |
+
+**Correctness:** `benchmarks/check_split_k_equivalence.py` at 8K/32-steps → 33/33 tokens identical between the two kernels. Max absolute error on synthetic inputs: 0.000000; max relative error: 0.001 (reduction-order FP32 rounding, sub-argmax-threshold in practice).
+
+**Remaining gap:** the attend phase is still 192 ms vs the ~22 ms pure-kernel floor from the micro-bench (0.7 ms × 32 layers). The extra ~170 ms is Python wrapping — `torch.zeros(no_skip)` per layer, `adaptive_topk_mask.to(int32).contiguous()` per layer, and duplicate `.contiguous()` guards on cache tensors. Next lever; not blocking.
+
+**Paper-relevant number:** the paper's instrumented-off full-mirror tok/s was 1.93. Applying the timer-overhead ratio (1.93 / 1.48 = 1.30×) to the new instrumented reading gives an estimated **~4.4 tok/s** at 64K full-mirror — close to the gap to dense (19.9) being 4.5× rather than 10×.
+

@@ -24,6 +24,7 @@ from dotcache.kernels.selective_attend_triton import (
     selective_attend_multihead_int8,
     selective_attend_multihead_int8k_int4v,
     selective_attend_multihead_hybrid,
+    selective_attend_multihead_hybrid_split_k,
 )
 
 
@@ -900,7 +901,6 @@ def certified_attention_layer(
             num_q_heads, n_active_blocks_hybrid, dtype=torch.int32, device=q_all.device,
         )
         nt_hybrid = n_active_blocks_hybrid * bs
-        from dotcache.kernels.selective_attend_triton import selective_attend_multihead_hybrid
         keys_fp16_gpu = cache.keys_fp16_gpu
         if keys_fp16_gpu is None:
             with _PhaseTimer(phase_timings, "h2d_pagein"):
@@ -925,8 +925,18 @@ def certified_attention_layer(
             fp16_cache_misses_step += c_misses
             fp16_cache_evictions_step += c_evict
             fp16_cache_needed_blocks += len(needed_blocks)
+        # DOTCACHE_FAST_ATTEND=0 reverts to the single-program-per-head
+        # kernel for A/B comparison. Default is split-K (FlashDecoding-style),
+        # which is 15-20× faster at 64K context on Blackwell (grid expands
+        # from num_q_heads to num_q_heads × num_splits, filling the SMs).
+        import os as _os
+        _fast = _os.environ.get("DOTCACHE_FAST_ATTEND", "1") != "0"
+        _attend_fn = (
+            selective_attend_multihead_hybrid_split_k if _fast
+            else selective_attend_multihead_hybrid
+        )
         with _PhaseTimer(phase_timings, "phase2_fused_attend"):
-            output = selective_attend_multihead_hybrid(
+            output = _attend_fn(
                 keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
                 keys_scale=keys_scale_active.contiguous(),
                 keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
