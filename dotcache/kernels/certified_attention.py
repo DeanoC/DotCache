@@ -661,6 +661,41 @@ def certified_attention_layer(
                 score_consistency_violation_mask.sum().item()
             )
 
+    # Rung-4 (paper §3.4) full FP16 recomputation. When the score-consistency
+    # monitor detects any head on this step where |FP16 − INT8| block scores
+    # exceed Δ + eps_guard, Theorem 2's bound was empirically broken, so we
+    # page in all FP16 keys+values from Tier 2 and recompute dense attention
+    # for every head via SDPA. This guarantees dense-equivalent output on the
+    # compromised step and subsumes the per-head Rung-3 action. Expected
+    # zero-fire on well-behaved runs; observed zero across every cell of the
+    # arXiv v1 sweep (4K/8K/16K/32K).
+    rung4_fired = (
+        score_consistency_check
+        and score_consistency_violation_heads > 0
+    )
+    if rung4_fired:
+        zero_skip = torch.zeros_like(skip_mask)
+        output = sdpa_attend_with_skip(
+            cache, q_all, zero_skip, gqa_group, q_scale,
+        )
+        if collect_stats:
+            total_blocks = num_q_heads * cache.num_blocks
+            stats = {
+                "total_blocks": total_blocks,
+                "skipped_blocks": 0,
+                "skip_rate": 0.0,
+                "attended_blocks": total_blocks,
+                "v_format": "fp16",
+                "score_consistency_violation_heads": score_consistency_violation_heads,
+                "delta_bound_mean": float(delta_bound_mean),
+                "eps_guard": float(eps_guard),
+                "rung4_fired": True,
+                "rung4_violating_heads": score_consistency_violation_heads,
+            }
+        else:
+            stats = {}
+        return output, stats
+
     # Entropy gating: if attention is diffuse (no block dominates),
     # disable skipping for that head — small-mass blocks may carry critical
     # information (e.g., needle retrieval with weak signal).
@@ -855,6 +890,12 @@ def certified_attention_layer(
             stats["score_consistency_violation_heads"] = int(score_consistency_violation_heads)
             stats["delta_bound_mean"] = float(delta_bound_mean)
             stats["eps_guard"] = float(eps_guard)
+            # Rung-4 escalation telemetry. Reaching this stats block means
+            # Rung-4 did NOT fire on this step (otherwise we returned early);
+            # emitting 0/False here keeps the non-fired baseline visible
+            # alongside the violation counter.
+            stats["rung4_fired"] = False
+            stats["rung4_violating_heads"] = 0
         # Ranking-consistency fallback telemetry (Rung 3).
         # Populated by the detection block above when enabled; the trigger
         # count is still zero here because commit 2 is detection-only — the
