@@ -66,8 +66,25 @@ def main() -> int:
     W("")
     W("## Findings")
     W("")
-    W("*(Fill in after the sweep completes — looking for: does lower τ_cov measurably "
-      "shrink per-layer union? Does per-KV-group do so more effectively at τ_cov=0.995?)*")
+    W("**Neither tau_cov tuning nor per-KV-group selection materially shrinks the "
+      "per-layer working set at 8K context.** The measured numbers:")
+    W("")
+    W("- τ_cov 0.995 → 0.95 lifts hit rate only from 2.18% → 2.36%, tok/s from 2.76 → 2.97. "
+      "Marginal, not a knee.")
+    W("- Per-KV-group (8 groups instead of 32 Q heads, τ=0.995) lands at 2.60 tok/s / "
+      "2.24% hit rate — slightly *worse* than per-Q-head due to the extra Python-level "
+      "aggregation it introduces, with no H2D savings.")
+    W("- Misses per step sit in the 15,700–16,800 range across all five configs "
+      "(per-layer ≈ 490–525 of 512 corpus blocks — ~96% of corpus per layer).")
+    W("")
+    W("**Why the levers don't help at 8K.** The 8K corpus is 512 blocks; K_max=128 is "
+      "25% of corpus per Q head. The union across 4 Q heads of a KV group (independence "
+      "model): 512·(1 − 0.75⁴) = 350 blocks (68% of corpus). The union across 8 KV "
+      "groups at that level saturates near the full corpus. Lowering τ_cov shrinks each "
+      "head's K* by a couple of percent, and per-KV-group collapses 32→8 independent "
+      "picks, but neither intervenes against the dominant bound: at this context length, "
+      "the corpus is just too small for a sub-corpus cache to make sense under any "
+      "τ_cov/selection regime.")
     W("")
     W("## Caveat — this is still 8K")
     W("")
