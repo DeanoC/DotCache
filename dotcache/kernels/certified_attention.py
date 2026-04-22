@@ -46,6 +46,35 @@ DEFAULT_RUNG1_THRESHOLD = 0.02
 DEFAULT_RUNG1_MULTIPLIER = 2.0
 
 
+class _PhaseTimer:
+    """Context manager that times a code region via torch.cuda.Event when a
+    phase_timings dict is supplied; zero overhead otherwise. Accumulates
+    microseconds under `{name}_us` inside the dict so multiple entries sum
+    cleanly across layers within a decode step."""
+    __slots__ = ("_timings", "_name", "_start", "_end")
+
+    def __init__(self, timings: dict | None, name: str):
+        self._timings = timings
+        self._name = name
+        self._start = None
+        self._end = None
+
+    def __enter__(self):
+        if self._timings is not None:
+            self._start = torch.cuda.Event(enable_timing=True)
+            self._start.record()
+        return self
+
+    def __exit__(self, *_):
+        if self._timings is not None:
+            self._end = torch.cuda.Event(enable_timing=True)
+            self._end.record()
+            torch.cuda.synchronize()
+            us = self._start.elapsed_time(self._end) * 1000.0
+            key = f"{self._name}_us"
+            self._timings[key] = self._timings.get(key, 0.0) + us
+
+
 def compute_tier2_residual_mass(
     m_b: torch.Tensor,       # [num_q_heads, num_blocks] block maxima
     S_b: torch.Tensor,       # [num_q_heads, num_blocks] block sums
@@ -457,6 +486,7 @@ def certified_attention_layer(
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     exploration_generator: torch.Generator | None = None,
+    phase_timings: dict | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -495,16 +525,17 @@ def certified_attention_layer(
 
     # Phase 1: INT8 scoring only on fully quantized blocks
     if n_qblocks > 0:
-        m_b, S_b, skip_mask = fused_score_certify_multihead(
-            K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
-            K_scale=cache.keys_scale[:, :n_qblocks, :],
-            q_all=q_all,
-            correction=cache.correction[:, :n_qblocks],
-            gqa_group=gqa_group,
-            block_size=bs,
-            q_scale=q_scale,
-            block_epsilon=block_epsilon,
-        )
+        with _PhaseTimer(phase_timings, "phase1_int8_scoring"):
+            m_b, S_b, skip_mask = fused_score_certify_multihead(
+                K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
+                K_scale=cache.keys_scale[:, :n_qblocks, :],
+                q_all=q_all,
+                correction=cache.correction[:, :n_qblocks],
+                gqa_group=gqa_group,
+                block_size=bs,
+                q_scale=q_scale,
+                block_epsilon=block_epsilon,
+            )
     else:
         device = q_all.device
         m_b = torch.empty(num_q_heads, 0, dtype=torch.float32, device=device)
@@ -552,9 +583,10 @@ def certified_attention_layer(
         # selection with the trailing block forced in.
         m_b_cert = m_b[:, :n_qblocks]
         S_b_cert = S_b[:, :n_qblocks]
-        topk_mask_cert, k_star, tail_mass_est, tau_cov_actual = compute_adaptive_topk_mask(
-            m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=k_max,
-        )
+        with _PhaseTimer(phase_timings, "adaptive_selection"):
+            topk_mask_cert, k_star, tail_mass_est, tau_cov_actual = compute_adaptive_topk_mask(
+                m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=k_max,
+            )
 
         # Rung-1 (paper §3.4): if any head's tail mass exceeded the configured
         # threshold — typically because k_max capped the selection before
@@ -638,13 +670,14 @@ def certified_attention_layer(
     # the score-consistency check. Compute it once when either is enabled.
     need_fp16_scores = (ranking_fallback or score_consistency_check) and n_qblocks > 0
     if need_fp16_scores:
-        ranking_k = min(max(ranking_r, top_k_fp16_keys, 4), n_qblocks)
-        int8_scores = m_b[:, :n_qblocks]
-        top_block_indices = int8_scores.topk(ranking_k, dim=1).indices  # [H, K]
-        top_int8_scores = int8_scores.gather(1, top_block_indices)       # [H, K]
-        fp16_block_scores = compute_fp16_block_scores(
-            cache, q_all, top_block_indices, n_qblocks, gqa_group, q_scale,
-        )
+        with _PhaseTimer(phase_timings, "ranking_check"):
+            ranking_k = min(max(ranking_r, top_k_fp16_keys, 4), n_qblocks)
+            int8_scores = m_b[:, :n_qblocks]
+            top_block_indices = int8_scores.topk(ranking_k, dim=1).indices  # [H, K]
+            top_int8_scores = int8_scores.gather(1, top_block_indices)       # [H, K]
+            fp16_block_scores = compute_fp16_block_scores(
+                cache, q_all, top_block_indices, n_qblocks, gqa_group, q_scale,
+            )
         if ranking_fallback:
             # Single pair of argsorts covers r=1, r=3, and r=ranking_r — no
             # need to call detect_ranking_disagreement three times (each call
@@ -807,25 +840,27 @@ def certified_attention_layer(
         from dotcache.kernels.selective_attend_triton import selective_attend_multihead_hybrid
         keys_fp16_gpu = cache.keys_fp16_gpu
         if keys_fp16_gpu is None:
-            keys_fp16_gpu = cache.keys_fp16_cpu.to(device=q_all.device, non_blocking=True)
+            with _PhaseTimer(phase_timings, "h2d_pagein"):
+                keys_fp16_gpu = cache.keys_fp16_cpu.to(device=q_all.device, non_blocking=True)
             # H2D bookkeeping: semantic bytes actually consumed by the hybrid
             # kernel (nt_hybrid tokens × kv_heads × head_dim × element_size).
             kv_k, _, hd_k = cache.keys_fp16_cpu.shape
             h2d_key_bytes += kv_k * nt_hybrid * hd_k * cache.keys_fp16_cpu.element_size()
             h2d_key_blocks += n_active_blocks_hybrid
-        output = selective_attend_multihead_hybrid(
-            keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
-            keys_scale=keys_scale_active.contiguous(),
-            keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
-            topk_mask=hybrid_topk,
-            values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
-            q_all=q_all,
-            skip_mask_i32=no_skip,
-            gqa_group=gqa_group,
-            block_size=bs,
-            q_scale=q_scale,
-            last_block_valid=last_block_valid,
-        )
+        with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+            output = selective_attend_multihead_hybrid(
+                keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
+                keys_scale=keys_scale_active.contiguous(),
+                keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
+                topk_mask=hybrid_topk,
+                values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
+                q_all=q_all,
+                skip_mask_i32=no_skip,
+                gqa_group=gqa_group,
+                block_size=bs,
+                q_scale=q_scale,
+                last_block_valid=last_block_valid,
+            )
     elif cache.values_fp16 is not None:
         # Legacy path: SDPA-with-skip. Tail blocks are masked to -inf (block
         # skipping — Paper 2 semantics). Used when adaptive K* is disabled.
@@ -834,40 +869,44 @@ def certified_attention_layer(
             kv_k, _, hd_k = cache.keys_fp16_cpu.shape
             h2d_key_bytes += kv_k * nt_sdpa * hd_k * cache.keys_fp16_cpu.element_size()
             h2d_key_blocks += (nt_sdpa + bs - 1) // bs
-        output = sdpa_attend_with_skip(
-            cache, q_all, skip_mask, gqa_group, q_scale,
-        )
+        with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+            output = sdpa_attend_with_skip(
+                cache, q_all, skip_mask, gqa_group, q_scale,
+            )
     elif cache.values_int4_packed is not None:
         # INT4 values: must use Triton kernel (SDPA can't handle INT4)
         if collect_stats:
-            rho = compute_tier2_residual_mass(m_b, S_b, skip_mask)
-            eta_int4 = cache.values_int4_errors.max().item()
-            v_format = decide_v_format(rho, eta_int4, v_tolerance)
+            with _PhaseTimer(phase_timings, "value_check"):
+                rho = compute_tier2_residual_mass(m_b, S_b, skip_mask)
+                eta_int4 = cache.values_int4_errors.max().item()
+                v_format = decide_v_format(rho, eta_int4, v_tolerance)
         else:
             v_format = "int4"
 
         if v_format == "int4":
-            output = selective_attend_multihead_int8k_int4v(
-                keys_int8=cache.keys_int8_active(),
-                keys_scale=cache.keys_scale_active(),
-                values_int4_packed=cache.values_int4_packed,
-                values_int4_scales=cache.values_int4_scales,
-                values_int4_zeros=cache.values_int4_zeros,
-                q_all=q_all,
-                skip_mask_i32=skip_mask.to(torch.int32),
-                gqa_group=gqa_group,
-                block_size=cache.block_size,
-                group_size=cache.values_int4_group_size,
-                q_scale=q_scale,
-            )
+            with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                output = selective_attend_multihead_int8k_int4v(
+                    keys_int8=cache.keys_int8_active(),
+                    keys_scale=cache.keys_scale_active(),
+                    values_int4_packed=cache.values_int4_packed,
+                    values_int4_scales=cache.values_int4_scales,
+                    values_int4_zeros=cache.values_int4_zeros,
+                    q_all=q_all,
+                    skip_mask_i32=skip_mask.to(torch.int32),
+                    gqa_group=gqa_group,
+                    block_size=cache.block_size,
+                    group_size=cache.values_int4_group_size,
+                    q_scale=q_scale,
+                )
         else:
             # Rung-2 (paper §3.4): INT4 values unsafe (ρ·η > v_tolerance) —
             # page in FP16 values from the Tier-2 CPU pinned mirror.
             rung2_fired = True
             if cache.values_fp16_cpu is not None:
-                values_fp16 = cache.values_fp16_cpu.to(
-                    device=cache.keys_int8.device, non_blocking=True,
-                )
+                with _PhaseTimer(phase_timings, "h2d_pagein"):
+                    values_fp16 = cache.values_fp16_cpu.to(
+                        device=cache.keys_int8.device, non_blocking=True,
+                    )
                 nt_v = cache.num_tokens
                 kv_v, _, dv_v = cache.values_fp16_cpu.shape
                 h2d_value_bytes += kv_v * nt_v * dv_v * cache.values_fp16_cpu.element_size()
@@ -876,16 +915,17 @@ def certified_attention_layer(
                 values_fp16 = cache.values_fp16
             else:
                 raise ValueError("INT4 unsafe and no FP16 fallback available")
-            output = selective_attend_multihead_int8(
-                keys_int8=cache.keys_int8_active(),
-                keys_scale=cache.keys_scale_active(),
-                values_fp16=values_fp16,
-                q_all=q_all,
-                skip_mask_i32=skip_mask.to(torch.int32),
-                gqa_group=gqa_group,
-                block_size=cache.block_size,
-                q_scale=q_scale,
-            )
+            with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                output = selective_attend_multihead_int8(
+                    keys_int8=cache.keys_int8_active(),
+                    keys_scale=cache.keys_scale_active(),
+                    values_fp16=values_fp16,
+                    q_all=q_all,
+                    skip_mask_i32=skip_mask.to(torch.int32),
+                    gqa_group=gqa_group,
+                    block_size=cache.block_size,
+                    q_scale=q_scale,
+                )
     else:
         raise ValueError("No values available in cache")
 

@@ -116,6 +116,12 @@ class CertifiedAttentionState:
     # fraction of non-top-K* blocks to FP16. Monitoring only; 0.0 disables.
     exploration_rate: float = 0.0
     step_stats: list = None  # per-step stats accumulator
+    # Test 2 phase-timing accumulator. When not None, certified_attention_layer
+    # records per-phase wall time (μs) via torch.cuda.Event timers into this
+    # dict. ~5 GPU syncs per layer per step when enabled — do NOT use during
+    # throughput measurements. Accumulates across layers and across steps;
+    # the harness should snapshot + reset between steps for per-step series.
+    phase_timings: dict | None = None
 
     def __post_init__(self):
         if self.step_stats is None:
@@ -586,6 +592,7 @@ class DotCacheLlamaAttention(nn.Module):
             score_consistency_check=cert_state.score_consistency_check,
             eps_guard=cert_state.eps_guard,
             exploration_rate=cert_state.exploration_rate,
+            phase_timings=cert_state.phase_timings,
         )
 
         # Accumulate stats (only if collection enabled)
