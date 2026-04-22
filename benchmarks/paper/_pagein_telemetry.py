@@ -59,7 +59,13 @@ class PageinTelemetry:
             # Aggregate only the layer entries appended since the previous
             # record_step. Do NOT clear — other callers (e.g. niah.py's
             # end-of-cell ranking_fallback_summary) still need the full
-            # accumulator at cell boundaries.
+            # accumulator at cell boundaries. Defensively reset the cursor
+            # when step_stats has shrunk (some harnesses — e.g. pg19 — run
+            # their own aggregate+clear after each decode step); a stale
+            # cursor past len means "nothing new since last call" which is
+            # wrong on the iteration after the clear.
+            if self._step_stats_cursor > len(cs.step_stats):
+                self._step_stats_cursor = 0
             agg = cs.aggregate_step_stats(since=self._step_stats_cursor)
             self._step_stats_cursor = len(cs.step_stats)
         except Exception:

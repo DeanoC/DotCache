@@ -117,6 +117,7 @@ def compute_certified_perplexity(
     exploration_rate: float = 0.0,
     rung1_threshold: float = 0.02,
     rung1_multiplier: float = 2.0,
+    telemetry_collector=None,
 ) -> dict:
     """Compute perplexity using certified attention decode.
 
@@ -227,6 +228,8 @@ def compute_certified_perplexity(
                     cache_position=cache_position,
                     position_ids=cache_position.unsqueeze(0),
                 )
+            if telemetry_collector is not None:
+                telemetry_collector.record_step()
             # Loss: predict token at prefix_len + t + 1
             logits = out.logits[:, -1, :].float()
             target = input_ids[:, prefix_len + t + 1]
@@ -321,6 +324,10 @@ def main():
     parser.add_argument("--exploration-rate", type=float, default=0.0)
     parser.add_argument("--rung1-threshold", type=float, default=0.02)
     parser.add_argument("--rung1-multiplier", type=float, default=2.0)
+    parser.add_argument("--pagein-telemetry", action="store_true",
+                        help="Collect per-step page-in / rung / VRAM-cache telemetry (Test 3)")
+    parser.add_argument("--telemetry-output", default=None,
+                        help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -360,6 +367,13 @@ def main():
 
     # Certified perplexity
     cert_result = None
+    telemetry_collector = None
+    if args.pagein_telemetry and not args.dense_only:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        from _pagein_telemetry import PageinTelemetry
+        telemetry_collector = PageinTelemetry(adapter, enabled=True)
+        telemetry_collector.start()
     if not args.dense_only:
         print(f"\n{'='*50}")
         print("Certified perplexity")
@@ -383,10 +397,21 @@ def main():
             exploration_rate=args.exploration_rate,
             rung1_threshold=args.rung1_threshold,
             rung1_multiplier=args.rung1_multiplier,
+            telemetry_collector=telemetry_collector,
         )
         t_cert = time.perf_counter() - t0
         print(f"Certified: ppl={cert_result['perplexity']:.2f} "
               f"({cert_result['total_tokens']} tokens, {t_cert:.1f}s)")
+        if telemetry_collector is not None:
+            telemetry_collector.finish()
+            tele_path = args.telemetry_output or (str(args.output).replace(".json", ".pagein.json"))
+            telemetry_collector.write_json(tele_path)
+            s = telemetry_collector.summary()
+            print(f"Page-in telemetry: n_steps={s.get('n_steps',0)} "
+                  f"h2d_mean={s.get('h2d_total_bytes_mean',0)/1024:.1f} KB/step, "
+                  f"pct_zero_pagein={s.get('pct_steps_zero_pagein',0):.1%}, "
+                  f"rung1_rate={s.get('rung1_rate',0):.2%}, rung2_rate={s.get('rung2_rate',0):.2%}, "
+                  f"rung3_rate={s.get('rung3_rate',0):.2%}, rung4_rate={s.get('rung4_rate',0):.2%}")
 
     # Summary
     print(f"\n{'='*50}")

@@ -1,0 +1,357 @@
+"""Test 1: decode throughput (tok/s) at 8K context, dense vs certified variants.
+
+Measures steady-state decode throughput on NousResearch/Meta-Llama-3.1-8B
+(INT8 bitsandbytes). For each config:
+
+  1. Build an 8K-token prefill once.
+  2. Prefill → first token.
+  3. Decode `decode_tokens` more tokens one at a time.
+  4. Discard the first `warmup_tokens` as warmup; time the remainder with
+     torch.cuda.Event timers.
+
+Repeats the prefill+decode block `repeats` times. Reports mean ± std tok/s
+plus P50/P95/P99 per-token latency, prefill time, GPU mem peak.
+
+Configs:
+
+  dense                  — adapter.set_mode("dense"): HF's FlashAttention path,
+                           reference baseline.
+  certified              — full certified path (tau_cov=0.995, k_min=2,
+                           k_max=128, ranking_fallback, score_consistency_check,
+                           Rung-1/2/3/4 all active, exploration_rate=0.02).
+  certified-no-fallback  — certified with ranking_fallback=False,
+                           score_consistency_check=False, exploration_rate=0
+                           (Rung-3/4 silenced; Rung-1/2 still active).
+  quantised-only         — tau_cov=None (no adaptive K*), no fallbacks;
+                           Phase-1 scoring still runs for block ε certification
+                           but the full rung machinery is off.
+  triton-fp16            — *not implemented*. A true Phase-1 bypass would
+                           require a new adapter path. Skipped with a note.
+
+Per-repeat output JSON fields match the spec in the paper's Test 1 appendix.
+"""
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import os
+import statistics
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+
+
+def build_prefill(tokenizer, context_tokens: int) -> str:
+    FILLER = (
+        "The history of mathematics spans thousands of years and encompasses many "
+        "different cultures and civilizations. "
+    )
+    question = "\nContinue:"
+    ft = len(tokenizer.encode(FILLER, add_special_tokens=False))
+    qt = len(tokenizer.encode(question, add_special_tokens=False))
+    avail = context_tokens - qt - 50
+    nb = max(avail // ft, 2)
+    return FILLER * nb + question
+
+
+def _cert_kwargs(config: str) -> dict[str, Any]:
+    """Parameters for CertifiedAttentionState by config."""
+    if config == "dense":
+        return {}
+    base = dict(
+        default_epsilon=1e-4,
+        top_k_fp16_keys=4,
+        tau_cov=0.995,
+        k_min=2,
+        k_max=128,
+        rung1_threshold=0.02,
+        rung1_multiplier=2.0,
+    )
+    if config == "certified":
+        base.update(dict(
+            ranking_fallback=True,
+            ranking_r=1,
+            ranking_fallback_mode="full",
+            score_consistency_check=True,
+            eps_guard=0.01,
+            exploration_rate=0.02,
+        ))
+    elif config == "certified-no-fallback":
+        base.update(dict(
+            ranking_fallback=False,
+            score_consistency_check=False,
+            exploration_rate=0.0,
+        ))
+    elif config == "quantised-only":
+        base.update(dict(
+            tau_cov=None,
+            rung1_threshold=1.0,
+            ranking_fallback=False,
+            score_consistency_check=False,
+            exploration_rate=0.0,
+        ))
+    elif config == "triton-fp16":
+        raise NotImplementedError(
+            "triton-fp16 requires a Phase-1-bypass adapter path that does not "
+            "exist in this codebase; measure separately once implemented."
+        )
+    else:
+        raise ValueError(f"unknown config: {config}")
+    return base
+
+
+def run_one_repeat(
+    model, tokenizer, adapter, config: str,
+    prefill_input_ids: torch.Tensor, decode_tokens: int, warmup_tokens: int,
+    device: str,
+) -> dict[str, Any]:
+    """Run one prefill + decode pass, return timing dict."""
+    from dotcache.integrations.llama import CertifiedAttentionState, _ensure_certified_imports
+    from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
+
+    torch.cuda.empty_cache()
+    gc.collect()
+    torch.cuda.reset_peak_memory_stats()
+
+    seq_len = prefill_input_ids.shape[1]
+
+    # Prefill timing: one model pass + optional tiered-cache build.
+    prefill_t0 = time.perf_counter()
+    adapter.set_mode("dense")
+    with torch.inference_mode():
+        out = model(input_ids=prefill_input_ids, use_cache=True)
+    past_kv = out.past_key_values
+    first_token = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+    del out
+    prefill_dense_s = time.perf_counter() - prefill_t0
+
+    if config == "dense":
+        # Continue HF's dense KV-cache decode.
+        cache = past_kv
+        cert_state = None
+    else:
+        _ensure_certified_imports()
+        layer_ids = list(range(model.config.num_hidden_layers))
+        tiered_caches = create_tiered_cache_from_model(past_kv, layer_ids)
+        del past_kv
+        gc.collect()
+        torch.cuda.empty_cache()
+        cert_state = CertifiedAttentionState(
+            tiered_caches=tiered_caches,
+            layer_epsilons={},
+            collect_stats=False,   # timed run — avoid the per-layer stat sync
+            append_kv=True,
+            **_cert_kwargs(config),
+        )
+        adapter.certified_state = cert_state
+        adapter.set_mode("certified")
+    prefill_total_s = time.perf_counter() - prefill_t0
+
+    # Decode loop: per-token CUDA Event timing.
+    per_tok_ms: list[float] = []
+    cache_position = torch.tensor([seq_len], dtype=torch.long, device=device)
+    current_input = first_token
+    gen_count = 0
+
+    start_evt = torch.cuda.Event(enable_timing=True)
+    end_evt = torch.cuda.Event(enable_timing=True)
+
+    for t in range(decode_tokens):
+        start_evt.record()
+        with torch.inference_mode():
+            if config == "dense":
+                out = model(
+                    input_ids=current_input, past_key_values=cache, use_cache=True,
+                )
+                cache = out.past_key_values
+            else:
+                out = model(
+                    input_ids=current_input, use_cache=False,
+                    cache_position=cache_position,
+                    position_ids=cache_position.unsqueeze(0),
+                )
+        end_evt.record()
+        torch.cuda.synchronize()
+        per_tok_ms.append(start_evt.elapsed_time(end_evt))
+
+        tid = out.logits[:, -1, :].argmax(dim=-1)
+        current_input = tid.view(1, 1)
+        cache_position = cache_position + 1
+        gen_count += 1
+
+    if cert_state is not None:
+        adapter.certified_state = None
+        adapter.set_mode("dense")
+        del cert_state
+
+    gpu_mem_peak_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
+
+    # Warmup-discarded timings.
+    timed = per_tok_ms[warmup_tokens:]
+    total_ms = sum(timed)
+    n = len(timed)
+    tok_per_sec = 1000.0 * n / total_ms if total_ms > 0 else 0.0
+    timed_sorted = sorted(timed)
+
+    def pct(p):
+        if not timed_sorted:
+            return 0.0
+        return timed_sorted[min(n - 1, int(p * (n - 1)))]
+
+    return {
+        "config": config,
+        "tok_per_sec": tok_per_sec,
+        "ms_per_token_mean": total_ms / n if n else 0.0,
+        "ms_per_token_median": pct(0.5),
+        "ms_per_token_p50": pct(0.5),
+        "ms_per_token_p95": pct(0.95),
+        "ms_per_token_p99": pct(0.99),
+        "ms_per_token_min": min(timed) if timed else 0.0,
+        "ms_per_token_max": max(timed) if timed else 0.0,
+        "prefill_time_ms": prefill_total_s * 1000.0,
+        "prefill_time_dense_ms": prefill_dense_s * 1000.0,
+        "decode_tokens_measured": n,
+        "decode_tokens_warmup": warmup_tokens,
+        "gpu_mem_peak_mb": gpu_mem_peak_mb,
+        "seq_len": seq_len,
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
+    ap.add_argument("--context-length", type=int, default=8192)
+    ap.add_argument("--decode-tokens", type=int, default=256)
+    ap.add_argument("--warmup-tokens", type=int, default=16)
+    ap.add_argument("--repeats", type=int, default=10)
+    ap.add_argument("--configs", nargs="+",
+                    default=["dense", "certified", "certified-no-fallback", "quantised-only"])
+    ap.add_argument("--output", default="benchmarks/results/perf_tests_20260422/test1_throughput.json")
+    args = ap.parse_args()
+
+    os.environ.setdefault("DOTCACHE_V_TOL", "0.05")
+
+    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+    from dotcache.integrations.llama import LlamaDotCacheModelAdapter
+    from dotcache.config import DotCacheConfig
+
+    token = os.environ.get("HF_TOKEN") or None
+    print(f"Loading {args.model} (INT8)...")
+    tokenizer = AutoTokenizer.from_pretrained(args.model, token=token)
+    quant = BitsAndBytesConfig(load_in_8bit=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model, quantization_config=quant, device_map="auto", token=token,
+    )
+    model.eval()
+    head_dim = model.config.hidden_size // model.config.num_attention_heads
+    cfg = DotCacheConfig(head_dim=head_dim)
+    adapter = LlamaDotCacheModelAdapter(model, cfg)
+    device = next(model.parameters()).device
+
+    prompt = build_prefill(tokenizer, args.context_length)
+    ids = tokenizer(prompt, return_tensors="pt", truncation=True,
+                    max_length=args.context_length).to(device)
+    seq_len = ids["input_ids"].shape[1]
+    print(f"Prefill seq_len = {seq_len}")
+    print(f"Configs: {args.configs}  repeats={args.repeats}  decode={args.decode_tokens}  warmup={args.warmup_tokens}")
+
+    # Warm the loader with one throwaway prefill.
+    adapter.set_mode("dense")
+    with torch.inference_mode():
+        _ = model(**ids, use_cache=True)
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    per_config: dict[str, list[dict]] = {}
+    for config in args.configs:
+        per_config[config] = []
+        print(f"\n=== config={config} ===")
+        for r in range(args.repeats):
+            try:
+                rep = run_one_repeat(
+                    model, tokenizer, adapter, config,
+                    prefill_input_ids=ids["input_ids"],
+                    decode_tokens=args.decode_tokens,
+                    warmup_tokens=args.warmup_tokens,
+                    device=str(device),
+                )
+                per_config[config].append(rep)
+                print(f"  [{r+1}/{args.repeats}] tok/s={rep['tok_per_sec']:.2f}  "
+                      f"p50={rep['ms_per_token_p50']:.2f}ms  p95={rep['ms_per_token_p95']:.2f}ms  "
+                      f"prefill={rep['prefill_time_ms']:.1f}ms  gpu_peak={rep['gpu_mem_peak_mb']:.0f}MB")
+            except NotImplementedError as e:
+                print(f"  skip: {e}")
+                per_config[config].append({"skipped": True, "reason": str(e)})
+                break
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    # Aggregate per config.
+    summary: dict[str, dict] = {}
+    for config, reps in per_config.items():
+        good = [r for r in reps if "skipped" not in r]
+        if not good:
+            summary[config] = {"skipped": True}
+            continue
+        tps = [r["tok_per_sec"] for r in good]
+        p50s = [r["ms_per_token_p50"] for r in good]
+        p95s = [r["ms_per_token_p95"] for r in good]
+        p99s = [r["ms_per_token_p99"] for r in good]
+        pre = [r["prefill_time_ms"] for r in good]
+        gpu = [r["gpu_mem_peak_mb"] for r in good]
+        summary[config] = {
+            "n_repeats": len(good),
+            "tok_per_sec_mean": statistics.mean(tps),
+            "tok_per_sec_std": statistics.stdev(tps) if len(tps) > 1 else 0.0,
+            "tok_per_sec_min": min(tps),
+            "tok_per_sec_max": max(tps),
+            "ms_per_token_p50_median": statistics.median(p50s),
+            "ms_per_token_p95_median": statistics.median(p95s),
+            "ms_per_token_p99_median": statistics.median(p99s),
+            "prefill_time_ms_median": statistics.median(pre),
+            "gpu_mem_peak_mb_max": max(gpu),
+        }
+
+    # Derived decomposition vs dense.
+    if "dense" in summary and not summary["dense"].get("skipped"):
+        d = summary["dense"]["tok_per_sec_mean"]
+        for k, v in summary.items():
+            if k == "dense" or v.get("skipped"): continue
+            v["overhead_vs_dense_pct"] = (d / v["tok_per_sec_mean"] - 1.0) * 100.0
+
+    payload = {
+        "hardware": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "unknown",
+        "model": args.model,
+        "context_length": args.context_length,
+        "decode_tokens": args.decode_tokens,
+        "warmup_tokens": args.warmup_tokens,
+        "repeats": args.repeats,
+        "seq_len": seq_len,
+        "per_config": per_config,
+        "summary": summary,
+    }
+    p = Path(args.output); p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, indent=2))
+    print(f"\nWrote {p}")
+
+    print("\n=== Summary ===")
+    print(f"{'config':<24} {'tok/s mean':>12} {'± std':>8} {'p50 ms':>8} {'p95 ms':>8} {'p99 ms':>8} {'vs dense':>10}")
+    for k in args.configs:
+        s = summary.get(k, {})
+        if s.get("skipped"):
+            print(f"{k:<24} SKIPPED")
+            continue
+        oh = s.get("overhead_vs_dense_pct", float("nan"))
+        oh_str = f"{oh:+.1f}%" if oh == oh else "—"
+        print(f"{k:<24} {s['tok_per_sec_mean']:>12.2f} {s.get('tok_per_sec_std',0):>8.2f} "
+              f"{s['ms_per_token_p50_median']:>8.2f} {s['ms_per_token_p95_median']:>8.2f} "
+              f"{s['ms_per_token_p99_median']:>8.2f} {oh_str:>10}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
