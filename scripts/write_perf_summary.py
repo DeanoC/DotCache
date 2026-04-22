@@ -51,7 +51,12 @@ def main() -> int:
         s = t1["summary"]
         W("| Config | tok/s mean | ± std | p50 ms | p95 ms | p99 ms | Overhead vs dense |")
         W("|---|---|---|---|---|---|---|")
-        order = ["dense", "certified", "certified-no-fallback", "quantised-only", "triton-fp16"]
+        # quantised-only is excluded: with tau_cov=None it falls through to
+        # the legacy SDPA-with-skip path which reads the bounded FP16 scratch
+        # without a cache pre-fetch, producing numerically wrong output.
+        # triton-fp16 requires a Phase-1 bypass adapter path that does not
+        # exist in this codebase.
+        order = ["dense", "certified", "certified-no-fallback"]
         for c in order:
             if c not in s:
                 continue

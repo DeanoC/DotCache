@@ -540,6 +540,31 @@ class TieredKeyCacheLayer:
             seen.add(bi)
             ordered_ids.append(bi)
 
+        capacity = int(self.fp16_key_cache_capacity)
+
+        # Special case: capacity == 0 is the "no cache" floor used for the
+        # capacity sweep. Every access is a miss, data is H2D'd into the
+        # scratch at the right offset so the kernel reads correct bytes this
+        # step, and nothing is retained — next step re-pages the same blocks.
+        if capacity == 0:
+            for bid in ordered_ids:
+                start = bid * bs
+                end = start + bs
+                if end > self.num_tokens:
+                    end = self.num_tokens
+                if end > start and self.keys_fp16_cpu is not None:
+                    src = self.keys_fp16_cpu[:, start:end, :]
+                    self.keys_fp16_gpu[:, start:end, :] = src.to(
+                        device=device, non_blocking=True
+                    )
+                    h2d_bytes += self.kv_heads * (end - start) * self.head_dim * el
+                    misses += 1
+            self._fp16_key_cache_hits += hits
+            self._fp16_key_cache_misses += misses
+            self._fp16_key_cache_h2d_bytes += h2d_bytes
+            self._fp16_key_cache_evictions += evictions
+            return (hits, misses, h2d_bytes, evictions)
+
         for bid in ordered_ids:
             if bid in self._fp16_key_resident:
                 hits += 1
@@ -552,7 +577,7 @@ class TieredKeyCacheLayer:
                 continue
 
             # Miss — evict LRU victim if cache is full.
-            if len(self._fp16_key_resident) >= int(self.fp16_key_cache_capacity):
+            if len(self._fp16_key_resident) >= capacity:
                 if self._fp16_key_lru:
                     victim = self._fp16_key_lru.pop()  # tail = least recent
                     self._fp16_key_resident.discard(victim)

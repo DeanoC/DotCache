@@ -12,7 +12,6 @@
 | `dense` | 27.71 | 0.12 | 35.82 | 38.95 | 40.22 | — |
 | `certified` | 3.01 | 0.01 | 330.63 | 345.15 | 349.56 | +820.2% |
 | `certified-no-fallback` | 3.27 | 0.03 | 303.48 | 317.92 | 323.58 | +747.2% |
-| `quantised-only` | 16.19 | 0.17 | 61.25 | 65.19 | 67.95 | +71.2% |
 
 **Net user-visible overhead (certified vs dense):** 820.2%. dense = 27.71 tok/s, certified = 3.01 tok/s.
 **Fallback-monitor cost:** 8.6% additional throughput loss going from certified-no-fallback (3.27 tok/s) to full certified (3.01 tok/s).

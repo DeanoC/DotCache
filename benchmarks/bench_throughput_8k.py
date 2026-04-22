@@ -185,7 +185,32 @@ def run_one_repeat(
         cache_position = cache_position + 1
         gen_count += 1
 
+    cache_stats = {}
     if cert_state is not None:
+        # Sum the FP16 cache counters across all layer caches before we
+        # tear the state down. Counters accumulate independently of
+        # `collect_stats`, so they're valid even in a timed (no-sync) run.
+        hits = misses = bytes_ = evicts = 0
+        capacity = None
+        for c in cert_state.tiered_caches.values():
+            hits += int(getattr(c, "_fp16_key_cache_hits", 0))
+            misses += int(getattr(c, "_fp16_key_cache_misses", 0))
+            bytes_ += int(getattr(c, "_fp16_key_cache_h2d_bytes", 0))
+            evicts += int(getattr(c, "_fp16_key_cache_evictions", 0))
+            if capacity is None:
+                capacity = c.fp16_key_cache_capacity
+        total_acc = hits + misses
+        cache_stats = {
+            "fp16_cache_capacity_blocks": capacity,
+            "fp16_cache_hits": hits,
+            "fp16_cache_misses": misses,
+            "fp16_cache_h2d_bytes": bytes_,
+            "fp16_cache_evictions": evicts,
+            "fp16_cache_hit_rate": (hits / total_acc) if total_acc else 0.0,
+            "fp16_cache_h2d_mb_per_decode_step": (
+                (bytes_ / gen_count / (1024 ** 2)) if gen_count else 0.0
+            ),
+        }
         adapter.certified_state = None
         adapter.set_mode("dense")
         del cert_state
@@ -220,6 +245,7 @@ def run_one_repeat(
         "decode_tokens_warmup": warmup_tokens,
         "gpu_mem_peak_mb": gpu_mem_peak_mb,
         "seq_len": seq_len,
+        **cache_stats,
     }
 
 
