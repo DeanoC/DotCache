@@ -15,6 +15,7 @@ Two value storage modes:
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -76,8 +77,17 @@ class TieredKeyCacheLayer:
     #     cache that reduces H2D via locality.
     keys_fp16_gpu: torch.Tensor | None = None    # [kv_heads, N, head_dim] model dtype, cuda
     fp16_key_cache_capacity: int | None = None   # None = full mirror; int = bounded cache (# blocks)
-    _fp16_key_resident: set = field(default_factory=set)    # block_ids currently valid in keys_fp16_gpu
-    _fp16_key_lru: list = field(default_factory=list)       # block_ids in LRU order (front = most recent)
+    # OrderedDict serves double duty as both the residency set (membership
+    # test via `bid in od`) and the LRU order (tail = most recently used;
+    # front = next LRU victim). All operations are O(1):
+    #   MRU bump:    od.move_to_end(bid, last=True)
+    #   insert MRU:  od[bid] = True
+    #   evict LRU:   od.popitem(last=False)
+    # The caller controls insertion order to implement priority-ordered
+    # eviction: insert low-priority blocks first (they land toward the
+    # LRU-front and get evicted first); insert high-priority blocks last
+    # (they stay at the MRU-tail and survive longer).
+    _fp16_key_resident: "OrderedDict[int, bool]" = field(default_factory=OrderedDict)
     _fp16_key_cache_hits: int = 0
     _fp16_key_cache_misses: int = 0
     _fp16_key_cache_h2d_bytes: int = 0
@@ -204,8 +214,7 @@ class TieredKeyCacheLayer:
         # Legacy full-mirror mode: mark every prefill block as resident so
         # ensure_fp16_keys_resident short-circuits to all-hit.
         if fp16_key_cache_capacity is None:
-            result._fp16_key_resident = set(range(num_blocks))
-            result._fp16_key_lru = list(range(num_blocks))
+            result._fp16_key_resident = OrderedDict((i, True) for i in range(num_blocks))
         return result
 
     @classmethod
@@ -316,12 +325,12 @@ class TieredKeyCacheLayer:
         # (in bounded-capacity mode) evict an LRU victim to make room.
         if self.fp16_key_cache_capacity is not None and block_idx not in self._fp16_key_resident:
             if len(self._fp16_key_resident) >= int(self.fp16_key_cache_capacity):
-                if self._fp16_key_lru:
-                    victim = self._fp16_key_lru.pop()
-                    self._fp16_key_resident.discard(victim)
+                if self._fp16_key_resident:
+                    self._fp16_key_resident.popitem(last=False)  # LRU = front
                     self._fp16_key_cache_evictions += 1
-            self._fp16_key_resident.add(block_idx)
-            self._fp16_key_lru.insert(0, block_idx)
+            # New block lands at MRU (tail). It's semantically "most recent"
+            # since we just wrote its INT8+FP16 data.
+            self._fp16_key_resident[int(block_idx)] = True
 
         # Update dequant buffer with INT8-dequantised values (replaces the exact FP16)
         if self._keys_deq_f32 is not None:
@@ -568,19 +577,14 @@ class TieredKeyCacheLayer:
         for bid in ordered_ids:
             if bid in self._fp16_key_resident:
                 hits += 1
-                # Bump to front of LRU (most recently used).
-                try:
-                    self._fp16_key_lru.remove(bid)
-                except ValueError:
-                    pass
-                self._fp16_key_lru.insert(0, bid)
+                # Bump to MRU (tail). O(1) with OrderedDict.
+                self._fp16_key_resident.move_to_end(bid, last=True)
                 continue
 
             # Miss — evict LRU victim if cache is full.
             if len(self._fp16_key_resident) >= capacity:
-                if self._fp16_key_lru:
-                    victim = self._fp16_key_lru.pop()  # tail = least recent
-                    self._fp16_key_resident.discard(victim)
+                if self._fp16_key_resident:
+                    self._fp16_key_resident.popitem(last=False)  # LRU = front
                     evictions += 1
 
             # H2D copy: CPU pinned → GPU scratch at the block's offset. The
@@ -597,8 +601,10 @@ class TieredKeyCacheLayer:
                 )
                 h2d_bytes += self.kv_heads * (end - start) * self.head_dim * el
                 misses += 1
-                self._fp16_key_resident.add(bid)
-                self._fp16_key_lru.insert(0, bid)
+                # Newly loaded block lands at MRU. Caller-controlled ordering
+                # means high-priority ids arrive last → end up at tail → survive
+                # longer; low-priority ids arrive first → evicted sooner.
+                self._fp16_key_resident[bid] = True
 
         self._fp16_key_cache_hits += hits
         self._fp16_key_cache_misses += misses

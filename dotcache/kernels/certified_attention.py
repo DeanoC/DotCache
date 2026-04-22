@@ -24,6 +24,7 @@ from dotcache.kernels.selective_attend_triton import (
     selective_attend_multihead_int8,
     selective_attend_multihead_int8k_int4v,
     selective_attend_multihead_hybrid,
+    selective_attend_multihead_hybrid_split_k,
 )
 
 
@@ -900,7 +901,6 @@ def certified_attention_layer(
             num_q_heads, n_active_blocks_hybrid, dtype=torch.int32, device=q_all.device,
         )
         nt_hybrid = n_active_blocks_hybrid * bs
-        from dotcache.kernels.selective_attend_triton import selective_attend_multihead_hybrid
         keys_fp16_gpu = cache.keys_fp16_gpu
         if keys_fp16_gpu is None:
             with _PhaseTimer(phase_timings, "h2d_pagein"):
@@ -915,8 +915,25 @@ def certified_attention_layer(
             # reads them. Miss → H2D from keys_fp16_cpu, evict LRU if full.
             # Trailing partial block is kept current by append_token writes
             # and doesn't need cache tracking.
+            #
+            # Priority-ordered iteration (paper §3.2, follow-up): the cache
+            # is insert-MRU-last, so whatever we iterate LAST becomes the
+            # hardest-to-evict. Sort ASCENDING by max m_b across heads so
+            # high-scoring blocks (more likely needed next step) end up at
+            # MRU-tail and survive longer; low-scoring blocks land near the
+            # LRU-front and are evicted first on the next miss. This
+            # replaces the prior block-ID-sorted iteration, which made
+            # low-ID blocks systematically the LRU victims regardless of
+            # their actual mass.
             top_union = adaptive_topk_mask[:, :n_qblocks].any(dim=0)
-            needed_blocks = top_union.nonzero().flatten().tolist()
+            union_block_ids = top_union.nonzero().flatten()
+            if union_block_ids.numel() > 0:
+                # Max score across heads — union-mass proxy.
+                block_priority = m_b[:, :n_qblocks].amax(dim=0)[union_block_ids]
+                sort_order = torch.argsort(block_priority, descending=False)
+                needed_blocks = union_block_ids[sort_order].tolist()
+            else:
+                needed_blocks = []
             with _PhaseTimer(phase_timings, "h2d_pagein"):
                 c_hits, c_misses, c_bytes, c_evict = cache.ensure_fp16_keys_resident(needed_blocks)
             h2d_key_bytes += c_bytes
@@ -925,20 +942,47 @@ def certified_attention_layer(
             fp16_cache_misses_step += c_misses
             fp16_cache_evictions_step += c_evict
             fp16_cache_needed_blocks += len(needed_blocks)
-        with _PhaseTimer(phase_timings, "phase2_fused_attend"):
-            output = selective_attend_multihead_hybrid(
-                keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
-                keys_scale=keys_scale_active.contiguous(),
-                keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
-                topk_mask=hybrid_topk,
-                values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
-                q_all=q_all,
-                skip_mask_i32=no_skip,
-                gqa_group=gqa_group,
-                block_size=bs,
-                q_scale=q_scale,
-                last_block_valid=last_block_valid,
-            )
+        # DOTCACHE_FAST_ATTEND=0 reverts to the single-program-per-head
+        # kernel for A/B comparison. Default is split-K (FlashDecoding-style),
+        # which is 15-20× faster at 64K context on Blackwell (grid expands
+        # from num_q_heads to num_q_heads × num_splits, filling the SMs).
+        import os as _os
+        _fast = _os.environ.get("DOTCACHE_FAST_ATTEND", "1") != "0"
+        if _fast:
+            # Stride-aware split-K kernel reads non-contig slices directly
+            # via per-KV stride args — no pre-copy needed. torch.profiler
+            # shows aten::copy_ at ~25 ms/step of self-CUDA time at 64K;
+            # dropping the four per-layer .contiguous() calls eliminates
+            # most of that.
+            with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                output = selective_attend_multihead_hybrid_split_k(
+                    keys_int8=cache.keys_int8[:, :nt_hybrid, :],
+                    keys_scale=keys_scale_active,
+                    keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :],
+                    topk_mask=hybrid_topk,
+                    values_fp16=cache.values_fp16[:, :nt_hybrid, :],
+                    q_all=q_all,
+                    skip_mask_i32=no_skip,
+                    gqa_group=gqa_group,
+                    block_size=bs,
+                    q_scale=q_scale,
+                    last_block_valid=last_block_valid,
+                )
+        else:
+            with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                output = selective_attend_multihead_hybrid(
+                    keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
+                    keys_scale=keys_scale_active.contiguous(),
+                    keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
+                    topk_mask=hybrid_topk,
+                    values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
+                    q_all=q_all,
+                    skip_mask_i32=no_skip,
+                    gqa_group=gqa_group,
+                    block_size=bs,
+                    q_scale=q_scale,
+                    last_block_valid=last_block_valid,
+                )
     elif cache.values_fp16 is not None:
         # Legacy path: SDPA-with-skip. Tail blocks are masked to -inf (block
         # skipping — Paper 2 semantics). Used when adaptive K* is disabled.

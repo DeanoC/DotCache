@@ -550,6 +550,294 @@ def _multihead_selective_attend_hybrid_kernel(
         tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
 
 
+# ─── Split-K (FlashDecoding-style) hybrid kernel ──────────────────────
+#
+# The single-program-per-Q-head hybrid kernel above launches only
+# `num_q_heads` programs (32 for Llama-3.1-8B), leaving most SMs idle on a
+# wide GPU like Blackwell (188 SMs on RTX Pro 6000). Each program walks
+# `num_blocks` blocks serially — at 64K context / block_size=16 that's
+# 4096 blocks per program.
+#
+# Split-K partitions the block axis across `num_splits` programs per Q
+# head:
+#   grid = (num_q_heads * num_splits,)
+#   each program handles `blocks_per_split` contiguous blocks
+#   each emits a partial (m, l, acc) for its chunk
+# Then a tiny reduction kernel merges the partials per Q head using
+# online-softmax rules.
+#
+# State is FP32 (not FP64) — FlashAttention uses FP32 state without
+# numerical issues; on Blackwell consumer parts FP64 is ~1/32 FP32 rate.
+
+
+@triton.jit
+def _hybrid_split_k_partial_kernel(
+    K_int8_ptr, K_scale_ptr, K_fp16_ptr,
+    TopK_mask_ptr, V_ptr, Q_ptr, Skip_ptr,
+    # Per-split outputs: [num_q_heads, num_splits, ...]
+    M_part_ptr,   # [num_q_heads, num_splits] float32
+    L_part_ptr,   # [num_q_heads, num_splits] float32
+    Acc_part_ptr, # [num_q_heads, num_splits, d_v] float32
+    # Layout — per-KV-head token strides (in elements) let the kernel walk
+    # a non-contiguous slice of the cache tensor without needing a prior
+    # .contiguous() copy. For a contig-packed [kv, N, D] tensor with dim-0
+    # stride = N*D, stride_kv_k = N*D. For a slice that keeps the same
+    # dim-0 stride as the parent allocation, stride_kv_k = N_alloc*D > N*D.
+    # Per-KV strides are passed as runtime args (not constexpr) because
+    # their values (allocation size × head_dim) vary across models/caches;
+    # making them constexpr would force a Triton recompile per unique stride,
+    # without any observed codegen benefit.
+    stride_kv_k,     # K_int8: elements between consecutive kv heads
+    stride_kv_kfp16, # K_fp16: elements between consecutive kv heads
+    stride_kv_v,     # V: elements between consecutive kv heads
+    stride_kv_scale, # K_scale: elements between consecutive kv heads
+    stride_k: tl.constexpr,        # elements between consecutive tokens in K (= head_dim)
+    stride_v: tl.constexpr,        # elements between consecutive tokens in V (= d_v)
+    num_blocks: tl.constexpr,
+    num_splits: tl.constexpr,
+    blocks_per_split: tl.constexpr,
+    block_size: tl.constexpr,
+    head_dim: tl.constexpr,
+    d_v: tl.constexpr,
+    q_scale: tl.constexpr,
+    num_q_heads: tl.constexpr,
+    gqa_group: tl.constexpr,
+    last_block_valid: tl.constexpr,
+    TILE_D: tl.constexpr,
+    TILE_V: tl.constexpr,
+):
+    """One program per (Q head, split). Computes partial online-softmax
+    state over [split_start, split_end) blocks; reduction kernel merges."""
+    prog = tl.program_id(0)
+    qh = prog // num_splits
+    sp = prog % num_splits
+    valid_q = qh < num_q_heads
+    if valid_q:
+        kvh = qh // gqa_group
+        k_base_elem = kvh * stride_kv_k
+        kfp16_base_elem = kvh * stride_kv_kfp16
+        v_base_elem = kvh * stride_kv_v
+
+        block_start = sp * blocks_per_split
+        block_end = tl.minimum(block_start + blocks_per_split, num_blocks)
+
+        t_offs = tl.arange(0, block_size)
+        d_offs = tl.arange(0, TILE_D)
+        v_offs = tl.arange(0, TILE_V)
+        v_mask = v_offs < d_v
+
+        # FP32 online-softmax state (partial for this split).
+        m = tl.full((), float("-inf"), dtype=tl.float32)
+        l = tl.full((), 0.0, dtype=tl.float32)
+        acc = tl.zeros((TILE_V,), dtype=tl.float32)
+
+        for bid in range(block_start, block_end):
+            skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
+            if skip_val == 0:
+                base_tok = bid * block_size
+                use_fp16 = tl.load(TopK_mask_ptr + qh * num_blocks + bid)
+
+                scores = tl.zeros((block_size,), dtype=tl.float32)
+                scale_base = kvh * stride_kv_scale + bid * head_dim
+                int8_row_ptrs = K_int8_ptr + k_base_elem + (base_tok + t_offs) * stride_k
+                fp16_row_ptrs = K_fp16_ptr + kfp16_base_elem + (base_tok + t_offs) * stride_k
+
+                for d_start in range(0, head_dim, TILE_D):
+                    d_off = d_start + d_offs
+                    dm = d_off < head_dim
+                    q_tile = tl.load(Q_ptr + qh * head_dim + d_off, mask=dm, other=0.0).to(tl.float32)
+                    ch_scale = tl.load(K_scale_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
+
+                    k_int8 = tl.load(int8_row_ptrs[:, None] + d_off[None, :], mask=dm[None, :], other=0)
+                    k_tile = k_int8.to(tl.float32) * ch_scale[None, :]
+
+                    k_fp16 = tl.load(
+                        fp16_row_ptrs[:, None] + d_off[None, :],
+                        mask=(dm[None, :] & (use_fp16 == 1)),
+                        other=0,
+                    ).to(tl.float32)
+                    k_tile = tl.where(use_fp16 == 1, k_fp16, k_tile)
+
+                    scores += tl.sum(k_tile * q_tile[None, :], axis=1)
+                scores = scores * q_scale
+
+                if bid == num_blocks - 1:
+                    valid_tok = t_offs < last_block_valid
+                    scores = tl.where(valid_tok, scores, float("-inf"))
+
+                block_max = tl.max(scores)
+                new_m = tl.maximum(m, block_max)
+                alpha = tl.exp(m - new_m)
+                acc = acc * alpha
+                l = l * alpha
+                weights = tl.exp(scores - new_m)
+                l += tl.sum(weights)
+
+                v_row_ptrs = V_ptr + v_base_elem + (base_tok + t_offs) * stride_v
+                v_off = v_offs
+                vm = v_off < d_v
+                v_ptrs = v_row_ptrs[:, None] + v_off[None, :]
+                v_tile = tl.load(v_ptrs, mask=vm[None, :], other=0).to(tl.float32)
+                acc += tl.sum(weights[:, None] * v_tile, axis=0)
+                m = new_m
+
+        # Store partials. Empty-split guard: if no attended block in this
+        # split, m stays -inf and l stays 0 — reduction handles this (alpha=0
+        # for -inf m_i vs finite m_global; l contribution is 0).
+        part_idx = qh * num_splits + sp
+        tl.store(M_part_ptr + part_idx, m)
+        tl.store(L_part_ptr + part_idx, l)
+        tl.store(Acc_part_ptr + part_idx * d_v + v_offs, acc, mask=v_mask)
+
+
+@triton.jit
+def _hybrid_split_k_reduce_kernel(
+    M_part_ptr, L_part_ptr, Acc_part_ptr,
+    Out_ptr,
+    num_q_heads: tl.constexpr,
+    num_splits: tl.constexpr,
+    d_v: tl.constexpr,
+    TILE_V: tl.constexpr,
+):
+    """One program per Q head. Merges `num_splits` partials via
+    online-softmax recombination:
+      m* = max_i m_i
+      scale_i = exp(m_i - m*)
+      acc* = sum_i scale_i * acc_i
+      l*   = sum_i scale_i * l_i
+      out  = acc* / l*
+    """
+    qh = tl.program_id(0)
+    valid = qh < num_q_heads
+    if valid:
+        v_offs = tl.arange(0, TILE_V)
+        v_mask = v_offs < d_v
+
+        # Pass 1: find m*.
+        m_global = tl.full((), float("-inf"), dtype=tl.float32)
+        for sp in range(num_splits):
+            m_i = tl.load(M_part_ptr + qh * num_splits + sp)
+            m_global = tl.maximum(m_global, m_i)
+
+        # Pass 2: accumulate acc and l with the global max.
+        acc_total = tl.zeros((TILE_V,), dtype=tl.float32)
+        l_total = tl.full((), 0.0, dtype=tl.float32)
+        for sp in range(num_splits):
+            part_idx = qh * num_splits + sp
+            m_i = tl.load(M_part_ptr + part_idx)
+            l_i = tl.load(L_part_ptr + part_idx)
+            # tl.exp on -inf gives 0 (correct — empty split contributes nothing).
+            scale = tl.exp(m_i - m_global)
+            acc_i = tl.load(Acc_part_ptr + part_idx * d_v + v_offs, mask=v_mask, other=0.0)
+            acc_total += acc_i * scale
+            l_total += l_i * scale
+
+        safe_l = tl.where(l_total > 0.0, l_total, 1.0)
+        out = acc_total / safe_l
+        tl.store(Out_ptr + qh * d_v + v_offs, out, mask=v_mask)
+
+
+def selective_attend_multihead_hybrid_split_k(
+    keys_int8: torch.Tensor,
+    keys_scale: torch.Tensor,
+    keys_fp16: torch.Tensor,
+    topk_mask: torch.Tensor,
+    values_fp16: torch.Tensor,
+    q_all: torch.Tensor,
+    skip_mask_i32: torch.Tensor,
+    gqa_group: int,
+    block_size: int = 16,
+    q_scale: float = 1.0,
+    last_block_valid: int | None = None,
+    num_splits: int | None = None,
+) -> torch.Tensor:
+    """Split-K hybrid attend — same semantics as `selective_attend_multihead_hybrid`,
+    partitioned across the block axis for GPU occupancy.
+
+    num_splits is chosen to target ~≥ (#SMs / num_q_heads) programs-per-head
+    when not specified. On Blackwell RTX Pro 6000 (188 SMs) with 32 Q heads,
+    num_splits=8-16 yields 256-512 programs, filling the machine.
+    """
+    num_kv_heads, N, head_dim = keys_int8.shape
+    d_v = values_fp16.shape[2]
+    num_q_heads = q_all.shape[0]
+    num_blocks = N // block_size
+    device = keys_int8.device
+
+    if num_splits is None:
+        # Aim for ~16 blocks per split as a floor (enough work to amortise
+        # launch + partial store cost). 4096 blocks → 16 splits × 256 blocks each.
+        target_blocks_per_split = 256
+        ns = max(1, (num_blocks + target_blocks_per_split - 1) // target_blocks_per_split)
+        # Round to power of 2 for nicer grid shapes.
+        num_splits = 1
+        while num_splits < ns:
+            num_splits *= 2
+        num_splits = min(num_splits, num_blocks)
+    num_splits = max(1, int(num_splits))
+    blocks_per_split = (num_blocks + num_splits - 1) // num_splits
+
+    # Stride between consecutive KV heads (in elements). For a contiguous
+    # packed tensor this equals N * head_dim (or N * d_v for V); for a
+    # slice that keeps the parent allocation's dim-0 stride (e.g.
+    # `cache.keys_int8[:, :nt, :]` against an oversized cache) it is the
+    # full dim-0 stride of the parent. Either way we read it from
+    # tensor.stride(0), which is the number of elements to skip to
+    # advance dim 0 by one. This lets us avoid the ~60+ MB .contiguous()
+    # copy the old wrapper did per call.
+    assert keys_int8.stride(2) == 1 and keys_int8.stride(1) == head_dim
+    assert keys_fp16.stride(2) == 1 and keys_fp16.stride(1) == head_dim
+    assert values_fp16.stride(2) == 1 and values_fp16.stride(1) == d_v
+    assert keys_scale.stride(2) == 1 and keys_scale.stride(1) == head_dim
+    stride_kv_k = keys_int8.stride(0)
+    stride_kv_kfp16 = keys_fp16.stride(0)
+    stride_kv_v = values_fp16.stride(0)
+    stride_kv_scale = keys_scale.stride(0)
+
+    m_part = torch.empty(num_q_heads, num_splits, dtype=torch.float32, device=device)
+    l_part = torch.empty(num_q_heads, num_splits, dtype=torch.float32, device=device)
+    acc_part = torch.empty(num_q_heads, num_splits, d_v, dtype=torch.float32, device=device)
+    output = torch.empty(num_q_heads, d_v, dtype=torch.float32, device=device)
+
+    TILE_D = triton.next_power_of_2(head_dim)
+    TILE_V = triton.next_power_of_2(d_v)
+
+    lbv = block_size if last_block_valid is None else int(last_block_valid)
+
+    _hybrid_split_k_partial_kernel[(num_q_heads * num_splits,)](
+        keys_int8, keys_scale, keys_fp16,
+        topk_mask, values_fp16, q_all, skip_mask_i32,
+        m_part, l_part, acc_part,
+        stride_kv_k=stride_kv_k,
+        stride_kv_kfp16=stride_kv_kfp16,
+        stride_kv_v=stride_kv_v,
+        stride_kv_scale=stride_kv_scale,
+        stride_k=head_dim,
+        stride_v=d_v,
+        num_blocks=num_blocks,
+        num_splits=num_splits,
+        blocks_per_split=blocks_per_split,
+        block_size=block_size,
+        head_dim=head_dim,
+        d_v=d_v,
+        q_scale=q_scale,
+        num_q_heads=num_q_heads,
+        gqa_group=gqa_group,
+        last_block_valid=lbv,
+        TILE_D=TILE_D,
+        TILE_V=TILE_V,
+    )
+
+    _hybrid_split_k_reduce_kernel[(num_q_heads,)](
+        m_part, l_part, acc_part, output,
+        num_q_heads=num_q_heads,
+        num_splits=num_splits,
+        d_v=d_v,
+        TILE_V=TILE_V,
+    )
+    return output
+
+
 def selective_attend_multihead_hybrid(
     keys_int8: torch.Tensor,       # [num_kv_heads, N, head_dim] int8
     keys_scale: torch.Tensor,      # [num_kv_heads, num_blocks, head_dim] float32

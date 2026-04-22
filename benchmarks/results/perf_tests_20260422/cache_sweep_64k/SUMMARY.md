@@ -45,3 +45,130 @@
 
 **(5) Triton kernel is still the bigger cost.** Even with per-KV-group at the best cache point (cap=4096, 99.2% hit), tok/s tops out at 0.64 — less than the full-mirror 1.93 tok/s. The kernel-vs-FlashAttention gap (10× at full mirror) outweighs the cache-vs-no-cache gap (3× within the kernel envelope). The paper's perf-section path forward should lead with 'optimise the Triton attend kernel' and have 'optimise the cache policy' as the secondary lever.
 
+## Attend-kernel optimisation (split-K, 2026-04-22)
+
+**Diagnosis** (from `test2_phase_breakdown_64k.json` at cap=∞): phase2 Triton attend took 560 ms of a 676 ms step — 83% share. The original `selective_attend_multihead_hybrid` launched only `num_q_heads = 32` programs (17% SM occupancy on 188-SM Blackwell) with FP64 softmax state (consumer Blackwell FP64 is ~1/32 FP32 rate).
+
+**Fix:** new `selective_attend_multihead_hybrid_split_k` kernel in `dotcache/kernels/selective_attend_triton.py`:
+- Partitions the block axis across `num_splits` programs per Q head (FlashDecoding-style). Grid expands from 32 to `32 × num_splits` (e.g., 512 at num_splits=16).
+- Per-split partials (m_i, l_i, acc_i) merged by a small reduction kernel using standard online-softmax recombination: `m* = max m_i`; `out = Σ exp(m_i - m*) · acc_i / Σ exp(m_i - m*) · l_i`.
+- FP32 state throughout (FlashAttention-style). Empty splits store `m = -inf`, which reduces to zero contribution via `exp(-inf) = 0`.
+
+Behind `DOTCACHE_FAST_ATTEND=1` (default on). `DOTCACHE_FAST_ATTEND=0` reverts to the original kernel for A/B.
+
+**Micro-bench** (`benchmarks/bench_hybrid_attend_kernel.py`, 64K synthetic inputs, isolated kernel):
+
+| Kernel | ms/launch | grid | vs SDPA dense FP16 |
+|---|---:|---:|---:|
+| original hybrid            | 13.4 | 32   | 8.0× slower |
+| split-K num_splits=1 (FP32 only) | 8.2 | 32 | 4.9× slower |
+| split-K num_splits=16       | 0.81 | 512  | 0.5× — i.e. **faster** than SDPA |
+| split-K num_splits=64       | 0.70 | 2048 | 0.4× |
+| SDPA dense FP16 (reference) | 1.68 | —    | — |
+
+The FP64→FP32 swap alone gave 1.6×; parallelism gave the remaining ~12×. At ns=16 we beat SDPA by avoiding the GQA key repeat-interleave the SDPA reference needs. Default autotune = `num_splits = round_up_pow2(num_blocks / 256)`.
+
+**End-to-end 64K breakdown** (`test2_phase_breakdown_64k_fast.json`):
+
+| Phase | before (ms) | after (ms) | Δ |
+|---|---:|---:|---:|
+| phase1_int8_scoring | 26.4 | 15.7 | −41% |
+| adaptive_selection  |  6.2 |  6.6 |  — |
+| ranking_check       |  5.5 |  5.8 |  — |
+| phase2_fused_attend | **560.4** | **192.3** | **−66%** |
+| overhead_other      | 77.4 | 79.2 |  — |
+| **Total step (timer-on)** | **675.9** | **299.4** | **−56%** |
+| tok/s (timer-on)    | 1.48 | 3.34 | **2.26×** |
+
+**Correctness:** `benchmarks/check_split_k_equivalence.py` at 8K/32-steps → 33/33 tokens identical between the two kernels. Max absolute error on synthetic inputs: 0.000000; max relative error: 0.001 (reduction-order FP32 rounding, sub-argmax-threshold in practice).
+
+**Remaining gap:** the attend phase is still 192 ms vs the ~22 ms pure-kernel floor from the micro-bench (0.7 ms × 32 layers). The extra ~170 ms is Python wrapping — `torch.zeros(no_skip)` per layer, `adaptive_topk_mask.to(int32).contiguous()` per layer, and duplicate `.contiguous()` guards on cache tensors. Next lever; not blocking.
+
+**Paper-relevant number:** the paper's instrumented-off full-mirror tok/s was 1.93. Applying the timer-overhead ratio (1.93 / 1.48 = 1.30×) to the new instrumented reading gives an estimated **~4.4 tok/s** at 64K full-mirror — close to the gap to dense (19.9) being 4.5× rather than 10×.
+
+## Timer-off measurement (2026-04-22, updated)
+
+The phase-timer's `torch.cuda.synchronize()` on every `_PhaseTimer.__exit__`
+adds ~180 ms/step at 64K (76% relative inflation), serialising what should
+pipeline across layers. `benchmarks/bench_decode_64k_no_timer.py` removes
+all phase timing and reports the production tok/s the paper would measure.
+
+| Config | mean ms/step | p50 | p95 | tok/s | vs dense |
+|---|---:|---:|---:|---:|---:|
+| dense (baseline) | 50.84 | 50.45 | 54.12 | **19.67** | 1.00× |
+| cert FAST_ATTEND=0 (original hybrid) | 482.20 | 480.69 | 488.73 | 2.07 | 9.48× |
+| **cert FAST_ATTEND=1 (split-K)** | **125.63** | **123.24** | **132.46** | **7.96** | **2.47×** |
+
+End-to-end throughput improvement from the kernel swap alone: **3.84×**
+(cert-slow → cert-fast). Gap to dense collapsed from **9.5×** to **2.47×**.
+
+## Priority-ordered LRU + O(1) OrderedDict (2026-04-22)
+
+Two changes to `TieredKeyCacheLayer._fp16_key_resident` and the
+bounded-cache call site:
+
+1. Replaced the list-based LRU (O(n) `.remove()` + `.insert(0)` on every
+   hit) with an `OrderedDict` (O(1) `move_to_end` + `popitem(last=False)`).
+   At cap=1024 with ~2400 hits per step, the list version was doing
+   ~2.5M Python ops/step of LRU bookkeeping.
+2. Sort `needed_blocks` ASCENDING by max m_b across heads before
+   iteration in `ensure_fp16_keys_resident`. Since the cache is
+   insert-MRU-last, high-score blocks now land at the MRU-tail and
+   survive longer; low-score blocks land near the LRU-front and are
+   evicted first.
+
+### Measured at 64K cap=1024 per-KV-group (no phase timer)
+
+| Config | mean ms/step | tok/s | vs original |
+|---|---:|---:|---:|
+| Original (old kernel + list-LRU, block-ID order) | ~1570 | **0.63** | 1.00× |
+| Old kernel + priority OrderedDict-LRU | 1520 | **0.66** | 1.05× |
+| Split-K kernel + priority OrderedDict-LRU | **1165** | **0.86** | **1.36×** |
+
+Priority LRU alone contributed +5%; split-K kernel +30% on top. The
+priority-LRU win is smaller than the theoretical union-reduction
+ceiling (~30%) because at cap=1024 the H2D cost is dominated by the
+per-step working-set size (union of top-K across 8 KV groups), not by
+which specific block is the LRU victim.
+
+### Full-mirror regression check (cap=∞)
+
+After the changes: 123.55 ms/step → **8.09 tok/s** (2.47× dense).
+Previous 125.63 ms/step → 7.96 tok/s. Slight improvement attributed to
+the O(1) init and MRU-bump replacing the O(n) list ops. No regression.
+
+## Drop call-site .contiguous() copies (2026-04-22, final)
+
+`torch.profiler` on a cert decode step at 64K showed **`aten::copy_` as
+the #1 self-CUDA consumer at ~25 ms/step (31.85% of total)**, dominantly
+the four per-layer `.contiguous()` calls (`keys_int8`, `keys_scale`,
+`keys_fp16`, `values_fp16`). The stride-aware split-K kernel already
+handles non-contig slices via per-KV-head stride args.
+
+Dropping the copies:
+
+| Config at 64K cap=∞ | mean ms/step | tok/s | vs dense |
+|---|---:|---:|---:|
+| dense baseline | 50.90 | 19.65 | 1.00× |
+| cert FAST (with .contiguous()) | 123.55 | 8.09 | 2.47× |
+| cert FAST (no .contiguous()) | **105.09** | **9.52** | **2.06×** |
+| cert SLOW (original kernel) | 477.96 | 2.09 | 9.39× |
+
+**+18% tok/s end-to-end** from eliminating the copies. The previous
+"load-bearing" measurement of 264 ms was an artifact of an intermediate
+state; with the OrderedDict LRU, priority ordering, and stride-aware
+kernel all in place, the non-contig path is the clear win.
+
+## Full summary — starting from 9.48× dense → landed at 2.06× dense
+
+| Change | Step ms | tok/s | vs dense |
+|---|---:|---:|---:|
+| Baseline (original kernel) | 477.96 | 2.09 | 9.39× |
+| + split-K kernel (FP32 state, FlashDecoding partition) | 125.63 | 7.96 | 2.47× |
+| + OrderedDict LRU + priority-ordered iteration | 123.55 | 8.09 | 2.47× |
+| + drop call-site .contiguous() copies | **105.09** | **9.52** | **2.06×** |
+
+End-to-end throughput improvement from the PR: **4.55× faster decode**
+at 64K cap=∞ full-mirror (2.09 → 9.52 tok/s). Gap to dense collapsed
+from 9.39× to 2.06× — within a few percent of the user's 2× dense target.
+
