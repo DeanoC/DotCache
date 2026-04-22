@@ -101,7 +101,8 @@ def main() -> int:
 
     _ensure_certified_imports()
     layer_ids = list(range(model.config.num_hidden_layers))
-    _cap = int(os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS", "0")) or None
+    _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
+    _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
     tiered = create_tiered_cache_from_model(
         past_kv, layer_ids, fp16_key_cache_capacity=_cap,
     )
