@@ -25,8 +25,69 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
+# Natural log of 2 — converts NLL (nats) to bits-per-token.
+_LN2 = math.log(2.0)
+
+
+def per_chunk_bpt_stats(
+    per_chunk: list[dict],
+    field: str = "nll",
+    tokens_field: str = "tokens",
+    bootstrap_iters: int = 10_000,
+    seed: int = 0,
+) -> dict:
+    """Per-chunk bits-per-token mean and 95% bootstrap CI.
+
+    Each chunk contributes (nll / tokens) / ln(2). The CI is computed by
+    resampling chunks with replacement — treats each chunk as the
+    independent unit of randomness, which matches how PG-19 sweeps are
+    reported. Also emits Gaussian mean ± 1.96·SE for a quick sanity check.
+
+    Returns a dict with bpt_mean, bpt_std, bpt_se, bpt_ci_lo / bpt_ci_hi
+    (bootstrap), bpt_gaussian_lo / bpt_gaussian_hi (Wald), n_chunks.
+
+    `field` lets callers pick "nll" (full chunk: prefix + suffix) or
+    "suffix_nll" (certified region only — the reviewer-meaningful slice
+    since prefix is always dense).
+    """
+    if not per_chunk:
+        return {"n_chunks": 0}
+    bpt = []
+    for c in per_chunk:
+        toks = c.get(tokens_field)
+        nll = c.get(field)
+        if toks is None or nll is None or toks <= 0:
+            continue
+        bpt.append((nll / toks) / _LN2)
+    n = len(bpt)
+    if n == 0:
+        return {"n_chunks": 0}
+    arr = np.asarray(bpt, dtype=np.float64)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=1)) if n > 1 else 0.0
+    se = std / math.sqrt(n) if n > 1 else 0.0
+    # Bootstrap 95% CI (percentile).
+    if n > 1 and bootstrap_iters > 0:
+        rng = np.random.default_rng(seed)
+        boot_means = arr[rng.integers(0, n, size=(bootstrap_iters, n))].mean(axis=1)
+        lo = float(np.quantile(boot_means, 0.025))
+        hi = float(np.quantile(boot_means, 0.975))
+    else:
+        lo = hi = mean
+    return {
+        "n_chunks": n,
+        "bpt_mean": mean,
+        "bpt_std": std,
+        "bpt_se": se,
+        "bpt_ci_lo": lo,        # bootstrap percentile
+        "bpt_ci_hi": hi,
+        "bpt_gaussian_lo": mean - 1.96 * se,
+        "bpt_gaussian_hi": mean + 1.96 * se,
+    }
+
+
 def load_pg19_chunks(tokenizer, context_length: int, num_chunks: int,
-                     stride: int = None) -> list[torch.Tensor]:
+                     stride: int = None) -> tuple[list[torch.Tensor], list[int]]:
     """Load PG-19 test set and chunk into fixed-length token sequences.
 
     Uses strided windowing: each chunk starts `stride` tokens after the
@@ -38,27 +99,40 @@ def load_pg19_chunks(tokenizer, context_length: int, num_chunks: int,
         stride = context_length
 
     chunks = []
+    book_indices: list[int] = []  # parallel to chunks; used for per-book CI grouping
     ds = load_dataset("emozilla/pg19", split="test", streaming=True)
 
-    for book in ds:
+    for book_idx, book in enumerate(ds):
         text = book["text"]
         tokens = tokenizer.encode(text, add_special_tokens=False)
         # Slide window across the book
         for start in range(0, len(tokens) - context_length, stride):
             chunk = tokens[start : start + context_length]
             chunks.append(torch.tensor(chunk, dtype=torch.long))
+            book_indices.append(book_idx)
             if len(chunks) >= num_chunks:
-                return chunks
+                return chunks, book_indices
 
     print(f"Warning: only found {len(chunks)} chunks (requested {num_chunks})")
-    return chunks
+    return chunks, book_indices
 
 
-def compute_dense_perplexity(model, chunks: list[torch.Tensor],
-                             device: str = "cuda") -> dict:
-    """Compute perplexity using standard dense forward pass."""
+def compute_dense_perplexity(
+    model,
+    chunks: list[torch.Tensor],
+    device: str = "cuda",
+    book_indices: list[int] | None = None,
+) -> dict:
+    """Compute perplexity using standard dense forward pass.
+
+    Retains per-chunk NLL and token counts so the reporting layer can
+    compute bootstrap CIs over per-chunk bits-per-token without needing
+    to rerun the model. `book_indices` (optional, parallel to `chunks`)
+    is pass-through metadata so downstream code can also group by book.
+    """
     total_nll = 0.0
     total_tokens = 0
+    per_chunk: list[dict] = []
 
     for i, chunk in enumerate(chunks):
         input_ids = chunk.unsqueeze(0).to(device)
@@ -81,6 +155,13 @@ def compute_dense_perplexity(model, chunks: list[torch.Tensor],
         total_nll += chunk_nll
         total_tokens += targets.numel()
 
+        per_chunk.append({
+            "chunk_idx": i,
+            "book_idx": (book_indices[i] if book_indices is not None else None),
+            "nll": chunk_nll,
+            "tokens": int(targets.numel()),
+        })
+
         if (i + 1) % 5 == 0 or i == len(chunks) - 1:
             ppl_so_far = math.exp(total_nll / total_tokens)
             print(f"  Dense [{i+1}/{len(chunks)}]: ppl={ppl_so_far:.2f}")
@@ -94,6 +175,7 @@ def compute_dense_perplexity(model, chunks: list[torch.Tensor],
         "perplexity": ppl,
         "total_nll": total_nll,
         "total_tokens": total_tokens,
+        "per_chunk": per_chunk,
     }
 
 
@@ -118,6 +200,7 @@ def compute_certified_perplexity(
     rung1_threshold: float = 0.02,
     rung1_multiplier: float = 2.0,
     telemetry_collector=None,
+    book_indices: list[int] | None = None,
 ) -> dict:
     """Compute perplexity using certified attention decode.
 
@@ -139,6 +222,7 @@ def compute_certified_perplexity(
     total_skipped = 0
     total_blocks = 0
     total_steps = 0
+    per_chunk: list[dict] = []
 
     for i, chunk in enumerate(chunks):
         seq_len = chunk.shape[0]
@@ -259,6 +343,23 @@ def compute_certified_perplexity(
         total_skipped += chunk_skipped
         total_blocks += chunk_blocks
 
+        # Keep prefix_nll / suffix_nll separately — reviewers may want to
+        # report CI only over the suffix (the actually-certified portion)
+        # rather than the full chunk. prefix_tokens and suffix_tokens let
+        # them weight consistently.
+        per_chunk.append({
+            "chunk_idx": i,
+            "book_idx": (book_indices[i] if book_indices is not None else None),
+            "prefix_nll": float(prefix_nll),
+            "prefix_tokens": int(prefix_len - 1),
+            "suffix_nll": float(suffix_nll),
+            "suffix_tokens": int(eval_len - 1),
+            "nll": float(chunk_nll),
+            "tokens": int(chunk_tokens),
+            "skipped_blocks": int(chunk_skipped),
+            "total_blocks": int(chunk_blocks),
+        })
+
         chunk_ppl = math.exp(chunk_nll / chunk_tokens)
         suffix_ppl = math.exp(suffix_nll / max(eval_len - 1, 1))
         chunk_skip_rate = chunk_skipped / chunk_blocks if chunk_blocks else 0.0
@@ -283,6 +384,7 @@ def compute_certified_perplexity(
         "skipped_blocks": total_skipped,
         "total_blocks": total_blocks,
         "decode_steps": total_steps,
+        "per_chunk": per_chunk,
     }
 
 
@@ -355,7 +457,7 @@ def main():
     # Load PG-19 chunks
     print(f"\nLoading PG-19 test set: {args.num_chunks} chunks × {args.context} tokens...")
     t0 = time.perf_counter()
-    chunks = load_pg19_chunks(tokenizer, args.context, args.num_chunks)
+    chunks, book_indices = load_pg19_chunks(tokenizer, args.context, args.num_chunks)
     print(f"Loaded {len(chunks)} chunks in {time.perf_counter()-t0:.1f}s")
 
     # Dense perplexity
@@ -363,10 +465,17 @@ def main():
     print("Dense perplexity")
     print(f"{'='*50}")
     t0 = time.perf_counter()
-    dense_result = compute_dense_perplexity(model, chunks)
+    dense_result = compute_dense_perplexity(model, chunks, book_indices=book_indices)
     t_dense = time.perf_counter() - t0
     print(f"Dense: ppl={dense_result['perplexity']:.2f} "
           f"({dense_result['total_tokens']} tokens, {t_dense:.1f}s)")
+    # Per-chunk bits-per-token CI — bootstrap over chunks.
+    dense_bpt = per_chunk_bpt_stats(dense_result["per_chunk"], field="nll", tokens_field="tokens")
+    dense_result["bpt_stats"] = dense_bpt
+    if dense_bpt.get("n_chunks", 0) > 0:
+        print(f"  bits/token: {dense_bpt['bpt_mean']:.4f} "
+              f"(95% bootstrap CI [{dense_bpt['bpt_ci_lo']:.4f}, {dense_bpt['bpt_ci_hi']:.4f}], "
+              f"n={dense_bpt['n_chunks']} chunks)")
 
     # Certified perplexity
     cert_result = None
@@ -401,10 +510,27 @@ def main():
             rung1_threshold=args.rung1_threshold,
             rung1_multiplier=args.rung1_multiplier,
             telemetry_collector=telemetry_collector,
+            book_indices=book_indices,
         )
         t_cert = time.perf_counter() - t0
         print(f"Certified: ppl={cert_result['perplexity']:.2f} "
               f"({cert_result['total_tokens']} tokens, {t_cert:.1f}s)")
+        # Per-chunk bits-per-token CI, full chunk + suffix-only (the
+        # certified portion). The suffix slice is what the reviewer
+        # usually wants since the prefix is always dense.
+        cert_bpt_full = per_chunk_bpt_stats(
+            cert_result["per_chunk"], field="nll", tokens_field="tokens",
+        )
+        cert_bpt_suffix = per_chunk_bpt_stats(
+            cert_result["per_chunk"], field="suffix_nll", tokens_field="suffix_tokens",
+        )
+        cert_result["bpt_stats"] = cert_bpt_full
+        cert_result["bpt_stats_suffix"] = cert_bpt_suffix
+        if cert_bpt_full.get("n_chunks", 0) > 0:
+            print(f"  bits/token (full): {cert_bpt_full['bpt_mean']:.4f} "
+                  f"(95% CI [{cert_bpt_full['bpt_ci_lo']:.4f}, {cert_bpt_full['bpt_ci_hi']:.4f}])")
+            print(f"  bits/token (certified suffix only): {cert_bpt_suffix['bpt_mean']:.4f} "
+                  f"(95% CI [{cert_bpt_suffix['bpt_ci_lo']:.4f}, {cert_bpt_suffix['bpt_ci_hi']:.4f}])")
         if telemetry_collector is not None:
             telemetry_collector.finish()
             tele_path = args.telemetry_output or (str(args.output).replace(".json", ".pagein.json"))
