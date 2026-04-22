@@ -681,6 +681,21 @@ def certified_attention_layer(
             int8_scores = m_b[:, :n_qblocks]
             top_block_indices = int8_scores.topk(ranking_k, dim=1).indices  # [H, K]
             top_int8_scores = int8_scores.gather(1, top_block_indices)       # [H, K]
+            # In bounded-cache mode, compute_fp16_block_scores reads the VRAM
+            # scratch (cache.keys_fp16_gpu). The blocks selected by INT8
+            # top-K must be resident before this call, otherwise the scratch
+            # returns zeros and the FP16 rescore is garbage — which would
+            # trip the score-consistency monitor and fire Rung-4 spuriously.
+            if cache.fp16_key_cache_capacity is not None:
+                _ranking_needed = top_block_indices.unique().tolist()
+                with _PhaseTimer(phase_timings, "h2d_pagein"):
+                    _rh, _rm, _rb, _re = cache.ensure_fp16_keys_resident(_ranking_needed)
+                h2d_key_bytes += _rb
+                h2d_key_blocks += _rm
+                fp16_cache_hits_step += _rh
+                fp16_cache_misses_step += _rm
+                fp16_cache_evictions_step += _re
+                fp16_cache_needed_blocks += len(_ranking_needed)
             fp16_block_scores = compute_fp16_block_scores(
                 cache, q_all, top_block_indices, n_qblocks, gqa_group, q_scale,
             )
