@@ -93,10 +93,13 @@ def run_config(model, adapter, device, tokenizer, ctx_len: int, steps: int, warm
 
     _ensure_certified_imports()
     layer_ids = list(range(model.config.num_hidden_layers))
-    tiered = create_tiered_cache_from_model(past_kv, layer_ids, fp16_key_cache_capacity=None)
+    _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
+    _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
+    tiered = create_tiered_cache_from_model(past_kv, layer_ids, fp16_key_cache_capacity=_cap)
     del past_kv
     gc.collect(); torch.cuda.empty_cache()
 
+    _per_kv_group = os.environ.get("DOTCACHE_PER_KV_GROUP_TOPK", "0") == "1"
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered,
         layer_epsilons={},
@@ -109,6 +112,7 @@ def run_config(model, adapter, device, tokenizer, ctx_len: int, steps: int, warm
         eps_guard=0.01,
         exploration_rate=0.02,
         rung1_threshold=0.02, rung1_multiplier=2.0,
+        per_kv_group_topk=_per_kv_group,
         phase_timings=None,  # << no sync-per-region
     )
     adapter.set_mode("certified")

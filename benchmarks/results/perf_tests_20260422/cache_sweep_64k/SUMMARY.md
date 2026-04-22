@@ -102,6 +102,41 @@ all phase timing and reports the production tok/s the paper would measure.
 End-to-end throughput improvement from the kernel swap alone: **3.84×**
 (cert-slow → cert-fast). Gap to dense collapsed from **9.5×** to **2.47×**.
 
+## Priority-ordered LRU + O(1) OrderedDict (2026-04-22)
+
+Two changes to `TieredKeyCacheLayer._fp16_key_resident` and the
+bounded-cache call site:
+
+1. Replaced the list-based LRU (O(n) `.remove()` + `.insert(0)` on every
+   hit) with an `OrderedDict` (O(1) `move_to_end` + `popitem(last=False)`).
+   At cap=1024 with ~2400 hits per step, the list version was doing
+   ~2.5M Python ops/step of LRU bookkeeping.
+2. Sort `needed_blocks` ASCENDING by max m_b across heads before
+   iteration in `ensure_fp16_keys_resident`. Since the cache is
+   insert-MRU-last, high-score blocks now land at the MRU-tail and
+   survive longer; low-score blocks land near the LRU-front and are
+   evicted first.
+
+### Measured at 64K cap=1024 per-KV-group (no phase timer)
+
+| Config | mean ms/step | tok/s | vs original |
+|---|---:|---:|---:|
+| Original (old kernel + list-LRU, block-ID order) | ~1570 | **0.63** | 1.00× |
+| Old kernel + priority OrderedDict-LRU | 1520 | **0.66** | 1.05× |
+| Split-K kernel + priority OrderedDict-LRU | **1165** | **0.86** | **1.36×** |
+
+Priority LRU alone contributed +5%; split-K kernel +30% on top. The
+priority-LRU win is smaller than the theoretical union-reduction
+ceiling (~30%) because at cap=1024 the H2D cost is dominated by the
+per-step working-set size (union of top-K across 8 KV groups), not by
+which specific block is the LRU victim.
+
+### Full-mirror regression check (cap=∞)
+
+After the changes: 123.55 ms/step → **8.09 tok/s** (2.47× dense).
+Previous 125.63 ms/step → 7.96 tok/s. Slight improvement attributed to
+the O(1) init and MRU-bump replacing the O(n) list ops. No regression.
+
 ## .contiguous() at the call site: unexpected load-bearing
 
 Dropping the `cache.keys_int8[:, :nt, :].contiguous()` (and sibling FP16/V)

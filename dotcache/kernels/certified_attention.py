@@ -915,8 +915,25 @@ def certified_attention_layer(
             # reads them. Miss → H2D from keys_fp16_cpu, evict LRU if full.
             # Trailing partial block is kept current by append_token writes
             # and doesn't need cache tracking.
+            #
+            # Priority-ordered iteration (paper §3.2, follow-up): the cache
+            # is insert-MRU-last, so whatever we iterate LAST becomes the
+            # hardest-to-evict. Sort ASCENDING by max m_b across heads so
+            # high-scoring blocks (more likely needed next step) end up at
+            # MRU-tail and survive longer; low-scoring blocks land near the
+            # LRU-front and are evicted first on the next miss. This
+            # replaces the prior block-ID-sorted iteration, which made
+            # low-ID blocks systematically the LRU victims regardless of
+            # their actual mass.
             top_union = adaptive_topk_mask[:, :n_qblocks].any(dim=0)
-            needed_blocks = top_union.nonzero().flatten().tolist()
+            union_block_ids = top_union.nonzero().flatten()
+            if union_block_ids.numel() > 0:
+                # Max score across heads — union-mass proxy.
+                block_priority = m_b[:, :n_qblocks].amax(dim=0)[union_block_ids]
+                sort_order = torch.argsort(block_priority, descending=False)
+                needed_blocks = union_block_ids[sort_order].tolist()
+            else:
+                needed_blocks = []
             with _PhaseTimer(phase_timings, "h2d_pagein"):
                 c_hits, c_misses, c_bytes, c_evict = cache.ensure_fp16_keys_resident(needed_blocks)
             h2d_key_bytes += c_bytes
