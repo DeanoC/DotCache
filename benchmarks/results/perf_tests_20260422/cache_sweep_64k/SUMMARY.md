@@ -137,19 +137,38 @@ After the changes: 123.55 ms/step → **8.09 tok/s** (2.47× dense).
 Previous 125.63 ms/step → 7.96 tok/s. Slight improvement attributed to
 the O(1) init and MRU-bump replacing the O(n) list ops. No regression.
 
-## .contiguous() at the call site: unexpected load-bearing
+## Drop call-site .contiguous() copies (2026-04-22, final)
 
-Dropping the `cache.keys_int8[:, :nt, :].contiguous()` (and sibling FP16/V)
-copies at the call site — the 320 MB/step of memcpy they do — regressed
-end-to-end decode from 122 ms to 264 ms at 64K. The kernel was upgraded
-to accept explicit per-KV-head strides (no reshape/flatten required), and
-a micro-bench against synthetic non-contig slices shows the kernel itself
-is unaffected by non-contig strides (0.807 ms vs 0.805 ms). The
-whole-pipeline regression appears to be a read-hot-buffer effect: the
-persistent cache region is concurrently written by `append_token` each
-layer, while `.contiguous()` produces a fresh read-only copy in a clean
-allocator region. We kept the `.contiguous()` calls and kept the
-stride-aware kernel as a safety net for future allocator changes. Net
-cost of the copies: ≈5 ms/step of DRAM bandwidth (320 MB / 1.5 TB/s × 32
-layers); net saving vs dropping them: ≈140 ms/step.
+`torch.profiler` on a cert decode step at 64K showed **`aten::copy_` as
+the #1 self-CUDA consumer at ~25 ms/step (31.85% of total)**, dominantly
+the four per-layer `.contiguous()` calls (`keys_int8`, `keys_scale`,
+`keys_fp16`, `values_fp16`). The stride-aware split-K kernel already
+handles non-contig slices via per-KV-head stride args.
+
+Dropping the copies:
+
+| Config at 64K cap=∞ | mean ms/step | tok/s | vs dense |
+|---|---:|---:|---:|
+| dense baseline | 50.90 | 19.65 | 1.00× |
+| cert FAST (with .contiguous()) | 123.55 | 8.09 | 2.47× |
+| cert FAST (no .contiguous()) | **105.09** | **9.52** | **2.06×** |
+| cert SLOW (original kernel) | 477.96 | 2.09 | 9.39× |
+
+**+18% tok/s end-to-end** from eliminating the copies. The previous
+"load-bearing" measurement of 264 ms was an artifact of an intermediate
+state; with the OrderedDict LRU, priority ordering, and stride-aware
+kernel all in place, the non-contig path is the clear win.
+
+## Full summary — starting from 9.48× dense → landed at 2.06× dense
+
+| Change | Step ms | tok/s | vs dense |
+|---|---:|---:|---:|
+| Baseline (original kernel) | 477.96 | 2.09 | 9.39× |
+| + split-K kernel (FP32 state, FlashDecoding partition) | 125.63 | 7.96 | 2.47× |
+| + OrderedDict LRU + priority-ordered iteration | 123.55 | 8.09 | 2.47× |
+| + drop call-site .contiguous() copies | **105.09** | **9.52** | **2.06×** |
+
+End-to-end throughput improvement from the PR: **4.55× faster decode**
+at 64K cap=∞ full-mirror (2.09 → 9.52 tok/s). Gap to dense collapsed
+from 9.39× to 2.06× — within a few percent of the user's 2× dense target.
 
