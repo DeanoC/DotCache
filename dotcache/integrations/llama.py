@@ -126,28 +126,36 @@ class CertifiedAttentionState:
         self.step_stats = []
         return stats
 
-    def aggregate_step_stats(self) -> dict:
-        """Aggregate stats across all layers for the current step."""
-        if not self.step_stats:
+    def aggregate_step_stats(self, since: int = 0) -> dict:
+        """Aggregate stats across layer entries in `step_stats[since:]`.
+
+        Default (`since=0`) sums everything recorded so far — the legacy
+        behaviour used by niah.py's per-cell ranking_fallback_summary. A
+        per-step telemetry collector can pass `since=last_seen_len` to
+        aggregate only entries appended after the previous call, without
+        having to clear the list (which would break the callers that also
+        run the legacy aggregate at the end of a cell)."""
+        entries = self.step_stats if since <= 0 else self.step_stats[since:]
+        if not entries:
             return {"skip_rate": 0.0, "total_blocks": 0, "skipped_blocks": 0}
-        total = sum(s["total_blocks"] for s in self.step_stats)
-        skipped = sum(s["skipped_blocks"] for s in self.step_stats)
+        total = sum(s["total_blocks"] for s in entries)
+        skipped = sum(s["skipped_blocks"] for s in entries)
         agg = {
             "skip_rate": skipped / total if total > 0 else 0.0,
             "total_blocks": total,
             "skipped_blocks": skipped,
             "per_layer_skip_rate": {
-                s["layer"]: s["skip_rate"] for s in self.step_stats
+                s["layer"]: s["skip_rate"] for s in entries
             },
         }
         # Ranking-consistency fallback aggregates (Rung 3). Only populated when
         # ranking_fallback is enabled; absent stats default to zero so dense /
         # non-fallback runs still aggregate cleanly.
-        if any("ranking_heads_total" in s for s in self.step_stats):
-            heads_total = sum(s.get("ranking_heads_total", 0) for s in self.step_stats)
-            disagree_r1 = sum(s.get("ranking_disagree_r1", 0) for s in self.step_stats)
-            disagree_r3 = sum(s.get("ranking_disagree_r3", 0) for s in self.step_stats)
-            triggered = sum(s.get("ranking_fallback_triggered", 0) for s in self.step_stats)
+        if any("ranking_heads_total" in s for s in entries):
+            heads_total = sum(s.get("ranking_heads_total", 0) for s in entries)
+            disagree_r1 = sum(s.get("ranking_disagree_r1", 0) for s in entries)
+            disagree_r3 = sum(s.get("ranking_disagree_r3", 0) for s in entries)
+            triggered = sum(s.get("ranking_fallback_triggered", 0) for s in entries)
             agg["ranking_heads_total"] = heads_total
             agg["ranking_disagree_r1"] = disagree_r1
             agg["ranking_disagree_r3"] = disagree_r3
@@ -156,14 +164,40 @@ class CertifiedAttentionState:
             agg["ranking_disagree_rate_r3"] = (disagree_r3 / heads_total) if heads_total else 0.0
             agg["ranking_fallback_rate"] = (triggered / heads_total) if heads_total else 0.0
         # Score-consistency violation totals (defence-in-depth canary).
-        if any("score_consistency_violation_heads" in s for s in self.step_stats):
+        if any("score_consistency_violation_heads" in s for s in entries):
             agg["score_consistency_violation_heads_total"] = sum(
-                s.get("score_consistency_violation_heads", 0) for s in self.step_stats
+                s.get("score_consistency_violation_heads", 0) for s in entries
             )
-        if any("exploration_blocks" in s for s in self.step_stats):
+        if any("exploration_blocks" in s for s in entries):
             agg["exploration_blocks_total"] = sum(
-                s.get("exploration_blocks", 0) for s in self.step_stats
+                s.get("exploration_blocks", 0) for s in entries
             )
+        # Page-in telemetry rollup (sum across layers for this step).
+        if any("h2d_total_bytes" in s for s in entries):
+            agg["h2d_key_bytes"] = int(sum(s.get("h2d_key_bytes", 0) for s in entries))
+            agg["h2d_value_bytes"] = int(sum(s.get("h2d_value_bytes", 0) for s in entries))
+            agg["h2d_total_bytes"] = int(agg["h2d_key_bytes"] + agg["h2d_value_bytes"])
+            agg["h2d_key_blocks"] = int(sum(s.get("h2d_key_blocks", 0) for s in entries))
+            agg["h2d_value_blocks"] = int(sum(s.get("h2d_value_blocks", 0) for s in entries))
+        if any("vram_fp16_key_cache_bytes" in s for s in entries):
+            agg["vram_fp16_key_cache_bytes"] = int(sum(
+                s.get("vram_fp16_key_cache_bytes", 0) for s in entries
+            ))
+            agg["vram_fp16_value_cache_bytes"] = int(sum(
+                s.get("vram_fp16_value_cache_bytes", 0) for s in entries
+            ))
+        # Per-rung step flag: True if any layer triggered the rung this step.
+        for rung_k in ("rung1_fired", "rung2_fired", "rung3_fired", "rung4_fired"):
+            if any(rung_k in s for s in entries):
+                agg[rung_k] = any(bool(s.get(rung_k)) for s in entries)
+                agg[rung_k.replace("fired", "fired_layers")] = int(sum(
+                    1 for s in entries if bool(s.get(rung_k))
+                ))
+        # K* rollup (mean across layers, when adaptive is active).
+        k_star_means = [s.get("k_star_mean") for s in entries if s.get("k_star_mean") is not None]
+        if k_star_means:
+            agg["k_star_mean"] = float(sum(k_star_means) / len(k_star_means))
+            agg["k_star_max"] = int(max(s.get("k_star_max", 0) for s in entries))
         return agg
 
 

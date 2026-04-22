@@ -297,25 +297,32 @@ def compute_delta_bound(
 ) -> torch.Tensor:
     """Per-head tight Δ bound (paper Eq. 4, runtime form).
 
-    Δ[h] = (1 / (2·√d)) · Σ_c |q[h,c]| · s_c · q_scale, where s_c is
-    conservatively the per-channel max scale over all blocks in that head's
-    KV head. Returns a [num_q_heads] float32 tensor on device.
+    Per-channel INT8 quantisation: |K_fp16[c] − K_int8[c]·s_c| ≤ s_c/2.
+    Score error per token per block is ≤ Σ_c |q_c|·(s_c/2) = (1/2)·Σ|q_c|·s_c
+    in the pre-q_scale space. The attention kernels multiply the logit by
+    q_scale = 1/√d before taking the per-block max, so the post-q_scale
+    bound — the one we compare against `m_b` and `fp16_block_scores`, both
+    of which are already post-q_scale — is
 
-    The q_scale (= 1/√d) factor is folded in so the resulting Δ compares
-    apples-to-apples with the Phase-1 `m_b` (which is post-q_scale).
+        Δ[h] = (1 / (2·√d)) · Σ_c |q[h,c]| · s_c.
+
+    The 1/√d factor IS the q_scale; there is no separate q_scale factor
+    applied afterwards. A prior version of this function multiplied by
+    q_scale a second time, making Δ √d× too small and causing the
+    score-consistency monitor to fire ≈36% per-head on real 8K/h_d=128
+    workloads. Fixed to match the derivation above.
     """
     num_q_heads, head_dim = q_all.shape
     if key_scales.numel() == 0:
         return torch.zeros(num_q_heads, dtype=torch.float32, device=q_all.device)
-    # Worst-case per-channel scale over blocks, per KV head: [num_kv_heads, head_dim].
-    per_channel_scale = key_scales.amax(dim=1)
-    # Expand to per Q head via GQA mapping.
+    per_channel_scale = key_scales.amax(dim=1)                                   # [kv_h, d]
     kv_per_h = torch.arange(num_q_heads, device=q_all.device) // gqa_group
-    s_per_h = per_channel_scale.index_select(0, kv_per_h)  # [H, head_dim]
-    # Δ = (1 / (2·√d)) · Σ_c |q_c| · s_c, and the paper's bound is on the
-    # post-q_scale logit, so multiply once more by q_scale (= 1/√d).
+    s_per_h = per_channel_scale.index_select(0, kv_per_h)                        # [H, d]
     delta = (q_all.abs().float() * s_per_h.float()).sum(dim=1) / (2.0 * math.sqrt(head_dim))
-    return delta * float(q_scale)
+    # `q_scale` is already folded into the 1/(2·√d) factor above — do not
+    # multiply again. Accepted in the signature for call-site compatibility.
+    _ = q_scale
+    return delta
 
 
 def score_consistency_violations(
@@ -473,6 +480,18 @@ def certified_attention_layer(
     num_q_heads = q_all.shape[0]
     n_qblocks = cache.num_quantized_blocks
     bs = cache.block_size
+
+    # Page-in telemetry (paper §3.4 runtime cost accounting). Keys-side H2D
+    # is zero when the VRAM FP16 mirror (keys_fp16_gpu) is allocated — the
+    # default for the arXiv sweep. Values-side H2D fires only on Rung-2
+    # escalation when ρ·η exceeds v_tolerance. All four rung booleans are
+    # emitted in the per-layer stats for uniform aggregation; the harness
+    # ORs them across layers to get a step-level rung-fired decision.
+    h2d_key_bytes = 0
+    h2d_key_blocks = 0
+    h2d_value_bytes = 0
+    h2d_value_blocks = 0
+    rung2_fired = False
 
     # Phase 1: INT8 scoring only on fully quantized blocks
     if n_qblocks > 0:
@@ -674,12 +693,30 @@ def certified_attention_layer(
         and score_consistency_violation_heads > 0
     )
     if rung4_fired:
+        # Rung-4 pages in all FP16 keys+values; bookkeep H2D for telemetry.
+        if cache.keys_fp16_gpu is None and cache.keys_fp16_cpu is not None:
+            nt_r4 = cache.num_tokens
+            kv_k, _, hd_k = cache.keys_fp16_cpu.shape
+            h2d_key_bytes += kv_k * nt_r4 * hd_k * cache.keys_fp16_cpu.element_size()
+            h2d_key_blocks += (nt_r4 + bs - 1) // bs
         zero_skip = torch.zeros_like(skip_mask)
         output = sdpa_attend_with_skip(
             cache, q_all, zero_skip, gqa_group, q_scale,
         )
         if collect_stats:
             total_blocks = num_q_heads * cache.num_blocks
+            vram_fp16_key_cache_bytes = 0
+            if cache.keys_fp16_gpu is not None:
+                vram_fp16_key_cache_bytes = (
+                    cache.keys_fp16_gpu[:, :cache.num_tokens, :].numel()
+                    * cache.keys_fp16_gpu.element_size()
+                )
+            vram_fp16_value_cache_bytes = 0
+            if cache.values_fp16 is not None:
+                vram_fp16_value_cache_bytes = (
+                    cache.values_fp16[:, :cache.num_tokens, :].numel()
+                    * cache.values_fp16.element_size()
+                )
             stats = {
                 "total_blocks": total_blocks,
                 "skipped_blocks": 0,
@@ -689,6 +726,16 @@ def certified_attention_layer(
                 "score_consistency_violation_heads": score_consistency_violation_heads,
                 "delta_bound_mean": float(delta_bound_mean),
                 "eps_guard": float(eps_guard),
+                "h2d_key_bytes": int(h2d_key_bytes),
+                "h2d_key_blocks": int(h2d_key_blocks),
+                "h2d_value_bytes": int(h2d_value_bytes),
+                "h2d_value_blocks": int(h2d_value_blocks),
+                "h2d_total_bytes": int(h2d_key_bytes + h2d_value_bytes),
+                "vram_fp16_key_cache_bytes": int(vram_fp16_key_cache_bytes),
+                "vram_fp16_value_cache_bytes": int(vram_fp16_value_cache_bytes),
+                "rung1_fired": bool(rung1_triggered_heads > 0),
+                "rung2_fired": bool(rung2_fired),
+                "rung3_fired": False,  # Rung-4 subsumes Rung-3; no separate ranking recompute runs
                 "rung4_fired": True,
                 "rung4_violating_heads": score_consistency_violation_heads,
             }
@@ -761,6 +808,11 @@ def certified_attention_layer(
         keys_fp16_gpu = cache.keys_fp16_gpu
         if keys_fp16_gpu is None:
             keys_fp16_gpu = cache.keys_fp16_cpu.to(device=q_all.device, non_blocking=True)
+            # H2D bookkeeping: semantic bytes actually consumed by the hybrid
+            # kernel (nt_hybrid tokens × kv_heads × head_dim × element_size).
+            kv_k, _, hd_k = cache.keys_fp16_cpu.shape
+            h2d_key_bytes += kv_k * nt_hybrid * hd_k * cache.keys_fp16_cpu.element_size()
+            h2d_key_blocks += n_active_blocks_hybrid
         output = selective_attend_multihead_hybrid(
             keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
             keys_scale=keys_scale_active.contiguous(),
@@ -777,6 +829,11 @@ def certified_attention_layer(
     elif cache.values_fp16 is not None:
         # Legacy path: SDPA-with-skip. Tail blocks are masked to -inf (block
         # skipping — Paper 2 semantics). Used when adaptive K* is disabled.
+        if cache.keys_fp16_gpu is None and cache.keys_fp16_cpu is not None:
+            nt_sdpa = cache.num_tokens
+            kv_k, _, hd_k = cache.keys_fp16_cpu.shape
+            h2d_key_bytes += kv_k * nt_sdpa * hd_k * cache.keys_fp16_cpu.element_size()
+            h2d_key_blocks += (nt_sdpa + bs - 1) // bs
         output = sdpa_attend_with_skip(
             cache, q_all, skip_mask, gqa_group, q_scale,
         )
@@ -804,11 +861,17 @@ def certified_attention_layer(
                 q_scale=q_scale,
             )
         else:
-            # Fallback: page in FP16 values from CPU
+            # Rung-2 (paper §3.4): INT4 values unsafe (ρ·η > v_tolerance) —
+            # page in FP16 values from the Tier-2 CPU pinned mirror.
+            rung2_fired = True
             if cache.values_fp16_cpu is not None:
                 values_fp16 = cache.values_fp16_cpu.to(
                     device=cache.keys_int8.device, non_blocking=True,
                 )
+                nt_v = cache.num_tokens
+                kv_v, _, dv_v = cache.values_fp16_cpu.shape
+                h2d_value_bytes += kv_v * nt_v * dv_v * cache.values_fp16_cpu.element_size()
+                h2d_value_blocks += (nt_v + bs - 1) // bs
             elif cache.values_fp16 is not None:
                 values_fp16 = cache.values_fp16
             else:
@@ -860,6 +923,36 @@ def certified_attention_layer(
             "attended_blocks": total_blocks - int(skipped),
             "v_format": v_format,
         }
+        # Page-in telemetry (paper §3.4 runtime cost accounting).
+        stats["h2d_key_bytes"] = int(h2d_key_bytes)
+        stats["h2d_key_blocks"] = int(h2d_key_blocks)
+        stats["h2d_value_bytes"] = int(h2d_value_bytes)
+        stats["h2d_value_blocks"] = int(h2d_value_blocks)
+        stats["h2d_total_bytes"] = int(h2d_key_bytes + h2d_value_bytes)
+        # VRAM-resident FP16 cache sizes (semantic bytes — kv_heads × nt × dim × 2).
+        vram_fp16_key_cache_bytes = 0
+        if cache.keys_fp16_gpu is not None:
+            vram_fp16_key_cache_bytes = (
+                cache.keys_fp16_gpu[:, :cache.num_tokens, :].numel()
+                * cache.keys_fp16_gpu.element_size()
+            )
+        stats["vram_fp16_key_cache_bytes"] = int(vram_fp16_key_cache_bytes)
+        vram_fp16_value_cache_bytes = 0
+        if cache.values_fp16 is not None:
+            vram_fp16_value_cache_bytes = (
+                cache.values_fp16[:, :cache.num_tokens, :].numel()
+                * cache.values_fp16.element_size()
+            )
+        stats["vram_fp16_value_cache_bytes"] = int(vram_fp16_value_cache_bytes)
+        # Per-layer per-step rung-fired flags. Harness ORs across layers to
+        # get a step-level rung-fired decision; aggregator sums to get rate.
+        stats["rung1_fired"] = bool(rung1_triggered_heads > 0)
+        stats["rung2_fired"] = bool(rung2_fired)
+        stats["rung3_fired"] = bool(ranking_fallback_heads > 0)
+        # rung4_fired here is always False — the Rung-4 path returns early
+        # with its own stats dict; reaching this block means Rung-4 didn't
+        # fire for this layer.
+        stats["rung4_fired"] = False
         if cache.values_int4_packed is not None:
             stats["rho_max"] = rho.max().item()
             stats["rho_mean"] = rho.mean().item()

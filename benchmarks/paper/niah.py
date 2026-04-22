@@ -115,6 +115,7 @@ def run_niah_cell(
     score_consistency_check: bool = False,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
+    telemetry_collector=None,
 ) -> dict:
     """Run one NIAH cell: plant needle, generate, check retrieval.
 
@@ -213,6 +214,8 @@ def run_niah_cell(
                     cache_position=cache_position,
                     position_ids=cache_position.unsqueeze(0),
                 )
+            if telemetry_collector is not None:
+                telemetry_collector.record_step()
             tid = out.logits[:, -1, :].argmax(dim=-1).item()
             gen_ids.append(tid)
             if tid == tokenizer.eos_token_id:
@@ -276,6 +279,7 @@ def run_niah_sweep(
     score_consistency_check: bool = False,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
+    telemetry_collector=None,
 ) -> dict:
     """Run full NIAH sweep across depths and context lengths."""
     if depths is None:
@@ -309,6 +313,7 @@ def run_niah_sweep(
                         score_consistency_check=score_consistency_check,
                         eps_guard=eps_guard,
                         exploration_rate=exploration_rate,
+                        telemetry_collector=telemetry_collector if mode == "certified" else None,
                     )
                     results[mode].append(r)
 
@@ -427,6 +432,10 @@ def main():
                         help="Score-consistency tolerance above the theoretical Δ bound (default 0.01)")
     parser.add_argument("--exploration-rate", type=float, default=0.0,
                         help="Paper §6 exploration budget: per-step fraction of non-top-K* blocks promoted to FP16 for monitoring (default 0.0 = off; 0.02 = 2%%)")
+    parser.add_argument("--pagein-telemetry", action="store_true",
+                        help="Collect per-step page-in / rung / VRAM-cache telemetry during certified decode (Test 3)")
+    parser.add_argument("--telemetry-output", default=None,
+                        help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -454,6 +463,15 @@ def main():
     tau_cov = args.tau_cov if args.tau_cov and args.tau_cov > 0 else None
     adaptive_tag = f"tau_cov={tau_cov} k=[{args.k_min},{args.k_max}]" if tau_cov else "fixed"
     print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, default_epsilon={args.default_epsilon}, top_k_fp16={args.top_k_fp16}, adaptive={adaptive_tag}, ranking_fallback={rf_tag}")
+
+    telemetry_collector = None
+    if args.pagein_telemetry:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        from _pagein_telemetry import PageinTelemetry
+        telemetry_collector = PageinTelemetry(adapter, enabled=True)
+        telemetry_collector.start()
+
     result = run_niah_sweep(
         model, tokenizer, adapter,
         context_lengths=args.contexts,
@@ -473,7 +491,19 @@ def main():
         score_consistency_check=args.score_consistency_check,
         eps_guard=args.eps_guard,
         exploration_rate=args.exploration_rate,
+        telemetry_collector=telemetry_collector,
     )
+
+    if telemetry_collector is not None:
+        telemetry_collector.finish()
+        tele_path = args.telemetry_output or (str(args.output).replace(".json", ".pagein.json"))
+        telemetry_collector.write_json(tele_path)
+        s = telemetry_collector.summary()
+        print(f"\nPage-in telemetry: n_steps={s.get('n_steps',0)} "
+              f"h2d_mean={s.get('h2d_total_bytes_mean',0)/1024:.1f} KB/step, "
+              f"pct_zero_pagein={s.get('pct_steps_zero_pagein',0):.1%}, "
+              f"rung1_rate={s.get('rung1_rate',0):.2%}, rung2_rate={s.get('rung2_rate',0):.2%}, "
+              f"rung3_rate={s.get('rung3_rate',0):.2%}, rung4_rate={s.get('rung4_rate',0):.2%}")
 
     print(f"\n{'='*50}")
     print(f"Dense accuracy:     {result['dense_accuracy']:.1%}")
