@@ -12,12 +12,13 @@ def main() -> int:
     out_path = sweep_dir / "SUMMARY.md"
 
     rows = [
-        ("dense",        "dense (baseline)",       "dense",        None),
-        ("cert_cap256",  "certified cap=256",      "certified",    256),
-        ("cert_cap512",  "certified cap=512",      "certified",    512),
-        ("cert_cap1024", "certified cap=1024",     "certified",    1024),
-        ("cert_cap4096", "certified cap=4096 (=corpus)", "certified", 4096),
-        ("cert_full",    "certified full mirror",  "certified",    None),
+        ("dense",                "dense (baseline)",                       "dense",     None),
+        ("cert_cap256",          "certified cap=256 (per-Q-head)",         "certified", 256),
+        ("cert_cap512",          "certified cap=512 (per-Q-head)",         "certified", 512),
+        ("cert_cap1024",         "certified cap=1024 (per-Q-head)",        "certified", 1024),
+        ("cert_cap1024_kvgroup", "certified cap=1024 (per-KV-group)",      "certified", 1024),
+        ("cert_cap4096",         "certified cap=4096 (=corpus, per-Q)",    "certified", 4096),
+        ("cert_full",            "certified full mirror (per-Q-head)",     "certified", None),
     ]
 
     def collect(tag: str, cfg_key: str) -> dict | None:
@@ -111,13 +112,30 @@ def main() -> int:
       "cache at corpus or use a structural fix (per-KV-group selection, see below) "
       "to break the 8-way KV diversity.")
     W("")
-    W("**(4) The per-KV-group structural fix deserves a 64K test.** At 8K it didn't "
-      "help because K_max/corpus was already 25% — saturating the union anyway. At "
-      "64K with K_max=128 (3.1%), collapsing 32 Q heads into 8 groups reduces the "
-      "total independent-selections count from 32 to 8, halving the upper bound on "
-      "per-layer union. See `cache_sweep_tau/SUMMARY.md` for the 8K negative "
-      "result; a 64K re-test is the remaining experiment before the paper has to "
-      "commit to 'cache-sized scratch' as the deployment recommendation.")
+    W("**(4) Per-KV-group at 64K cap=1024 is a real but partial win.** The structural "
+      "fix (`DOTCACHE_PER_KV_GROUP_TOPK=1` post-commit `320e6cb9`) collapses the 32 "
+      "independent per-Q-head selections into 8 per-KV-group selections. Measured:")
+    W("")
+    W("| Config @ cap=1024 | tok/s | Hit rate | H2D MB/step | Per-layer union |")
+    W("|---|---|---|---|---|")
+    W("| per-Q-head    | 0.51 | 0.77% | 2653 | ~2650 blocks |")
+    W("| per-KV-group  | 0.63 | 0.90% | 2354 | ~2358 blocks |")
+    W("")
+    W("**+24% throughput and −11% H2D.** Real improvement, but smaller than the theoretical "
+      "union reduction predicted (4096·(1 − 0.94⁸) ≈ 1630 blocks per layer; we measured "
+      "~2358). The gap between theory and measurement is LRU discipline plus iteration "
+      "order: `ensure_fp16_keys_resident` walks `needed_blocks` in block-ID sorted order, "
+      "so the last-accessed-per-step is always the highest-ID blocks; the next step's "
+      "first few accesses are low-ID blocks → immediate misses before useful warmup. "
+      "A priority-ordered (mass-sorted) iteration or a non-LRU discipline would likely "
+      "close more of the gap — implementation follow-up, not an architectural limitation.")
+    W("")
+    W("**(5) Triton kernel is still the bigger cost.** Even with per-KV-group at the "
+      "best cache point (cap=4096, 99.2% hit), tok/s tops out at 0.64 — less than "
+      "the full-mirror 1.93 tok/s. The kernel-vs-FlashAttention gap (10× at full mirror) "
+      "outweighs the cache-vs-no-cache gap (3× within the kernel envelope). The paper's "
+      "perf-section path forward should lead with 'optimise the Triton attend kernel' "
+      "and have 'optimise the cache policy' as the secondary lever.")
     W("")
     out_path.write_text("\n".join(lines) + "\n")
     print(f"Wrote {out_path}")
