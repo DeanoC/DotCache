@@ -931,24 +931,45 @@ def certified_attention_layer(
         # from num_q_heads to num_q_heads × num_splits, filling the SMs).
         import os as _os
         _fast = _os.environ.get("DOTCACHE_FAST_ATTEND", "1") != "0"
-        _attend_fn = (
-            selective_attend_multihead_hybrid_split_k if _fast
-            else selective_attend_multihead_hybrid
-        )
-        with _PhaseTimer(phase_timings, "phase2_fused_attend"):
-            output = _attend_fn(
-                keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
-                keys_scale=keys_scale_active.contiguous(),
-                keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
-                topk_mask=hybrid_topk,
-                values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
-                q_all=q_all,
-                skip_mask_i32=no_skip,
-                gqa_group=gqa_group,
-                block_size=bs,
-                q_scale=q_scale,
-                last_block_valid=last_block_valid,
-            )
+        if _fast:
+            # .contiguous() stays intentionally. The split-K kernel supports
+            # strided (non-contig) inputs via per-KV stride args, but empirical
+            # decode measurement at 64K shows the cache-slice direct path is
+            # ~2.2× slower end-to-end (264 ms vs 122 ms) than the freshly-copied
+            # path — likely a read-hot-buffer effect, since the persistent cache
+            # region is concurrently written by append_token each layer. The
+            # ~340 MB of copy bandwidth per step (≈8 GB at 1.5 TB/s DRAM = ~5 ms)
+            # pays for itself many times over. Stride-aware kernel kept for
+            # robustness if the allocator pattern changes.
+            with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                output = selective_attend_multihead_hybrid_split_k(
+                    keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
+                    keys_scale=keys_scale_active.contiguous(),
+                    keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
+                    topk_mask=hybrid_topk,
+                    values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
+                    q_all=q_all,
+                    skip_mask_i32=no_skip,
+                    gqa_group=gqa_group,
+                    block_size=bs,
+                    q_scale=q_scale,
+                    last_block_valid=last_block_valid,
+                )
+        else:
+            with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                output = selective_attend_multihead_hybrid(
+                    keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
+                    keys_scale=keys_scale_active.contiguous(),
+                    keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
+                    topk_mask=hybrid_topk,
+                    values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
+                    q_all=q_all,
+                    skip_mask_i32=no_skip,
+                    gqa_group=gqa_group,
+                    block_size=bs,
+                    q_scale=q_scale,
+                    last_block_valid=last_block_valid,
+                )
     elif cache.values_fp16 is not None:
         # Legacy path: SDPA-with-skip. Tail blocks are masked to -inf (block
         # skipping — Paper 2 semantics). Used when adaptive K* is disabled.

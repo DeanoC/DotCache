@@ -578,10 +578,21 @@ def _hybrid_split_k_partial_kernel(
     M_part_ptr,   # [num_q_heads, num_splits] float32
     L_part_ptr,   # [num_q_heads, num_splits] float32
     Acc_part_ptr, # [num_q_heads, num_splits, d_v] float32
-    # Layout
-    N: tl.constexpr,
-    stride_k: tl.constexpr,
-    stride_v: tl.constexpr,
+    # Layout — per-KV-head token strides (in elements) let the kernel walk
+    # a non-contiguous slice of the cache tensor without needing a prior
+    # .contiguous() copy. For a contig-packed [kv, N, D] tensor with dim-0
+    # stride = N*D, stride_kv_k = N*D. For a slice that keeps the same
+    # dim-0 stride as the parent allocation, stride_kv_k = N_alloc*D > N*D.
+    # Per-KV strides are passed as runtime args (not constexpr) because
+    # their values (allocation size × head_dim) vary across models/caches;
+    # making them constexpr would force a Triton recompile per unique stride,
+    # without any observed codegen benefit.
+    stride_kv_k,     # K_int8: elements between consecutive kv heads
+    stride_kv_kfp16, # K_fp16: elements between consecutive kv heads
+    stride_kv_v,     # V: elements between consecutive kv heads
+    stride_kv_scale, # K_scale: elements between consecutive kv heads
+    stride_k: tl.constexpr,        # elements between consecutive tokens in K (= head_dim)
+    stride_v: tl.constexpr,        # elements between consecutive tokens in V (= d_v)
     num_blocks: tl.constexpr,
     num_splits: tl.constexpr,
     blocks_per_split: tl.constexpr,
@@ -603,7 +614,9 @@ def _hybrid_split_k_partial_kernel(
     valid_q = qh < num_q_heads
     if valid_q:
         kvh = qh // gqa_group
-        kv_base = kvh * N
+        k_base_elem = kvh * stride_kv_k
+        kfp16_base_elem = kvh * stride_kv_kfp16
+        v_base_elem = kvh * stride_kv_v
 
         block_start = sp * blocks_per_split
         block_end = tl.minimum(block_start + blocks_per_split, num_blocks)
@@ -621,13 +634,13 @@ def _hybrid_split_k_partial_kernel(
         for bid in range(block_start, block_end):
             skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
             if skip_val == 0:
-                base_tok = kv_base + bid * block_size
+                base_tok = bid * block_size
                 use_fp16 = tl.load(TopK_mask_ptr + qh * num_blocks + bid)
 
                 scores = tl.zeros((block_size,), dtype=tl.float32)
-                scale_base = (kvh * num_blocks + bid) * head_dim
-                int8_row_ptrs = K_int8_ptr + (base_tok + t_offs) * stride_k
-                fp16_row_ptrs = K_fp16_ptr + (base_tok + t_offs) * stride_k
+                scale_base = kvh * stride_kv_scale + bid * head_dim
+                int8_row_ptrs = K_int8_ptr + k_base_elem + (base_tok + t_offs) * stride_k
+                fp16_row_ptrs = K_fp16_ptr + kfp16_base_elem + (base_tok + t_offs) * stride_k
 
                 for d_start in range(0, head_dim, TILE_D):
                     d_off = d_start + d_offs
@@ -660,7 +673,7 @@ def _hybrid_split_k_partial_kernel(
                 weights = tl.exp(scores - new_m)
                 l += tl.sum(weights)
 
-                v_row_ptrs = V_ptr + (base_tok + t_offs) * stride_v
+                v_row_ptrs = V_ptr + v_base_elem + (base_tok + t_offs) * stride_v
                 v_off = v_offs
                 vm = v_off < d_v
                 v_ptrs = v_row_ptrs[:, None] + v_off[None, :]
@@ -764,13 +777,22 @@ def selective_attend_multihead_hybrid_split_k(
     num_splits = max(1, int(num_splits))
     blocks_per_split = (num_blocks + num_splits - 1) // num_splits
 
-    K_int8_flat = keys_int8.reshape(num_kv_heads * N, head_dim).contiguous()
-    K_fp16_flat = keys_fp16.reshape(num_kv_heads * N, head_dim).contiguous()
-    V_flat = values_fp16.reshape(num_kv_heads * N, d_v).contiguous()
-    keys_scale_c = keys_scale.contiguous()
-    q_c = q_all.contiguous()
-    skip_c = skip_mask_i32.contiguous()
-    topk_c = topk_mask.contiguous()
+    # Stride between consecutive KV heads (in elements). For a contiguous
+    # packed tensor this equals N * head_dim (or N * d_v for V); for a
+    # slice that keeps the parent allocation's dim-0 stride (e.g.
+    # `cache.keys_int8[:, :nt, :]` against an oversized cache) it is the
+    # full dim-0 stride of the parent. Either way we read it from
+    # tensor.stride(0), which is the number of elements to skip to
+    # advance dim 0 by one. This lets us avoid the ~60+ MB .contiguous()
+    # copy the old wrapper did per call.
+    assert keys_int8.stride(2) == 1 and keys_int8.stride(1) == head_dim
+    assert keys_fp16.stride(2) == 1 and keys_fp16.stride(1) == head_dim
+    assert values_fp16.stride(2) == 1 and values_fp16.stride(1) == d_v
+    assert keys_scale.stride(2) == 1 and keys_scale.stride(1) == head_dim
+    stride_kv_k = keys_int8.stride(0)
+    stride_kv_kfp16 = keys_fp16.stride(0)
+    stride_kv_v = values_fp16.stride(0)
+    stride_kv_scale = keys_scale.stride(0)
 
     m_part = torch.empty(num_q_heads, num_splits, dtype=torch.float32, device=device)
     l_part = torch.empty(num_q_heads, num_splits, dtype=torch.float32, device=device)
@@ -783,10 +805,13 @@ def selective_attend_multihead_hybrid_split_k(
     lbv = block_size if last_block_valid is None else int(last_block_valid)
 
     _hybrid_split_k_partial_kernel[(num_q_heads * num_splits,)](
-        K_int8_flat, keys_scale_c, K_fp16_flat,
-        topk_c, V_flat, q_c, skip_c,
+        keys_int8, keys_scale, keys_fp16,
+        topk_mask, values_fp16, q_all, skip_mask_i32,
         m_part, l_part, acc_part,
-        N=N,
+        stride_kv_k=stride_kv_k,
+        stride_kv_kfp16=stride_kv_kfp16,
+        stride_kv_v=stride_kv_v,
+        stride_kv_scale=stride_kv_scale,
         stride_k=head_dim,
         stride_v=d_v,
         num_blocks=num_blocks,

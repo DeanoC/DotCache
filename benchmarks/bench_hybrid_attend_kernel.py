@@ -219,6 +219,61 @@ def main() -> int:
           f"max |Δ|={err_split.max():.6f}")
     print(f"  mean rel={rel_err_split.mean():.6f}  max rel={rel_err_split.max():.6f}")
 
+    # Non-contig stride test: simulate the real-model cache where keys are a
+    # slice of an oversized parent. Build oversized parent tensors, slice,
+    # compare split-K against the contig reference.
+    print(f"\n=== Non-contig slice correctness ===")
+    pad = 1024  # extra tokens allocated beyond what we use
+    def build_padded(t: torch.Tensor, pad_tokens: int) -> torch.Tensor:
+        shape = list(t.shape)
+        shape[1] += pad_tokens
+        parent = torch.empty(shape, dtype=t.dtype, device=t.device)
+        parent[:, :t.shape[1], :] = t
+        return parent[:, :t.shape[1], :]  # non-contig slice
+    keys_int8_nc = build_padded(inp["keys_int8"], pad)
+    keys_fp16_nc = build_padded(inp["keys_fp16"], pad)
+    values_fp16_nc = build_padded(inp["values_fp16"], pad)
+
+    # Keys_scale is [kv, num_blocks, head_dim] so pad num_blocks dim similarly.
+    ks_shape = list(inp["keys_scale"].shape)
+    ks_shape[1] += pad // args.block_size
+    ks_parent = torch.empty(ks_shape, dtype=inp["keys_scale"].dtype, device=inp["keys_scale"].device)
+    ks_parent[:, :inp["keys_scale"].shape[1], :] = inp["keys_scale"]
+    keys_scale_nc = ks_parent[:, :inp["keys_scale"].shape[1], :]
+
+    print(f"  keys_int8 stride(0): contig {inp['keys_int8'].stride(0)}, sliced {keys_int8_nc.stride(0)}  "
+          f"(contig: {keys_int8_nc.is_contiguous()})")
+
+    out_nc = selective_attend_multihead_hybrid_split_k(
+        keys_int8=keys_int8_nc,
+        keys_scale=keys_scale_nc,
+        keys_fp16=keys_fp16_nc,
+        topk_mask=inp["topk_mask"],
+        values_fp16=values_fp16_nc,
+        q_all=inp["q_all"],
+        skip_mask_i32=inp["skip_mask_i32"],
+        gqa_group=gqa_group,
+        block_size=args.block_size,
+        q_scale=q_scale,
+    )
+    err_nc = (out_nc - out_split).abs()
+    print(f"  non-contig vs contig split-K: max |Δ|={err_nc.max():.6f}  "
+          f"mean |Δ|={err_nc.mean():.6f}")
+
+    # Time non-contig call to see if strides hurt.
+    def call_split_k_nc(num_splits=None):
+        return selective_attend_multihead_hybrid_split_k(
+            keys_int8=keys_int8_nc, keys_scale=keys_scale_nc,
+            keys_fp16=keys_fp16_nc, topk_mask=inp["topk_mask"],
+            values_fp16=values_fp16_nc, q_all=inp["q_all"],
+            skip_mask_i32=inp["skip_mask_i32"],
+            gqa_group=gqa_group, block_size=args.block_size, q_scale=q_scale,
+            num_splits=num_splits,
+        )
+    ms_nc = time_fn(call_split_k_nc, warmup=args.warmup, iters=args.iters)
+    print(f"  non-contig split-K (ns=auto): mean {statistics.mean(ms_nc):.3f} ms  "
+          f"p50 {statistics.median(ms_nc):.3f} ms")
+
     # Sweep num_splits to find the sweet spot.
     print(f"\n=== Split-K sweep ===")
     best_ms = None; best_ns = None

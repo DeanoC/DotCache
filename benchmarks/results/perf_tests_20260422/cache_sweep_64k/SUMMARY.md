@@ -86,3 +86,35 @@ The FP64→FP32 swap alone gave 1.6×; parallelism gave the remaining ~12×. At 
 
 **Paper-relevant number:** the paper's instrumented-off full-mirror tok/s was 1.93. Applying the timer-overhead ratio (1.93 / 1.48 = 1.30×) to the new instrumented reading gives an estimated **~4.4 tok/s** at 64K full-mirror — close to the gap to dense (19.9) being 4.5× rather than 10×.
 
+## Timer-off measurement (2026-04-22, updated)
+
+The phase-timer's `torch.cuda.synchronize()` on every `_PhaseTimer.__exit__`
+adds ~180 ms/step at 64K (76% relative inflation), serialising what should
+pipeline across layers. `benchmarks/bench_decode_64k_no_timer.py` removes
+all phase timing and reports the production tok/s the paper would measure.
+
+| Config | mean ms/step | p50 | p95 | tok/s | vs dense |
+|---|---:|---:|---:|---:|---:|
+| dense (baseline) | 50.84 | 50.45 | 54.12 | **19.67** | 1.00× |
+| cert FAST_ATTEND=0 (original hybrid) | 482.20 | 480.69 | 488.73 | 2.07 | 9.48× |
+| **cert FAST_ATTEND=1 (split-K)** | **125.63** | **123.24** | **132.46** | **7.96** | **2.47×** |
+
+End-to-end throughput improvement from the kernel swap alone: **3.84×**
+(cert-slow → cert-fast). Gap to dense collapsed from **9.5×** to **2.47×**.
+
+## .contiguous() at the call site: unexpected load-bearing
+
+Dropping the `cache.keys_int8[:, :nt, :].contiguous()` (and sibling FP16/V)
+copies at the call site — the 320 MB/step of memcpy they do — regressed
+end-to-end decode from 122 ms to 264 ms at 64K. The kernel was upgraded
+to accept explicit per-KV-head strides (no reshape/flatten required), and
+a micro-bench against synthetic non-contig slices shows the kernel itself
+is unaffected by non-contig strides (0.807 ms vs 0.805 ms). The
+whole-pipeline regression appears to be a read-hot-buffer effect: the
+persistent cache region is concurrently written by `append_token` each
+layer, while `.contiguous()` produces a fresh read-only copy in a clean
+allocator region. We kept the `.contiguous()` calls and kept the
+stride-aware kernel as a safety net for future allocator changes. Net
+cost of the copies: ≈5 ms/step of DRAM bandwidth (320 MB / 1.5 TB/s × 32
+layers); net saving vs dropping them: ≈140 ms/step.
+
