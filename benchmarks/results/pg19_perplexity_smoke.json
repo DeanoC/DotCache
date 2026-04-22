@@ -1,0 +1,19 @@
+{
+  "benchmark": "pg19_perplexity",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "context_length": 8192,
+  "num_chunks": 5,
+  "eval_start_frac": 0.5,
+  "dense": {
+    "perplexity": 6.656330484253232,
+    "total_nll": 77633.001953125,
+    "total_tokens": 40955
+  },
+  "certified": {
+    "perplexity": 6.877246772072399,
+    "total_nll": 78960.54320869102,
+    "total_tokens": 40950
+  },
+  "ratio": 1.0331889001517855,
+  "delta": 0.2209162878191675
+}

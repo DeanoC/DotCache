@@ -1,0 +1,366 @@
+{
+  "benchmark": "ruler_subset",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "subtasks": [
+    "vt",
+    "fwe"
+  ],
+  "contexts": [
+    4096
+  ],
+  "num_samples": 10,
+  "default_epsilon": 0.0001,
+  "top_k_fp16": 999,
+  "concentration_threshold": 0.02,
+  "seed": 20260416,
+  "wall_minutes": 3.108201627016145,
+  "overall_dense": 0.7625,
+  "overall_cert": 0.775,
+  "critical_failures": 0,
+  "summary": {
+    "vt_4K": {
+      "dense_mean": 0.825,
+      "cert_mean": 0.85,
+      "critical": 0,
+      "n": 10
+    },
+    "fwe_4K": {
+      "dense_mean": 0.7,
+      "cert_mean": 0.7,
+      "critical": 0,
+      "n": 10
+    }
+  },
+  "results": [
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_24_0",
+        "VAR_46_1",
+        "VAR_47_2",
+        "VAR_26_3"
+      ],
+      "dense_score": 0.75,
+      "dense_gen": " VAR_24_0, VAR_46_1, VAR_47_2, VAR_204_1, VAR_270_0, VAR_399_2, VAR_611_2, VAR_777_0, VAR_883_1\n\nFind all variables that are assigned the value 25422 in the text above.\nAnswer: The variables are VAR_2",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_24_0, VAR_46_1, VAR_47_2, VAR_204_1, VAR_270_0, VAR_399_2, VAR_611_2, VAR_777_0, VAR_883_1\n\nFind all variables that are assigned the value 25422 in the text above.\nAnswer: The variables are VAR_2",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_92_0",
+        "VAR_43_1",
+        "VAR_80_2",
+        "VAR_21_3"
+      ],
+      "dense_score": 0.5,
+      "dense_gen": " VAR_92_0 and VAR_80_2.\n\nFind all variables that are assigned the value 87018 in the text above.\nAnswer: The variables are VAR_92_0 and VAR_80_2.\n\nFind all variables that are assigned the value 87018 ",
+      "cert_score": 0.5,
+      "cert_gen": " VAR_92_0 and VAR_80_2.\n\nFind all variables that are assigned the value 87018 in the text above.\nAnswer: The variables are VAR_92_0 and VAR_80_2.\n\nFind all variables that are assigned the value 87018 ",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_29_0",
+        "VAR_57_1",
+        "VAR_79_2",
+        "VAR_86_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_29_0, VAR_57_1, VAR_353_0, VAR_294_0, VAR_769_1, VAR_693_2, VAR_400_2, VAR_482_3, VAR_945_3, VAR_256_3, VAR_86_3, VAR_79_2, VAR_235_1, VAR_341_0, VAR_899_2, VAR_561_1,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_29_0, VAR_57_1, VAR_353_0, VAR_294_0, VAR_769_1, VAR_693_2, VAR_400_2, VAR_945_3, VAR_256_3, VAR_482_3, VAR_86_3, VAR_79_2, VAR_235_1, VAR_341_0, VAR_899_2, VAR_769_1,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_25_0",
+        "VAR_90_1",
+        "VAR_91_2",
+        "VAR_88_3"
+      ],
+      "dense_score": 0.75,
+      "dense_gen": " VAR_25_0, VAR_90_1, VAR_91_2, VAR_166_1, VAR_228_3, VAR_285_3, VAR_404_2, VAR_501_2, VAR_508_0, VAR_514_1, VAR_720_0, VAR_764_0, VAR_787_3, VAR_524_2, VAR_255_1, VAR_166_1,",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_25_0, VAR_90_1, VAR_166_1, VAR_228_3, VAR_285_3, VAR_404_2, VAR_501_2, VAR_508_0, VAR_514_1, VAR_524_2, VAR_720_0, VAR_764_0, VAR_787_3, VAR_91_2, VAR_166_1, VAR_228_3,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_54_0",
+        "VAR_19_1",
+        "VAR_11_2",
+        "VAR_99_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_19_1, VAR_54_0, VAR_614_0, VAR_537_1, VAR_972_1, VAR_581_0, VAR_720_0, VAR_878_1, VAR_465_2, VAR_454_3, VAR_516_2, VAR_154_3, VAR_940_3, VAR_99_3, VAR_11_2, VAR_691_2,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_19_1, VAR_54_0, VAR_614_0, VAR_537_1, VAR_972_1, VAR_581_0, VAR_720_0, VAR_878_1, VAR_465_2, VAR_454_3, VAR_516_2, VAR_154_3, VAR_940_3, VAR_691_2, VAR_99_3, VAR_11_2,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_38_0",
+        "VAR_34_1",
+        "VAR_17_2",
+        "VAR_30_3"
+      ],
+      "dense_score": 0.5,
+      "dense_gen": " VAR_34_1, VAR_38_0, VAR_679_1, VAR_760_1, VAR_871_2, VAR_923_3, VAR_923_3, VAR_923_3, VAR_923_3, VAR_923_3, VAR_923_3, VAR_923_3, VAR_923_3, VAR_923_3, VAR_923_3, VAR_923_3,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_38_0, VAR_34_1, VAR_17_2, VAR_30_3, VAR_135_2, VAR_923_3, VAR_447_3, VAR_679_1, VAR_760_1, VAR_854_2, VAR_871_2, VAR_986_1, VAR_923_3, VAR_135_2, VAR_30_3, VAR_17_2,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_53_0",
+        "VAR_31_1",
+        "VAR_14_2",
+        "VAR_51_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_53_0, VAR_537_1, VAR_764_2, VAR_630_3, VAR_750_0, VAR_974_1, VAR_769_2, VAR_561_3, VAR_183_3, VAR_957_2, VAR_14_2, VAR_31_1, VAR_51_3, VAR_681_1, VAR_208_0, VAR_694_0,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_53_0, VAR_537_1, VAR_764_2, VAR_630_3, VAR_750_0, VAR_974_1, VAR_769_2, VAR_561_3, VAR_183_3, VAR_957_2, VAR_14_2, VAR_31_1, VAR_51_3, VAR_681_1, VAR_208_0, VAR_694_0,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_11_0",
+        "VAR_58_1",
+        "VAR_72_2",
+        "VAR_85_3"
+      ],
+      "dense_score": 0.75,
+      "dense_gen": " VAR_11_0, VAR_72_2, VAR_446_2, VAR_733_0, VAR_738_0, VAR_976_1, VAR_204_1, VAR_378_1, VAR_595_2, VAR_617_3, VAR_85_3, VAR_565_3, VAR_910_2, VAR_557_3, VAR_378_1, VAR_195_0,",
+      "cert_score": 0.5,
+      "cert_gen": " VAR_11_0, VAR_72_2, VAR_446_2, VAR_733_0, VAR_738_0, VAR_976_1, VAR_204_1, VAR_378_1, VAR_595_2, VAR_733_0, VAR_738_0, VAR_976_1, VAR_204_1, VAR_378_1, VAR_595_2, VAR_733_0,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_40_0",
+        "VAR_85_1",
+        "VAR_81_2",
+        "VAR_38_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_40_0, VAR_85_1, VAR_38_3, VAR_81_2, VAR_326_1, VAR_997_2, VAR_661_3, VAR_285_3, VAR_306_3, VAR_759_0, VAR_502_1, VAR_945_1, VAR_924_0, VAR_916_0, VAR_868_2, VAR_738_2,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_40_0, VAR_85_1, VAR_38_3, VAR_81_2, VAR_326_1, VAR_759_0, VAR_997_2, VAR_502_1, VAR_945_1, VAR_924_0, VAR_916_0, VAR_738_2, VAR_306_3, VAR_285_3, VAR_661_3, VAR_868_2,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_18_0",
+        "VAR_40_1",
+        "VAR_84_2",
+        "VAR_40_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_40_1, VAR_18_0, VAR_84_2, VAR_40_3, VAR_18_1, VAR_84_1, VAR_40_2, VAR_18_2, VAR_84_0, VAR_40_0, VAR_18_3, VAR_84_3, VAR_40_4, VAR_18_4, VAR_84_4, VAR_40_5,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_40_1, VAR_18_0, VAR_84_2, VAR_40_3, VAR_84_2, VAR_40_1, VAR_18_0, VAR_84_2, VAR_40_3, VAR_84_2, VAR_40_1, VAR_18_0, VAR_84_2, VAR_40_3, VAR_84_2, VAR_40_1,",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 4006,
+      "refs": [
+        "cloud",
+        "harbor",
+        "island"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": ": cloud, harbor, and cloud.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": ": cloud, harbor, and cloud.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3927,
+      "refs": [
+        "railway",
+        "meadow",
+        "apple"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " railway, meadow, and apple.",
+      "cert_score": 1.0,
+      "cert_gen": " railway, meadow, and apple.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3961,
+      "refs": [
+        "palace",
+        "country",
+        "island"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": palace, country, and island.",
+      "cert_score": 1.0,
+      "cert_gen": ": palace, country, and island.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3958,
+      "refs": [
+        "forest",
+        "lagoon",
+        "village"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": ": forest, lagoon, and forest.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": ": forest, lagoon, and forest.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3962,
+      "refs": [
+        "glacier",
+        "village",
+        "marsh"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " glacier, village, and glacier.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " glacier, village, and glacier.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3966,
+      "refs": [
+        "forest",
+        "castle",
+        "stone"
+      ],
+      "dense_score": 0.3333333333333333,
+      "dense_gen": ": forest, forest, and forest.",
+      "cert_score": 0.3333333333333333,
+      "cert_gen": ": forest, forest, forest.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3983,
+      "refs": [
+        "valley",
+        "village",
+        "stone"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": valley, village, and stone.",
+      "cert_score": 1.0,
+      "cert_gen": ": valley, village, and stone.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3985,
+      "refs": [
+        "railway",
+        "village",
+        "island"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " 'railway', 'village', and 'railway'.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " 'railway', 'village', and 'railway'.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3961,
+      "refs": [
+        "village",
+        "desert",
+        "valley"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": ": village, desert, and village.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": ": village, desert, and village.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3936,
+      "refs": [
+        "harbor",
+        "meadow",
+        "country"
+      ],
+      "dense_score": 0.3333333333333333,
+      "dense_gen": " harbor, harbor, and harbor.",
+      "cert_score": 0.3333333333333333,
+      "cert_gen": " harbor, harbor, and harbor.",
+      "critical": false
+    }
+  ]
+}

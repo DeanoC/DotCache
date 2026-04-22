@@ -1,0 +1,59 @@
+{
+  "benchmark": "longbench_en_subset",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "subtasks": [
+    "narrativeqa"
+  ],
+  "contexts": [
+    4096
+  ],
+  "num_samples": 2,
+  "default_epsilon": 0.0,
+  "top_k_fp16": 4,
+  "concentration_threshold": 0.02,
+  "seed": 20260417,
+  "wall_minutes": 0.13652729087043552,
+  "overall_dense": 0.0,
+  "overall_cert": 0.0,
+  "critical_failures": 0,
+  "summary": {
+    "narrativeqa_4K": {
+      "dense_mean": 0.0,
+      "cert_mean": 0.0,
+      "critical": 0,
+      "n": 2
+    }
+  },
+  "results": [
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 98,
+      "seq_len": 4065,
+      "refs": [
+        "A mobster named \"Blue Lou Boyle\". "
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " The mob.",
+      "cert_score": 0.0,
+      "cert_gen": " The Mafia\n\n",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 4096,
+      "sample_idx": 178,
+      "seq_len": 4060,
+      "refs": [
+        "The English lanuage has evolved."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " The article is written in the future tense, as if it were written in 1997.",
+      "cert_score": 0.0,
+      "cert_gen": " The article is written in the future tense, as if it were written in 1997.",
+      "critical": false
+    }
+  ]
+}

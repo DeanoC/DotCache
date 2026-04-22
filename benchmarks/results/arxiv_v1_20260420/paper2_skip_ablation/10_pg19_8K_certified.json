@@ -1,0 +1,60 @@
+{
+  "benchmark": "pg19",
+  "context_length": 8192,
+  "config": "certified",
+  "smoke": false,
+  "quality": {
+    "metric": "perplexity",
+    "value": 6.652951077186533,
+    "dense_value": 6.648349888436462,
+    "delta": 0.0046011887500707616
+  },
+  "system": {},
+  "native": {
+    "benchmark": "pg19_perplexity",
+    "model": "NousResearch/Meta-Llama-3.1-8B",
+    "context_length": 8192,
+    "num_chunks": 5,
+    "eval_start_frac": 0.5,
+    "concentration_threshold": 0.0,
+    "default_epsilon_override": null,
+    "top_k_override": null,
+    "dense": {
+      "perplexity": 6.648349888436462,
+      "total_nll": 77583.8695678711,
+      "total_tokens": 40955
+    },
+    "certified": {
+      "perplexity": 6.652951077186533,
+      "total_nll": 77602.72859031522,
+      "total_tokens": 40950,
+      "skip_rate": 0.5342992540064866,
+      "skipped_blocks": 4306947817,
+      "total_blocks": 8060928000,
+      "decode_steps": 20475
+    },
+    "ratio": 1.0006920798133796,
+    "delta": 0.0046011887500707616
+  },
+  "meta": {
+    "model": "NousResearch/Meta-Llama-3.1-8B",
+    "model_quant": "int8-bitsandbytes",
+    "hardware": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition sm_120",
+    "timestamp": "2026-04-20T21:05:35.841344+00:00",
+    "started": "2026-04-20T20:29:15.077677+00:00",
+    "wall_seconds": 2180.7636640872806,
+    "git_sha": "826b8c78",
+    "exit_code": 0,
+    "params": {
+      "v_tol": "0.05",
+      "tau_cov": "0.995",
+      "k_min": "2",
+      "k_max": "128",
+      "ranking_r": "1",
+      "eps_guard": "0.01",
+      "exploration_rate": "0.02",
+      "rung1_threshold": "0.02",
+      "rung1_multiplier": "2.0"
+    }
+  }
+}

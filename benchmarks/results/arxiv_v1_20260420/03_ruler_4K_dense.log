@@ -1,0 +1,1080 @@
+cmd: /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/ruler.py --contexts 4096 --num-samples 50 --output /workspace/DotCache/benchmarks/results/arxiv_v1_20260420/03_ruler_4K_dense.native.json
+started: 2026-04-20T17:45:57.875674+00:00
+---
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights:   0%|          | 1/291 [00:01<05:11,  1.07s/it]Loading weights:   1%|          | 2/291 [00:03<08:10,  1.70s/it]Loading weights:   1%|▏         | 4/291 [00:03<03:33,  1.34it/s]Loading weights:   2%|▏         | 5/291 [00:03<02:51,  1.67it/s]Loading weights:   2%|▏         | 6/291 [00:04<02:21,  2.01it/s]Loading weights:   3%|▎         | 10/291 [00:04<00:56,  4.98it/s]Loading weights:   4%|▍         | 13/291 [00:04<00:42,  6.48it/s]Loading weights:   5%|▌         | 15/291 [00:05<00:57,  4.82it/s]Loading weights:   7%|▋         | 19/291 [00:05<00:35,  7.65it/s]Loading weights:   8%|▊         | 22/291 [00:05<00:31,  8.43it/s]Loading weights:   8%|▊         | 24/291 [00:06<00:40,  6.54it/s]Loading weights:  10%|▉         | 28/291 [00:06<00:27,  9.49it/s]Loading weights:  11%|█         | 31/291 [00:06<00:26,  9.68it/s]Loading weights:  11%|█▏        | 33/291 [00:07<00:37,  6.85it/s]Loading weights:  12%|█▏        | 36/291 [00:07<00:28,  9.05it/s]Loading weights:  14%|█▎        | 40/291 [00:07<00:25, 10.03it/s]Loading weights:  14%|█▍        | 42/291 [00:08<00:33,  7.35it/s]Loading weights:  15%|█▌        | 45/291 [00:08<00:25,  9.62it/s]Loading weights:  17%|█▋        | 49/291 [00:08<00:23, 10.30it/s]Loading weights:  18%|█▊        | 51/291 [00:09<00:34,  6.90it/s]Loading weights:  19%|█▊        | 54/291 [00:09<00:26,  9.03it/s]Loading weights:  20%|█▉        | 58/291 [00:09<00:23,  9.87it/s]Loading weights:  21%|██        | 60/291 [00:10<00:31,  7.41it/s]Loading weights:  22%|██▏       | 64/291 [00:10<00:24,  9.40it/s]Loading weights:  23%|██▎       | 67/291 [00:10<00:23,  9.56it/s]Loading weights:  24%|██▎       | 69/291 [00:11<00:32,  6.80it/s]Loading weights:  25%|██▌       | 73/291 [00:11<00:22,  9.63it/s]Loading weights:  26%|██▌       | 76/291 [00:11<00:21, 10.10it/s]Loading weights:  27%|██▋       | 78/291 [00:13<00:50,  4.22it/s]Loading weights:  28%|██▊       | 81/291 [00:13<00:39,  5.25it/s]Loading weights:  29%|██▊       | 83/291 [00:13<00:36,  5.68it/s]Loading weights:  29%|██▉       | 85/291 [00:14<00:51,  3.99it/s]Loading weights:  30%|██▉       | 86/291 [00:15<01:08,  2.99it/s]Loading weights:  30%|██▉       | 87/291 [00:16<01:31,  2.23it/s]Loading weights:  31%|███       | 90/291 [00:16<01:01,  3.26it/s]Loading weights:  31%|███▏      | 91/291 [00:17<00:59,  3.35it/s]Loading weights:  32%|███▏      | 94/291 [00:18<01:01,  3.20it/s]Loading weights:  33%|███▎      | 95/291 [00:18<01:18,  2.49it/s]Loading weights:  33%|███▎      | 96/291 [00:19<01:32,  2.11it/s]Loading weights:  34%|███▍      | 99/291 [00:20<00:59,  3.24it/s]Loading weights:  34%|███▍      | 100/291 [00:20<00:55,  3.43it/s]Loading weights:  35%|███▌      | 103/291 [00:21<00:53,  3.53it/s]Loading weights:  36%|███▌      | 104/291 [00:21<01:10,  2.65it/s]Loading weights:  36%|███▌      | 105/291 [00:22<01:27,  2.13it/s]Loading weights:  37%|███▋      | 108/291 [00:23<00:56,  3.26it/s]Loading weights:  37%|███▋      | 109/291 [00:23<00:51,  3.51it/s]Loading weights:  38%|███▊      | 112/291 [00:24<00:51,  3.49it/s]Loading weights:  39%|███▉      | 113/291 [00:24<01:04,  2.76it/s]Loading weights:  39%|███▉      | 114/291 [00:25<01:19,  2.22it/s]Loading weights:  40%|████      | 117/291 [00:25<00:48,  3.57it/s]Loading weights:  41%|████      | 118/291 [00:26<00:45,  3.77it/s]Loading weights:  42%|████▏     | 121/291 [00:27<00:48,  3.54it/s]Loading weights:  42%|████▏     | 122/291 [00:27<00:48,  3.49it/s]Loading weights:  42%|████▏     | 123/291 [00:27<00:46,  3.59it/s]Loading weights:  44%|████▎     | 127/291 [00:27<00:24,  6.75it/s]Loading weights:  45%|████▍     | 130/291 [00:28<00:21,  7.48it/s]Loading weights:  45%|████▌     | 132/291 [00:28<00:26,  6.01it/s]Loading weights:  47%|████▋     | 136/291 [00:28<00:17,  9.01it/s]Loading weights:  48%|████▊     | 139/291 [00:28<00:16,  9.19it/s]Loading weights:  48%|████▊     | 141/291 [00:29<00:21,  6.98it/s]Loading weights:  49%|████▉     | 144/291 [00:29<00:16,  9.13it/s]Loading weights:  51%|█████     | 148/291 [00:29<00:14,  9.85it/s]Loading weights:  52%|█████▏    | 150/291 [00:30<00:20,  6.97it/s]Loading weights:  53%|█████▎    | 154/291 [00:30<00:14,  9.52it/s]Loading weights:  54%|█████▍    | 157/291 [00:31<00:13,  9.69it/s]Loading weights:  55%|█████▍    | 159/291 [00:31<00:18,  7.26it/s]Loading weights:  56%|█████▌    | 163/291 [00:31<00:12, 10.10it/s]Loading weights:  57%|█████▋    | 166/291 [00:31<00:11, 10.51it/s]Loading weights:  58%|█████▊    | 168/291 [00:32<00:16,  7.26it/s]Loading weights:  59%|█████▉    | 172/291 [00:32<00:11, 10.20it/s]Loading weights:  60%|██████    | 175/291 [00:33<00:12,  9.42it/s]Loading weights:  61%|██████    | 177/291 [00:33<00:16,  6.78it/s]Loading weights:  62%|██████▏   | 181/291 [00:33<00:11,  9.52it/s]Loading weights:  63%|██████▎   | 184/291 [00:34<00:11,  9.63it/s]Loading weights:  64%|██████▍   | 186/291 [00:34<00:14,  7.28it/s]Loading weights:  65%|██████▌   | 190/291 [00:34<00:09, 10.10it/s]Loading weights:  66%|██████▋   | 193/291 [00:35<00:09,  9.84it/s]Loading weights:  67%|██████▋   | 195/291 [00:35<00:13,  7.29it/s]Loading weights:  68%|██████▊   | 199/291 [00:35<00:08, 10.23it/s]Loading weights:  69%|██████▉   | 202/291 [00:36<00:08, 10.30it/s]Loading weights:  70%|███████   | 204/291 [00:36<00:12,  7.23it/s]Loading weights:  71%|███████▏  | 208/291 [00:36<00:08, 10.27it/s]Loading weights:  73%|███████▎  | 211/291 [00:37<00:07, 10.29it/s]Loading weights:  73%|███████▎  | 213/291 [00:37<00:10,  7.44it/s]Loading weights:  75%|███████▍  | 217/291 [00:37<00:07, 10.56it/s]Loading weights:  76%|███████▌  | 220/291 [00:38<00:06, 10.42it/s]Loading weights:  76%|███████▋  | 222/291 [00:38<00:09,  7.42it/s]Loading weights:  78%|███████▊  | 226/291 [00:38<00:06, 10.41it/s]Loading weights:  79%|███████▊  | 229/291 [00:38<00:05, 10.52it/s]Loading weights:  79%|███████▉  | 231/291 [00:39<00:08,  7.21it/s]Loading weights:  81%|████████  | 235/291 [00:39<00:05, 10.14it/s]Loading weights:  82%|████████▏ | 238/291 [00:39<00:05, 10.33it/s]Loading weights:  82%|████████▏ | 240/291 [00:40<00:06,  7.68it/s]Loading weights:  84%|████████▍ | 244/291 [00:40<00:04, 10.83it/s]Loading weights:  85%|████████▍ | 247/291 [00:40<00:04, 10.50it/s]Loading weights:  86%|████████▌ | 249/291 [00:41<00:05,  7.54it/s]Loading weights:  87%|████████▋ | 253/291 [00:41<00:03, 10.64it/s]Loading weights:  88%|████████▊ | 256/291 [00:41<00:03, 10.83it/s]Loading weights:  89%|████████▊ | 258/291 [00:42<00:04,  8.07it/s]Loading weights:  90%|█████████ | 262/291 [00:42<00:02, 11.03it/s]Loading weights:  91%|█████████ | 265/291 [00:42<00:02, 11.63it/s]Loading weights:  92%|█████████▏| 267/291 [00:43<00:02,  8.12it/s]Loading weights:  93%|█████████▎| 270/291 [00:43<00:01, 10.56it/s]Loading weights:  94%|█████████▍| 274/291 [00:43<00:01, 11.02it/s]Loading weights:  95%|█████████▍| 276/291 [00:44<00:01,  7.74it/s]Loading weights:  96%|█████████▌| 280/291 [00:44<00:01, 10.52it/s]Loading weights:  97%|█████████▋| 283/291 [00:44<00:00, 12.12it/s]Loading weights:  98%|█████████▊| 285/291 [00:44<00:00,  9.29it/s]Loading weights: 100%|██████████| 291/291 [00:44<00:00,  6.47it/s]
+Model: 9.09 GB
+
+RULER: subtasks=['niah_single', 'niah_multikey', 'niah_multivalue', 'niah_multiquery', 'vt', 'cwe', 'fwe'], contexts=[4]K, n=50, eps_default=0.0001, top_k_fp16=4, conc_thr=0.02
+The following generation flags are not valid and may be ignored: ['top_p']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [1/700] dense     niah_single        4K s=0 -> 1.00
+  [2/700] certified niah_single        4K s=0 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [3/700] dense     niah_single        4K s=1 -> 1.00
+  [4/700] certified niah_single        4K s=1 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [5/700] dense     niah_single        4K s=2 -> 1.00
+  [6/700] certified niah_single        4K s=2 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [7/700] dense     niah_single        4K s=3 -> 1.00
+  [8/700] certified niah_single        4K s=3 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [9/700] dense     niah_single        4K s=4 -> 1.00
+  [10/700] certified niah_single        4K s=4 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [11/700] dense     niah_single        4K s=5 -> 1.00
+  [12/700] certified niah_single        4K s=5 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [13/700] dense     niah_single        4K s=6 -> 1.00
+  [14/700] certified niah_single        4K s=6 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [15/700] dense     niah_single        4K s=7 -> 1.00
+  [16/700] certified niah_single        4K s=7 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [17/700] dense     niah_single        4K s=8 -> 1.00
+  [18/700] certified niah_single        4K s=8 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [19/700] dense     niah_single        4K s=9 -> 1.00
+  [20/700] certified niah_single        4K s=9 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [21/700] dense     niah_single        4K s=10 -> 1.00
+  [22/700] certified niah_single        4K s=10 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [23/700] dense     niah_single        4K s=11 -> 1.00
+  [24/700] certified niah_single        4K s=11 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [25/700] dense     niah_single        4K s=12 -> 1.00
+  [26/700] certified niah_single        4K s=12 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [27/700] dense     niah_single        4K s=13 -> 1.00
+  [28/700] certified niah_single        4K s=13 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [29/700] dense     niah_single        4K s=14 -> 1.00
+  [30/700] certified niah_single        4K s=14 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [31/700] dense     niah_single        4K s=15 -> 1.00
+  [32/700] certified niah_single        4K s=15 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [33/700] dense     niah_single        4K s=16 -> 1.00
+  [34/700] certified niah_single        4K s=16 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [35/700] dense     niah_single        4K s=17 -> 1.00
+  [36/700] certified niah_single        4K s=17 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [37/700] dense     niah_single        4K s=18 -> 1.00
+  [38/700] certified niah_single        4K s=18 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [39/700] dense     niah_single        4K s=19 -> 1.00
+  [40/700] certified niah_single        4K s=19 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [41/700] dense     niah_single        4K s=20 -> 1.00
+  [42/700] certified niah_single        4K s=20 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [43/700] dense     niah_single        4K s=21 -> 1.00
+  [44/700] certified niah_single        4K s=21 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [45/700] dense     niah_single        4K s=22 -> 1.00
+  [46/700] certified niah_single        4K s=22 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [47/700] dense     niah_single        4K s=23 -> 1.00
+  [48/700] certified niah_single        4K s=23 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [49/700] dense     niah_single        4K s=24 -> 1.00
+  [50/700] certified niah_single        4K s=24 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [51/700] dense     niah_single        4K s=25 -> 1.00
+  [52/700] certified niah_single        4K s=25 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [53/700] dense     niah_single        4K s=26 -> 1.00
+  [54/700] certified niah_single        4K s=26 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [55/700] dense     niah_single        4K s=27 -> 1.00
+  [56/700] certified niah_single        4K s=27 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [57/700] dense     niah_single        4K s=28 -> 1.00
+  [58/700] certified niah_single        4K s=28 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [59/700] dense     niah_single        4K s=29 -> 1.00
+  [60/700] certified niah_single        4K s=29 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [61/700] dense     niah_single        4K s=30 -> 1.00
+  [62/700] certified niah_single        4K s=30 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [63/700] dense     niah_single        4K s=31 -> 1.00
+  [64/700] certified niah_single        4K s=31 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [65/700] dense     niah_single        4K s=32 -> 1.00
+  [66/700] certified niah_single        4K s=32 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [67/700] dense     niah_single        4K s=33 -> 1.00
+  [68/700] certified niah_single        4K s=33 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [69/700] dense     niah_single        4K s=34 -> 1.00
+  [70/700] certified niah_single        4K s=34 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [71/700] dense     niah_single        4K s=35 -> 1.00
+  [72/700] certified niah_single        4K s=35 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [73/700] dense     niah_single        4K s=36 -> 1.00
+  [74/700] certified niah_single        4K s=36 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [75/700] dense     niah_single        4K s=37 -> 1.00
+  [76/700] certified niah_single        4K s=37 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [77/700] dense     niah_single        4K s=38 -> 1.00
+  [78/700] certified niah_single        4K s=38 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [79/700] dense     niah_single        4K s=39 -> 1.00
+  [80/700] certified niah_single        4K s=39 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [81/700] dense     niah_single        4K s=40 -> 1.00
+  [82/700] certified niah_single        4K s=40 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [83/700] dense     niah_single        4K s=41 -> 1.00
+  [84/700] certified niah_single        4K s=41 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [85/700] dense     niah_single        4K s=42 -> 1.00
+  [86/700] certified niah_single        4K s=42 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [87/700] dense     niah_single        4K s=43 -> 1.00
+  [88/700] certified niah_single        4K s=43 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [89/700] dense     niah_single        4K s=44 -> 1.00
+  [90/700] certified niah_single        4K s=44 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [91/700] dense     niah_single        4K s=45 -> 1.00
+  [92/700] certified niah_single        4K s=45 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [93/700] dense     niah_single        4K s=46 -> 1.00
+  [94/700] certified niah_single        4K s=46 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [95/700] dense     niah_single        4K s=47 -> 1.00
+  [96/700] certified niah_single        4K s=47 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [97/700] dense     niah_single        4K s=48 -> 1.00
+  [98/700] certified niah_single        4K s=48 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [99/700] dense     niah_single        4K s=49 -> 1.00
+  [100/700] certified niah_single        4K s=49 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [101/700] dense     niah_multikey      4K s=0 -> 1.00
+  [102/700] certified niah_multikey      4K s=0 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [103/700] dense     niah_multikey      4K s=1 -> 1.00
+  [104/700] certified niah_multikey      4K s=1 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [105/700] dense     niah_multikey      4K s=2 -> 1.00
+  [106/700] certified niah_multikey      4K s=2 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [107/700] dense     niah_multikey      4K s=3 -> 1.00
+  [108/700] certified niah_multikey      4K s=3 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [109/700] dense     niah_multikey      4K s=4 -> 1.00
+  [110/700] certified niah_multikey      4K s=4 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [111/700] dense     niah_multikey      4K s=5 -> 1.00
+  [112/700] certified niah_multikey      4K s=5 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [113/700] dense     niah_multikey      4K s=6 -> 1.00
+  [114/700] certified niah_multikey      4K s=6 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [115/700] dense     niah_multikey      4K s=7 -> 1.00
+  [116/700] certified niah_multikey      4K s=7 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [117/700] dense     niah_multikey      4K s=8 -> 1.00
+  [118/700] certified niah_multikey      4K s=8 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [119/700] dense     niah_multikey      4K s=9 -> 1.00
+  [120/700] certified niah_multikey      4K s=9 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [121/700] dense     niah_multikey      4K s=10 -> 1.00
+  [122/700] certified niah_multikey      4K s=10 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [123/700] dense     niah_multikey      4K s=11 -> 1.00
+  [124/700] certified niah_multikey      4K s=11 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [125/700] dense     niah_multikey      4K s=12 -> 1.00
+  [126/700] certified niah_multikey      4K s=12 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [127/700] dense     niah_multikey      4K s=13 -> 1.00
+  [128/700] certified niah_multikey      4K s=13 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [129/700] dense     niah_multikey      4K s=14 -> 1.00
+  [130/700] certified niah_multikey      4K s=14 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [131/700] dense     niah_multikey      4K s=15 -> 1.00
+  [132/700] certified niah_multikey      4K s=15 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [133/700] dense     niah_multikey      4K s=16 -> 1.00
+  [134/700] certified niah_multikey      4K s=16 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [135/700] dense     niah_multikey      4K s=17 -> 1.00
+  [136/700] certified niah_multikey      4K s=17 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [137/700] dense     niah_multikey      4K s=18 -> 1.00
+  [138/700] certified niah_multikey      4K s=18 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [139/700] dense     niah_multikey      4K s=19 -> 1.00
+  [140/700] certified niah_multikey      4K s=19 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [141/700] dense     niah_multikey      4K s=20 -> 1.00
+  [142/700] certified niah_multikey      4K s=20 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [143/700] dense     niah_multikey      4K s=21 -> 1.00
+  [144/700] certified niah_multikey      4K s=21 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [145/700] dense     niah_multikey      4K s=22 -> 1.00
+  [146/700] certified niah_multikey      4K s=22 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [147/700] dense     niah_multikey      4K s=23 -> 1.00
+  [148/700] certified niah_multikey      4K s=23 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [149/700] dense     niah_multikey      4K s=24 -> 1.00
+  [150/700] certified niah_multikey      4K s=24 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [151/700] dense     niah_multikey      4K s=25 -> 1.00
+  [152/700] certified niah_multikey      4K s=25 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [153/700] dense     niah_multikey      4K s=26 -> 1.00
+  [154/700] certified niah_multikey      4K s=26 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [155/700] dense     niah_multikey      4K s=27 -> 1.00
+  [156/700] certified niah_multikey      4K s=27 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [157/700] dense     niah_multikey      4K s=28 -> 1.00
+  [158/700] certified niah_multikey      4K s=28 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [159/700] dense     niah_multikey      4K s=29 -> 1.00
+  [160/700] certified niah_multikey      4K s=29 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [161/700] dense     niah_multikey      4K s=30 -> 1.00
+  [162/700] certified niah_multikey      4K s=30 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [163/700] dense     niah_multikey      4K s=31 -> 1.00
+  [164/700] certified niah_multikey      4K s=31 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [165/700] dense     niah_multikey      4K s=32 -> 1.00
+  [166/700] certified niah_multikey      4K s=32 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [167/700] dense     niah_multikey      4K s=33 -> 1.00
+  [168/700] certified niah_multikey      4K s=33 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [169/700] dense     niah_multikey      4K s=34 -> 1.00
+  [170/700] certified niah_multikey      4K s=34 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [171/700] dense     niah_multikey      4K s=35 -> 1.00
+  [172/700] certified niah_multikey      4K s=35 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [173/700] dense     niah_multikey      4K s=36 -> 1.00
+  [174/700] certified niah_multikey      4K s=36 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [175/700] dense     niah_multikey      4K s=37 -> 1.00
+  [176/700] certified niah_multikey      4K s=37 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [177/700] dense     niah_multikey      4K s=38 -> 1.00
+  [178/700] certified niah_multikey      4K s=38 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [179/700] dense     niah_multikey      4K s=39 -> 1.00
+  [180/700] certified niah_multikey      4K s=39 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [181/700] dense     niah_multikey      4K s=40 -> 1.00
+  [182/700] certified niah_multikey      4K s=40 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [183/700] dense     niah_multikey      4K s=41 -> 1.00
+  [184/700] certified niah_multikey      4K s=41 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [185/700] dense     niah_multikey      4K s=42 -> 1.00
+  [186/700] certified niah_multikey      4K s=42 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [187/700] dense     niah_multikey      4K s=43 -> 1.00
+  [188/700] certified niah_multikey      4K s=43 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [189/700] dense     niah_multikey      4K s=44 -> 1.00
+  [190/700] certified niah_multikey      4K s=44 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [191/700] dense     niah_multikey      4K s=45 -> 1.00
+  [192/700] certified niah_multikey      4K s=45 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [193/700] dense     niah_multikey      4K s=46 -> 1.00
+  [194/700] certified niah_multikey      4K s=46 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [195/700] dense     niah_multikey      4K s=47 -> 1.00
+  [196/700] certified niah_multikey      4K s=47 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [197/700] dense     niah_multikey      4K s=48 -> 1.00
+  [198/700] certified niah_multikey      4K s=48 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [199/700] dense     niah_multikey      4K s=49 -> 1.00
+  [200/700] certified niah_multikey      4K s=49 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [201/700] dense     niah_multivalue    4K s=0 -> 1.00
+  [202/700] certified niah_multivalue    4K s=0 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [203/700] dense     niah_multivalue    4K s=1 -> 1.00
+  [204/700] certified niah_multivalue    4K s=1 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [205/700] dense     niah_multivalue    4K s=2 -> 1.00
+  [206/700] certified niah_multivalue    4K s=2 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [207/700] dense     niah_multivalue    4K s=3 -> 1.00
+  [208/700] certified niah_multivalue    4K s=3 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [209/700] dense     niah_multivalue    4K s=4 -> 1.00
+  [210/700] certified niah_multivalue    4K s=4 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [211/700] dense     niah_multivalue    4K s=5 -> 1.00
+  [212/700] certified niah_multivalue    4K s=5 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [213/700] dense     niah_multivalue    4K s=6 -> 1.00
+  [214/700] certified niah_multivalue    4K s=6 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [215/700] dense     niah_multivalue    4K s=7 -> 1.00
+  [216/700] certified niah_multivalue    4K s=7 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [217/700] dense     niah_multivalue    4K s=8 -> 1.00
+  [218/700] certified niah_multivalue    4K s=8 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [219/700] dense     niah_multivalue    4K s=9 -> 1.00
+  [220/700] certified niah_multivalue    4K s=9 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [221/700] dense     niah_multivalue    4K s=10 -> 1.00
+  [222/700] certified niah_multivalue    4K s=10 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [223/700] dense     niah_multivalue    4K s=11 -> 1.00
+  [224/700] certified niah_multivalue    4K s=11 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [225/700] dense     niah_multivalue    4K s=12 -> 1.00
+  [226/700] certified niah_multivalue    4K s=12 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [227/700] dense     niah_multivalue    4K s=13 -> 1.00
+  [228/700] certified niah_multivalue    4K s=13 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [229/700] dense     niah_multivalue    4K s=14 -> 1.00
+  [230/700] certified niah_multivalue    4K s=14 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [231/700] dense     niah_multivalue    4K s=15 -> 1.00
+  [232/700] certified niah_multivalue    4K s=15 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [233/700] dense     niah_multivalue    4K s=16 -> 1.00
+  [234/700] certified niah_multivalue    4K s=16 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [235/700] dense     niah_multivalue    4K s=17 -> 1.00
+  [236/700] certified niah_multivalue    4K s=17 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [237/700] dense     niah_multivalue    4K s=18 -> 1.00
+  [238/700] certified niah_multivalue    4K s=18 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [239/700] dense     niah_multivalue    4K s=19 -> 1.00
+  [240/700] certified niah_multivalue    4K s=19 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [241/700] dense     niah_multivalue    4K s=20 -> 1.00
+  [242/700] certified niah_multivalue    4K s=20 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [243/700] dense     niah_multivalue    4K s=21 -> 1.00
+  [244/700] certified niah_multivalue    4K s=21 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [245/700] dense     niah_multivalue    4K s=22 -> 1.00
+  [246/700] certified niah_multivalue    4K s=22 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [247/700] dense     niah_multivalue    4K s=23 -> 1.00
+  [248/700] certified niah_multivalue    4K s=23 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [249/700] dense     niah_multivalue    4K s=24 -> 1.00
+  [250/700] certified niah_multivalue    4K s=24 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [251/700] dense     niah_multivalue    4K s=25 -> 1.00
+  [252/700] certified niah_multivalue    4K s=25 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [253/700] dense     niah_multivalue    4K s=26 -> 1.00
+  [254/700] certified niah_multivalue    4K s=26 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [255/700] dense     niah_multivalue    4K s=27 -> 1.00
+  [256/700] certified niah_multivalue    4K s=27 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [257/700] dense     niah_multivalue    4K s=28 -> 1.00
+  [258/700] certified niah_multivalue    4K s=28 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [259/700] dense     niah_multivalue    4K s=29 -> 1.00
+  [260/700] certified niah_multivalue    4K s=29 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [261/700] dense     niah_multivalue    4K s=30 -> 1.00
+  [262/700] certified niah_multivalue    4K s=30 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [263/700] dense     niah_multivalue    4K s=31 -> 1.00
+  [264/700] certified niah_multivalue    4K s=31 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [265/700] dense     niah_multivalue    4K s=32 -> 1.00
+  [266/700] certified niah_multivalue    4K s=32 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [267/700] dense     niah_multivalue    4K s=33 -> 1.00
+  [268/700] certified niah_multivalue    4K s=33 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [269/700] dense     niah_multivalue    4K s=34 -> 1.00
+  [270/700] certified niah_multivalue    4K s=34 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [271/700] dense     niah_multivalue    4K s=35 -> 1.00
+  [272/700] certified niah_multivalue    4K s=35 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [273/700] dense     niah_multivalue    4K s=36 -> 1.00
+  [274/700] certified niah_multivalue    4K s=36 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [275/700] dense     niah_multivalue    4K s=37 -> 1.00
+  [276/700] certified niah_multivalue    4K s=37 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [277/700] dense     niah_multivalue    4K s=38 -> 1.00
+  [278/700] certified niah_multivalue    4K s=38 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [279/700] dense     niah_multivalue    4K s=39 -> 1.00
+  [280/700] certified niah_multivalue    4K s=39 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [281/700] dense     niah_multivalue    4K s=40 -> 1.00
+  [282/700] certified niah_multivalue    4K s=40 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [283/700] dense     niah_multivalue    4K s=41 -> 1.00
+  [284/700] certified niah_multivalue    4K s=41 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [285/700] dense     niah_multivalue    4K s=42 -> 1.00
+  [286/700] certified niah_multivalue    4K s=42 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [287/700] dense     niah_multivalue    4K s=43 -> 1.00
+  [288/700] certified niah_multivalue    4K s=43 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [289/700] dense     niah_multivalue    4K s=44 -> 1.00
+  [290/700] certified niah_multivalue    4K s=44 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [291/700] dense     niah_multivalue    4K s=45 -> 1.00
+  [292/700] certified niah_multivalue    4K s=45 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [293/700] dense     niah_multivalue    4K s=46 -> 1.00
+  [294/700] certified niah_multivalue    4K s=46 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [295/700] dense     niah_multivalue    4K s=47 -> 1.00
+  [296/700] certified niah_multivalue    4K s=47 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [297/700] dense     niah_multivalue    4K s=48 -> 1.00
+  [298/700] certified niah_multivalue    4K s=48 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [299/700] dense     niah_multivalue    4K s=49 -> 1.00
+  [300/700] certified niah_multivalue    4K s=49 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [301/700] dense     niah_multiquery    4K s=0 -> 1.00
+  [302/700] certified niah_multiquery    4K s=0 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [303/700] dense     niah_multiquery    4K s=1 -> 1.00
+  [304/700] certified niah_multiquery    4K s=1 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [305/700] dense     niah_multiquery    4K s=2 -> 1.00
+  [306/700] certified niah_multiquery    4K s=2 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [307/700] dense     niah_multiquery    4K s=3 -> 1.00
+  [308/700] certified niah_multiquery    4K s=3 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [309/700] dense     niah_multiquery    4K s=4 -> 1.00
+  [310/700] certified niah_multiquery    4K s=4 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [311/700] dense     niah_multiquery    4K s=5 -> 1.00
+  [312/700] certified niah_multiquery    4K s=5 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [313/700] dense     niah_multiquery    4K s=6 -> 1.00
+  [314/700] certified niah_multiquery    4K s=6 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [315/700] dense     niah_multiquery    4K s=7 -> 1.00
+  [316/700] certified niah_multiquery    4K s=7 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [317/700] dense     niah_multiquery    4K s=8 -> 1.00
+  [318/700] certified niah_multiquery    4K s=8 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [319/700] dense     niah_multiquery    4K s=9 -> 1.00
+  [320/700] certified niah_multiquery    4K s=9 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [321/700] dense     niah_multiquery    4K s=10 -> 1.00
+  [322/700] certified niah_multiquery    4K s=10 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [323/700] dense     niah_multiquery    4K s=11 -> 1.00
+  [324/700] certified niah_multiquery    4K s=11 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [325/700] dense     niah_multiquery    4K s=12 -> 1.00
+  [326/700] certified niah_multiquery    4K s=12 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [327/700] dense     niah_multiquery    4K s=13 -> 1.00
+  [328/700] certified niah_multiquery    4K s=13 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [329/700] dense     niah_multiquery    4K s=14 -> 1.00
+  [330/700] certified niah_multiquery    4K s=14 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [331/700] dense     niah_multiquery    4K s=15 -> 1.00
+  [332/700] certified niah_multiquery    4K s=15 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [333/700] dense     niah_multiquery    4K s=16 -> 1.00
+  [334/700] certified niah_multiquery    4K s=16 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [335/700] dense     niah_multiquery    4K s=17 -> 1.00
+  [336/700] certified niah_multiquery    4K s=17 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [337/700] dense     niah_multiquery    4K s=18 -> 1.00
+  [338/700] certified niah_multiquery    4K s=18 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [339/700] dense     niah_multiquery    4K s=19 -> 1.00
+  [340/700] certified niah_multiquery    4K s=19 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [341/700] dense     niah_multiquery    4K s=20 -> 1.00
+  [342/700] certified niah_multiquery    4K s=20 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [343/700] dense     niah_multiquery    4K s=21 -> 1.00
+  [344/700] certified niah_multiquery    4K s=21 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [345/700] dense     niah_multiquery    4K s=22 -> 1.00
+  [346/700] certified niah_multiquery    4K s=22 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [347/700] dense     niah_multiquery    4K s=23 -> 1.00
+  [348/700] certified niah_multiquery    4K s=23 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [349/700] dense     niah_multiquery    4K s=24 -> 1.00
+  [350/700] certified niah_multiquery    4K s=24 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [351/700] dense     niah_multiquery    4K s=25 -> 1.00
+  [352/700] certified niah_multiquery    4K s=25 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [353/700] dense     niah_multiquery    4K s=26 -> 1.00
+  [354/700] certified niah_multiquery    4K s=26 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [355/700] dense     niah_multiquery    4K s=27 -> 1.00
+  [356/700] certified niah_multiquery    4K s=27 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [357/700] dense     niah_multiquery    4K s=28 -> 1.00
+  [358/700] certified niah_multiquery    4K s=28 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [359/700] dense     niah_multiquery    4K s=29 -> 1.00
+  [360/700] certified niah_multiquery    4K s=29 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [361/700] dense     niah_multiquery    4K s=30 -> 1.00
+  [362/700] certified niah_multiquery    4K s=30 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [363/700] dense     niah_multiquery    4K s=31 -> 1.00
+  [364/700] certified niah_multiquery    4K s=31 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [365/700] dense     niah_multiquery    4K s=32 -> 1.00
+  [366/700] certified niah_multiquery    4K s=32 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [367/700] dense     niah_multiquery    4K s=33 -> 1.00
+  [368/700] certified niah_multiquery    4K s=33 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [369/700] dense     niah_multiquery    4K s=34 -> 1.00
+  [370/700] certified niah_multiquery    4K s=34 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [371/700] dense     niah_multiquery    4K s=35 -> 1.00
+  [372/700] certified niah_multiquery    4K s=35 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [373/700] dense     niah_multiquery    4K s=36 -> 1.00
+  [374/700] certified niah_multiquery    4K s=36 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [375/700] dense     niah_multiquery    4K s=37 -> 1.00
+  [376/700] certified niah_multiquery    4K s=37 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [377/700] dense     niah_multiquery    4K s=38 -> 1.00
+  [378/700] certified niah_multiquery    4K s=38 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [379/700] dense     niah_multiquery    4K s=39 -> 1.00
+  [380/700] certified niah_multiquery    4K s=39 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [381/700] dense     niah_multiquery    4K s=40 -> 1.00
+  [382/700] certified niah_multiquery    4K s=40 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [383/700] dense     niah_multiquery    4K s=41 -> 1.00
+  [384/700] certified niah_multiquery    4K s=41 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [385/700] dense     niah_multiquery    4K s=42 -> 1.00
+  [386/700] certified niah_multiquery    4K s=42 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [387/700] dense     niah_multiquery    4K s=43 -> 1.00
+  [388/700] certified niah_multiquery    4K s=43 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [389/700] dense     niah_multiquery    4K s=44 -> 1.00
+  [390/700] certified niah_multiquery    4K s=44 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [391/700] dense     niah_multiquery    4K s=45 -> 1.00
+  [392/700] certified niah_multiquery    4K s=45 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [393/700] dense     niah_multiquery    4K s=46 -> 1.00
+  [394/700] certified niah_multiquery    4K s=46 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [395/700] dense     niah_multiquery    4K s=47 -> 1.00
+  [396/700] certified niah_multiquery    4K s=47 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [397/700] dense     niah_multiquery    4K s=48 -> 1.00
+  [398/700] certified niah_multiquery    4K s=48 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [399/700] dense     niah_multiquery    4K s=49 -> 1.00
+  [400/700] certified niah_multiquery    4K s=49 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [401/700] dense     vt                 4K s=0 -> 1.00
+  [402/700] certified vt                 4K s=0 -> 0.75  *** CRITICAL ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [403/700] dense     vt                 4K s=1 -> 1.00
+  [404/700] certified vt                 4K s=1 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [405/700] dense     vt                 4K s=2 -> 1.00
+  [406/700] certified vt                 4K s=2 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [407/700] dense     vt                 4K s=3 -> 0.50
+  [408/700] certified vt                 4K s=3 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [409/700] dense     vt                 4K s=4 -> 1.00
+  [410/700] certified vt                 4K s=4 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [411/700] dense     vt                 4K s=5 -> 1.00
+  [412/700] certified vt                 4K s=5 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [413/700] dense     vt                 4K s=6 -> 1.00
+  [414/700] certified vt                 4K s=6 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [415/700] dense     vt                 4K s=7 -> 1.00
+  [416/700] certified vt                 4K s=7 -> 0.75  *** CRITICAL ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [417/700] dense     vt                 4K s=8 -> 1.00
+  [418/700] certified vt                 4K s=8 -> 0.50  *** CRITICAL ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [419/700] dense     vt                 4K s=9 -> 1.00
+  [420/700] certified vt                 4K s=9 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [421/700] dense     vt                 4K s=10 -> 1.00
+  [422/700] certified vt                 4K s=10 -> 0.75  *** CRITICAL ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [423/700] dense     vt                 4K s=11 -> 1.00
+  [424/700] certified vt                 4K s=11 -> 0.50  *** CRITICAL ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [425/700] dense     vt                 4K s=12 -> 1.00
+  [426/700] certified vt                 4K s=12 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [427/700] dense     vt                 4K s=13 -> 1.00
+  [428/700] certified vt                 4K s=13 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [429/700] dense     vt                 4K s=14 -> 1.00
+  [430/700] certified vt                 4K s=14 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [431/700] dense     vt                 4K s=15 -> 0.75
+  [432/700] certified vt                 4K s=15 -> 0.75
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [433/700] dense     vt                 4K s=16 -> 1.00
+  [434/700] certified vt                 4K s=16 -> 0.25  *** CRITICAL ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [435/700] dense     vt                 4K s=17 -> 0.50
+  [436/700] certified vt                 4K s=17 -> 0.50
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [437/700] dense     vt                 4K s=18 -> 1.00
+  [438/700] certified vt                 4K s=18 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [439/700] dense     vt                 4K s=19 -> 1.00
+  [440/700] certified vt                 4K s=19 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [441/700] dense     vt                 4K s=20 -> 1.00
+  [442/700] certified vt                 4K s=20 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [443/700] dense     vt                 4K s=21 -> 1.00
+  [444/700] certified vt                 4K s=21 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [445/700] dense     vt                 4K s=22 -> 1.00
+  [446/700] certified vt                 4K s=22 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [447/700] dense     vt                 4K s=23 -> 1.00
+  [448/700] certified vt                 4K s=23 -> 0.75  *** CRITICAL ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [449/700] dense     vt                 4K s=24 -> 1.00
+  [450/700] certified vt                 4K s=24 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [451/700] dense     vt                 4K s=25 -> 1.00
+  [452/700] certified vt                 4K s=25 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [453/700] dense     vt                 4K s=26 -> 0.75
+  [454/700] certified vt                 4K s=26 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [455/700] dense     vt                 4K s=27 -> 1.00
+  [456/700] certified vt                 4K s=27 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [457/700] dense     vt                 4K s=28 -> 1.00
+  [458/700] certified vt                 4K s=28 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [459/700] dense     vt                 4K s=29 -> 1.00
+  [460/700] certified vt                 4K s=29 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [461/700] dense     vt                 4K s=30 -> 0.50
+  [462/700] certified vt                 4K s=30 -> 0.50
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [463/700] dense     vt                 4K s=31 -> 1.00
+  [464/700] certified vt                 4K s=31 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [465/700] dense     vt                 4K s=32 -> 1.00
+  [466/700] certified vt                 4K s=32 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [467/700] dense     vt                 4K s=33 -> 0.25
+  [468/700] certified vt                 4K s=33 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [469/700] dense     vt                 4K s=34 -> 1.00
+  [470/700] certified vt                 4K s=34 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [471/700] dense     vt                 4K s=35 -> 0.50
+  [472/700] certified vt                 4K s=35 -> 0.50
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [473/700] dense     vt                 4K s=36 -> 0.50
+  [474/700] certified vt                 4K s=36 -> 0.50
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [475/700] dense     vt                 4K s=37 -> 1.00
+  [476/700] certified vt                 4K s=37 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [477/700] dense     vt                 4K s=38 -> 1.00
+  [478/700] certified vt                 4K s=38 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [479/700] dense     vt                 4K s=39 -> 1.00
+  [480/700] certified vt                 4K s=39 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [481/700] dense     vt                 4K s=40 -> 1.00
+  [482/700] certified vt                 4K s=40 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [483/700] dense     vt                 4K s=41 -> 0.50
+  [484/700] certified vt                 4K s=41 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [485/700] dense     vt                 4K s=42 -> 1.00
+  [486/700] certified vt                 4K s=42 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [487/700] dense     vt                 4K s=43 -> 1.00
+  [488/700] certified vt                 4K s=43 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [489/700] dense     vt                 4K s=44 -> 1.00
+  [490/700] certified vt                 4K s=44 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [491/700] dense     vt                 4K s=45 -> 1.00
+  [492/700] certified vt                 4K s=45 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [493/700] dense     vt                 4K s=46 -> 1.00
+  [494/700] certified vt                 4K s=46 -> 0.50  *** CRITICAL ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [495/700] dense     vt                 4K s=47 -> 1.00
+  [496/700] certified vt                 4K s=47 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [497/700] dense     vt                 4K s=48 -> 1.00
+  [498/700] certified vt                 4K s=48 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [499/700] dense     vt                 4K s=49 -> 1.00
+  [500/700] certified vt                 4K s=49 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [501/700] dense     cwe                4K s=0 -> 1.00
+  [502/700] certified cwe                4K s=0 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [503/700] dense     cwe                4K s=1 -> 1.00
+  [504/700] certified cwe                4K s=1 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [505/700] dense     cwe                4K s=2 -> 1.00
+  [506/700] certified cwe                4K s=2 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [507/700] dense     cwe                4K s=3 -> 1.00
+  [508/700] certified cwe                4K s=3 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [509/700] dense     cwe                4K s=4 -> 1.00
+  [510/700] certified cwe                4K s=4 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [511/700] dense     cwe                4K s=5 -> 1.00
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [512/700] certified cwe                4K s=5 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [513/700] dense     cwe                4K s=6 -> 1.00
+  [514/700] certified cwe                4K s=6 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [515/700] dense     cwe                4K s=7 -> 1.00
+  [516/700] certified cwe                4K s=7 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [517/700] dense     cwe                4K s=8 -> 1.00
+  [518/700] certified cwe                4K s=8 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [519/700] dense     cwe                4K s=9 -> 1.00
+  [520/700] certified cwe                4K s=9 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [521/700] dense     cwe                4K s=10 -> 1.00
+  [522/700] certified cwe                4K s=10 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [523/700] dense     cwe                4K s=11 -> 1.00
+  [524/700] certified cwe                4K s=11 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [525/700] dense     cwe                4K s=12 -> 1.00
+  [526/700] certified cwe                4K s=12 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [527/700] dense     cwe                4K s=13 -> 1.00
+  [528/700] certified cwe                4K s=13 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [529/700] dense     cwe                4K s=14 -> 1.00
+  [530/700] certified cwe                4K s=14 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [531/700] dense     cwe                4K s=15 -> 1.00
+  [532/700] certified cwe                4K s=15 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [533/700] dense     cwe                4K s=16 -> 1.00
+  [534/700] certified cwe                4K s=16 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [535/700] dense     cwe                4K s=17 -> 1.00
+  [536/700] certified cwe                4K s=17 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [537/700] dense     cwe                4K s=18 -> 1.00
+  [538/700] certified cwe                4K s=18 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [539/700] dense     cwe                4K s=19 -> 1.00
+  [540/700] certified cwe                4K s=19 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [541/700] dense     cwe                4K s=20 -> 1.00
+  [542/700] certified cwe                4K s=20 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [543/700] dense     cwe                4K s=21 -> 1.00
+  [544/700] certified cwe                4K s=21 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [545/700] dense     cwe                4K s=22 -> 1.00
+  [546/700] certified cwe                4K s=22 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [547/700] dense     cwe                4K s=23 -> 1.00
+  [548/700] certified cwe                4K s=23 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [549/700] dense     cwe                4K s=24 -> 1.00
+  [550/700] certified cwe                4K s=24 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [551/700] dense     cwe                4K s=25 -> 1.00
+  [552/700] certified cwe                4K s=25 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [553/700] dense     cwe                4K s=26 -> 1.00
+  [554/700] certified cwe                4K s=26 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [555/700] dense     cwe                4K s=27 -> 1.00
+  [556/700] certified cwe                4K s=27 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [557/700] dense     cwe                4K s=28 -> 1.00
+  [558/700] certified cwe                4K s=28 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [559/700] dense     cwe                4K s=29 -> 1.00
+  [560/700] certified cwe                4K s=29 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [561/700] dense     cwe                4K s=30 -> 1.00
+  [562/700] certified cwe                4K s=30 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [563/700] dense     cwe                4K s=31 -> 0.90
+  [564/700] certified cwe                4K s=31 -> 0.90
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [565/700] dense     cwe                4K s=32 -> 1.00
+  [566/700] certified cwe                4K s=32 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [567/700] dense     cwe                4K s=33 -> 1.00
+  [568/700] certified cwe                4K s=33 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [569/700] dense     cwe                4K s=34 -> 1.00
+  [570/700] certified cwe                4K s=34 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [571/700] dense     cwe                4K s=35 -> 1.00
+  [572/700] certified cwe                4K s=35 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [573/700] dense     cwe                4K s=36 -> 1.00
+  [574/700] certified cwe                4K s=36 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [575/700] dense     cwe                4K s=37 -> 1.00
+  [576/700] certified cwe                4K s=37 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [577/700] dense     cwe                4K s=38 -> 1.00
+  [578/700] certified cwe                4K s=38 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [579/700] dense     cwe                4K s=39 -> 1.00
+  [580/700] certified cwe                4K s=39 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [581/700] dense     cwe                4K s=40 -> 1.00
+  [582/700] certified cwe                4K s=40 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [583/700] dense     cwe                4K s=41 -> 1.00
+  [584/700] certified cwe                4K s=41 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [585/700] dense     cwe                4K s=42 -> 1.00
+  [586/700] certified cwe                4K s=42 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [587/700] dense     cwe                4K s=43 -> 1.00
+  [588/700] certified cwe                4K s=43 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [589/700] dense     cwe                4K s=44 -> 1.00
+  [590/700] certified cwe                4K s=44 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [591/700] dense     cwe                4K s=45 -> 1.00
+  [592/700] certified cwe                4K s=45 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [593/700] dense     cwe                4K s=46 -> 1.00
+  [594/700] certified cwe                4K s=46 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [595/700] dense     cwe                4K s=47 -> 1.00
+  [596/700] certified cwe                4K s=47 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [597/700] dense     cwe                4K s=48 -> 1.00
+  [598/700] certified cwe                4K s=48 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [599/700] dense     cwe                4K s=49 -> 1.00
+  [600/700] certified cwe                4K s=49 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [601/700] dense     fwe                4K s=0 -> 1.00
+  [602/700] certified fwe                4K s=0 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [603/700] dense     fwe                4K s=1 -> 1.00
+  [604/700] certified fwe                4K s=1 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [605/700] dense     fwe                4K s=2 -> 0.67
+  [606/700] certified fwe                4K s=2 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [607/700] dense     fwe                4K s=3 -> 0.67
+  [608/700] certified fwe                4K s=3 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [609/700] dense     fwe                4K s=4 -> 1.00
+  [610/700] certified fwe                4K s=4 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [611/700] dense     fwe                4K s=5 -> 0.67
+  [612/700] certified fwe                4K s=5 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [613/700] dense     fwe                4K s=6 -> 0.67
+  [614/700] certified fwe                4K s=6 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [615/700] dense     fwe                4K s=7 -> 0.67
+  [616/700] certified fwe                4K s=7 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [617/700] dense     fwe                4K s=8 -> 0.67
+  [618/700] certified fwe                4K s=8 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [619/700] dense     fwe                4K s=9 -> 1.00
+  [620/700] certified fwe                4K s=9 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [621/700] dense     fwe                4K s=10 -> 0.67
+  [622/700] certified fwe                4K s=10 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [623/700] dense     fwe                4K s=11 -> 0.67
+  [624/700] certified fwe                4K s=11 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [625/700] dense     fwe                4K s=12 -> 1.00
+  [626/700] certified fwe                4K s=12 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [627/700] dense     fwe                4K s=13 -> 0.67
+  [628/700] certified fwe                4K s=13 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [629/700] dense     fwe                4K s=14 -> 1.00
+  [630/700] certified fwe                4K s=14 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [631/700] dense     fwe                4K s=15 -> 1.00
+  [632/700] certified fwe                4K s=15 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [633/700] dense     fwe                4K s=16 -> 1.00
+  [634/700] certified fwe                4K s=16 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [635/700] dense     fwe                4K s=17 -> 0.67
+  [636/700] certified fwe                4K s=17 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [637/700] dense     fwe                4K s=18 -> 0.67
+  [638/700] certified fwe                4K s=18 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [639/700] dense     fwe                4K s=19 -> 1.00
+  [640/700] certified fwe                4K s=19 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [641/700] dense     fwe                4K s=20 -> 1.00
+  [642/700] certified fwe                4K s=20 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [643/700] dense     fwe                4K s=21 -> 1.00
+  [644/700] certified fwe                4K s=21 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [645/700] dense     fwe                4K s=22 -> 0.67
+  [646/700] certified fwe                4K s=22 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [647/700] dense     fwe                4K s=23 -> 0.67
+  [648/700] certified fwe                4K s=23 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [649/700] dense     fwe                4K s=24 -> 0.33
+  [650/700] certified fwe                4K s=24 -> 0.33
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [651/700] dense     fwe                4K s=25 -> 0.67
+  [652/700] certified fwe                4K s=25 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [653/700] dense     fwe                4K s=26 -> 1.00
+  [654/700] certified fwe                4K s=26 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [655/700] dense     fwe                4K s=27 -> 0.33
+  [656/700] certified fwe                4K s=27 -> 0.33
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [657/700] dense     fwe                4K s=28 -> 0.67
+  [658/700] certified fwe                4K s=28 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [659/700] dense     fwe                4K s=29 -> 1.00
+  [660/700] certified fwe                4K s=29 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [661/700] dense     fwe                4K s=30 -> 0.67
+  [662/700] certified fwe                4K s=30 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [663/700] dense     fwe                4K s=31 -> 0.67
+  [664/700] certified fwe                4K s=31 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [665/700] dense     fwe                4K s=32 -> 0.33
+  [666/700] certified fwe                4K s=32 -> 0.33
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [667/700] dense     fwe                4K s=33 -> 0.67
+  [668/700] certified fwe                4K s=33 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [669/700] dense     fwe                4K s=34 -> 0.67
+  [670/700] certified fwe                4K s=34 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [671/700] dense     fwe                4K s=35 -> 0.67
+  [672/700] certified fwe                4K s=35 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [673/700] dense     fwe                4K s=36 -> 0.67
+  [674/700] certified fwe                4K s=36 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [675/700] dense     fwe                4K s=37 -> 1.00
+  [676/700] certified fwe                4K s=37 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [677/700] dense     fwe                4K s=38 -> 0.67
+  [678/700] certified fwe                4K s=38 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [679/700] dense     fwe                4K s=39 -> 1.00
+  [680/700] certified fwe                4K s=39 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [681/700] dense     fwe                4K s=40 -> 1.00
+  [682/700] certified fwe                4K s=40 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [683/700] dense     fwe                4K s=41 -> 0.67
+  [684/700] certified fwe                4K s=41 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [685/700] dense     fwe                4K s=42 -> 0.33
+  [686/700] certified fwe                4K s=42 -> 0.33
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [687/700] dense     fwe                4K s=43 -> 0.67
+  [688/700] certified fwe                4K s=43 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [689/700] dense     fwe                4K s=44 -> 1.00
+  [690/700] certified fwe                4K s=44 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [691/700] dense     fwe                4K s=45 -> 0.67
+  [692/700] certified fwe                4K s=45 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [693/700] dense     fwe                4K s=46 -> 1.00
+  [694/700] certified fwe                4K s=46 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [695/700] dense     fwe                4K s=47 -> 1.00
+  [696/700] certified fwe                4K s=47 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [697/700] dense     fwe                4K s=48 -> 1.00
+  [698/700] certified fwe                4K s=48 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [699/700] dense     fwe                4K s=49 -> 0.67
+  [700/700] certified fwe                4K s=49 -> 1.00
+
+============================================================
+RULER subset results (35.4 min)
+============================================================
+task_ctx                  dense     cert        Δ   crit
+cwe_4K                    0.998    0.998   +0.000      0
+fwe_4K                    0.773    0.800   +0.027      0
+niah_multikey_4K          1.000    1.000   +0.000      0
+niah_multiquery_4K        1.000    1.000   +0.000      0
+niah_multivalue_4K        1.000    1.000   +0.000      0
+niah_single_4K            1.000    1.000   +0.000      0
+vt_4K                     0.915    0.890   -0.025      8
+
+Overall: dense=0.955 cert=0.955 Δ=+0.000 critical=8/350
+
+JSON -> /workspace/DotCache/benchmarks/results/arxiv_v1_20260420/03_ruler_4K_dense.native.json

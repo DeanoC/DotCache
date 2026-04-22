@@ -1,0 +1,41 @@
+{
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "seq_len": 4096,
+  "one_shot": {
+    "ms": 713.7097909580916,
+    "peak_mb": 11212.033203125,
+    "first_token": 374
+  },
+  "chunked": {
+    "512": {
+      "ms": 869.9477580375969,
+      "peak_mb": 12877.00244140625,
+      "first_token": 374,
+      "first_token_match_one_shot": true,
+      "max_k_abs_diff": 13.75,
+      "max_v_abs_diff": 3.255615234375,
+      "peak_reduction_vs_one_shot_mb": -1664.96923828125,
+      "peak_reduction_pct": -14.849842201833585
+    },
+    "1024": {
+      "ms": 530.3276940248907,
+      "peak_mb": 13149.50634765625,
+      "first_token": 374,
+      "first_token_match_one_shot": true,
+      "max_k_abs_diff": 15.46875,
+      "max_v_abs_diff": 3.125,
+      "peak_reduction_vs_one_shot_mb": -1937.47314453125,
+      "peak_reduction_pct": -17.28030152453741
+    },
+    "2048": {
+      "ms": 372.6615379564464,
+      "peak_mb": 13522.51513671875,
+      "first_token": 374,
+      "first_token_match_one_shot": true,
+      "max_k_abs_diff": 14.25,
+      "max_v_abs_diff": 3.2646484375,
+      "peak_reduction_vs_one_shot_mb": -2310.48193359375,
+      "peak_reduction_pct": -20.607162784264467
+    }
+  }
+}

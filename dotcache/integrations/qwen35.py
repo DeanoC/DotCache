@@ -3989,6 +3989,32 @@ class Qwen35AttentionSubsetDotCacheModelAdapter(Qwen35AttentionSubsetModelAdapte
             "persistent_shortlist_policy_resolve_ms_total": float(self.persistent_shortlist_policy_resolve_ms_total),
             "persistent_shortlist_policy_load_count": int(self.persistent_shortlist_policy_load_count),
             "persistent_shortlist_policy_resolve_count": int(self.persistent_shortlist_policy_resolve_count),
+            **self._persistent_bound_winner_counts_by_layer(),
+        }
+
+    def _persistent_bound_winner_counts_by_layer(self) -> dict[str, Any]:
+        """Return per-layer bound winner counts from the full-attention telemetry.
+
+        These are accumulated in PersistentLayerTelemetry by _resolve_block_score_inputs
+        and indicate which certified upper-bound method (spherical / interval / ellipsoidal)
+        provided the tightest value for the most (block, q_head) evaluations.
+        """
+        runtime_state = self.persistent_hybrid_runtime_state
+        if runtime_state is None:
+            return {}
+        layer_telemetry = runtime_state.full_attention.telemetry.layer_telemetry
+        spherical: dict[str, int] = {}
+        interval: dict[str, int] = {}
+        ellipsoidal: dict[str, int] = {}
+        for layer_id in sorted(layer_telemetry):
+            tel = layer_telemetry[int(layer_id)]
+            spherical[str(layer_id)] = int(tel.bound_spherical_active_count)
+            interval[str(layer_id)] = int(tel.bound_interval_active_count)
+            ellipsoidal[str(layer_id)] = int(tel.bound_ellipsoidal_active_count)
+        return {
+            "persistent_full_attention_bound_spherical_active_count_by_layer": spherical,
+            "persistent_full_attention_bound_interval_active_count_by_layer": interval,
+            "persistent_full_attention_bound_ellipsoidal_active_count_by_layer": ellipsoidal,
         }
 
     def _install_linear_wrappers(self) -> None:

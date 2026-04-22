@@ -1,0 +1,19 @@
+{
+  "head_dim": 128,
+  "n_layer_snapshots": 32,
+  "n_samples": 4096,
+  "diff_median": 0.00999307632446289,
+  "diff_p95": 0.03087782859802246,
+  "diff_max": 0.06451034545898438,
+  "delta_current_median": 0.1603303849697113,
+  "delta_current_p95": 0.21836058795452118,
+  "delta_alt_median": 0.1603303849697113,
+  "delta_alt_p95": 0.21836058795452118,
+  "ratio_current_median": 0.061676428402424294,
+  "ratio_current_p95": 0.1805233258381471,
+  "ratio_alt_median": 0.061676428402424294,
+  "ratio_alt_p95": 0.1805233258381471,
+  "fire_rate_current": 0.0,
+  "fire_rate_alt": 0.0,
+  "eps_guard": 0.01
+}

@@ -1,0 +1,36 @@
+[
+  {
+    "prompt": "hetero_8k",
+    "context": "8K",
+    "gen_steps": 32,
+    "token_match": "1/32",
+    "dense_ms": 578.2072480069473,
+    "dense_ms_per_step": 18.068976500217104,
+    "certified_ms": 983.3633160451427,
+    "certified_ms_per_step": 30.73010362641071,
+    "speedup": -0.7007108081656688,
+    "skip_rate_mean": 0.5128955841064453,
+    "tiered_vram_mb": 814.743552,
+    "tiered_cpu_mb": 536.870912,
+    "peak_vram_gb": 16.884968448,
+    "dense_text": "orch()\n    if not torch.is_tensor(values):\n        raise TypeError(\"values must ",
+    "certified_text": " noqa\n    # type:  # pragma:  # pragma:  # pragma: Any\n    # pragma:  # noqa:  #"
+  },
+  {
+    "prompt": "code_8k",
+    "context": "8K",
+    "gen_steps": 32,
+    "token_match": "0/32",
+    "dense_ms": 486.6604539565742,
+    "dense_ms_per_step": 15.208139186142944,
+    "certified_ms": 918.5706130228937,
+    "certified_ms_per_step": 28.705331656965427,
+    "speedup": -0.8874979578777522,
+    "skip_rate_mean": 0.4324476619804401,
+    "tiered_vram_mb": 652.527616,
+    "tiered_cpu_mb": 428.867584,
+    "peak_vram_gb": 16.723889664,
+    "dense_text": "current_token_index_override\n        return int(cache_position[0])\n\n    def set_",
+    "certified_text": "            # pragma:  # pragma:  # type(self.device_type = self._current_token_"
+  }
+]

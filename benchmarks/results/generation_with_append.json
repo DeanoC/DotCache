@@ -1,0 +1,24 @@
+[
+  {
+    "seq_len": 4096,
+    "gen_steps": 32,
+    "token_match": "5/32",
+    "token_match_rate": 0.15625,
+    "skip_rate_mean": 0.47601992446862135,
+    "dense_text": "98` |\n| SmolLM2 360M | `1024 / 16` | `K=M0, V=M1` | `-0",
+    "cert_text": "94` |\n| |\n| |\n| |\n| |\n| |\n| |\n| | | | | | | | | | | | | | | | |",
+    "first_diverge": 0,
+    "context": "4K"
+  },
+  {
+    "seq_len": 8192,
+    "gen_steps": 32,
+    "token_match": "2/32",
+    "token_match_rate": 0.0625,
+    "skip_rate_mean": 0.5741015482505472,
+    "dense_text": "orch()\n    if not torch.is_tensor(values):\n        raise TypeError(\"values must be a torch.Tensor\")\n    if values.dtype!",
+    "cert_text": "orch\n    # noqa\n    # pylint:  # noqa\n    return torch = _prepare_packed\n    # pylint: torch = _prepare_p",
+    "first_diverge": 1,
+    "context": "8K"
+  }
+]

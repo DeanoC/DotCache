@@ -1,0 +1,1231 @@
+{
+  "benchmark": "ruler_subset",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "subtasks": [
+    "niah_single",
+    "niah_multikey",
+    "niah_multivalue",
+    "niah_multiquery",
+    "vt",
+    "cwe",
+    "fwe"
+  ],
+  "contexts": [
+    4096
+  ],
+  "num_samples": 10,
+  "default_epsilon": 0.0001,
+  "top_k_fp16": 4,
+  "concentration_threshold": 0.02,
+  "seed": 20260416,
+  "wall_minutes": 12.902794676615546,
+  "overall_dense": 0.9773809523809525,
+  "overall_cert": 0.955952380952381,
+  "critical_failures": 4,
+  "summary": {
+    "niah_single_4K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 10
+    },
+    "niah_multikey_4K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 10
+    },
+    "niah_multivalue_4K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 10
+    },
+    "niah_multiquery_4K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 10
+    },
+    "vt_4K": {
+      "dense_mean": 0.975,
+      "cert_mean": 0.925,
+      "critical": 2,
+      "n": 10
+    },
+    "cwe_4K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 10
+    },
+    "fwe_4K": {
+      "dense_mean": 0.8666666666666666,
+      "cert_mean": 0.7666666666666666,
+      "critical": 2,
+      "n": 10
+    }
+  },
+  "results": [
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3954,
+      "refs": [
+        "0492143"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 0492143.\n\nWhat is the special magic number for velvet mentioned in the provided text?\nThe special magic number for velvet mentioned in the provided text is ",
+      "cert_score": 1.0,
+      "cert_gen": " 0492143.\n\nWhat is the special magic number for velvet mentioned in the provided text?\nThe special magic number for velvet mentioned in the provided text is ",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3954,
+      "refs": [
+        "6135528"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 6135528.",
+      "cert_score": 1.0,
+      "cert_gen": " 6135528.",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3954,
+      "refs": [
+        "8963451"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 8963451.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to",
+      "cert_score": 1.0,
+      "cert_gen": ": 8963451.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3957,
+      "refs": [
+        "6649516"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 6649516.",
+      "cert_score": 1.0,
+      "cert_gen": " 6649516.\n\nWhat is the special magic number for nebula mentioned in the provided text?\nThe special magic number for nebula mentioned in the provided text",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3954,
+      "refs": [
+        "9383319"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 9383319.\n\nWhat is the special magic number for silver mentioned in the provided text?\nThe special magic number for silver mentioned in the provided text is ",
+      "cert_score": 1.0,
+      "cert_gen": " 9383319.\n\nWhat is the special magic number for silver mentioned in the provided text?\nThe special magic number for silver mentioned in the provided text is ",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3954,
+      "refs": [
+        "1914431"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 1914431.\n\nWhat is the special magic number for orbit mentioned in the provided text?\nThe special magic number for orbit mentioned in the provided text is ",
+      "cert_score": 1.0,
+      "cert_gen": " 1914431.\n\nWhat is the special magic number for orbit mentioned in the provided text?\nThe special magic number for orbit mentioned in the provided text is ",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3954,
+      "refs": [
+        "1559746"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 1559746.",
+      "cert_score": 1.0,
+      "cert_gen": ": 1559746.",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3954,
+      "refs": [
+        "8237458"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 8237458.",
+      "cert_score": 1.0,
+      "cert_gen": ": 8237458.",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3957,
+      "refs": [
+        "1804174"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 1804174.",
+      "cert_score": 1.0,
+      "cert_gen": ": 1804174.\n\nWhat is the special magic number for pelican mentioned in the provided text?\nThe special magic number for pelican mentioned in the provided",
+      "critical": false
+    },
+    {
+      "subtask": "niah_single",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3954,
+      "refs": [
+        "1853401"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 1853401.\n\nWhat is the special magic number for breeze mentioned in the provided text?\nThe special magic number for breeze mentioned in the provided text is ",
+      "cert_score": 1.0,
+      "cert_gen": " 1853401.\n\nWhat is the special magic number for breeze mentioned in the provided text?\nThe special magic number for breeze mentioned in the provided text is ",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 4002,
+      "refs": [
+        "7498493"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 7498493.\n\nWhat is the special magic number for prism mentioned in the provided text?\nThe special magic number for prism mentioned in the provided text is ",
+      "cert_score": 1.0,
+      "cert_gen": " 7498493.\n\nWhat is the special magic number for prism mentioned in the provided text?\nThe special magic number for prism mentioned in the provided text is ",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 4001,
+      "refs": [
+        "2545723"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 2545723.\n\nWhat is the special magic number for meadow mentioned in the provided text?\nThe special magic number for meadow mentioned in the provided",
+      "cert_score": 1.0,
+      "cert_gen": ": 2545723.\n\nWhat is the special magic number for meadow mentioned in the provided text?\nThe special magic number for meadow mentioned in the provided",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3999,
+      "refs": [
+        "5787674"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 5787674.\n\nWhat is the special magic number for hollow mentioned in the provided text?\nThe special magic number for hollow mentioned in the provided text is",
+      "cert_score": 1.0,
+      "cert_gen": ": 5787674.\n\nWhat is the special magic number for hollow mentioned in the provided text?\nThe special magic number for hollow mentioned in the provided text is",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 4000,
+      "refs": [
+        "6836819"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 6836819.\n\nWhat is the special magic number for pelican mentioned in the provided text?\nThe special magic number for pelican mentioned in the provided",
+      "cert_score": 1.0,
+      "cert_gen": ": 6836819.\n\nWhat is the special magic number for pelican mentioned in the provided text?\nThe special magic number for pelican mentioned in the provided",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3999,
+      "refs": [
+        "2282662"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 2282662.\n\nWhat is the special magic number for lantern mentioned in the provided text?\nThe special magic number for lantern mentioned in the provided text is",
+      "cert_score": 1.0,
+      "cert_gen": ": 2282662.\n\nWhat is the special magic number for lantern mentioned in the provided text?\nThe special magic number for lantern mentioned in the provided text is",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 4004,
+      "refs": [
+        "6645299"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 6645299.\n\nWhat is the special magic number for meadow mentioned in the provided text?\nThe special magic number for meadow mentioned in the provided",
+      "cert_score": 1.0,
+      "cert_gen": ": 6645299.\n\nWhat is the special magic number for meadow mentioned in the provided text?\nThe special magic number for meadow mentioned in the provided",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 4002,
+      "refs": [
+        "8239066"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 8239066.\n\nWhat is the special magic number for cipher mentioned in the provided text?\nThe special magic number for cipher mentioned in the provided text is",
+      "cert_score": 1.0,
+      "cert_gen": ": 8239066.\n\nWhat is the special magic number for cipher mentioned in the provided text?\nThe special magic number for cipher mentioned in the provided text is",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3999,
+      "refs": [
+        "2044856"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 2044856.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to",
+      "cert_score": 1.0,
+      "cert_gen": ": 2044856.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3999,
+      "refs": [
+        "8661581"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 8661581.\n\nWhat is the special magic number for velvet mentioned in the provided text?\nThe special magic number for velvet mentioned in the provided text is",
+      "cert_score": 1.0,
+      "cert_gen": ": 8661581.\n\nWhat is the special magic number for velvet mentioned in the provided text?\nThe special magic number for velvet mentioned in the provided text is",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multikey",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 4000,
+      "refs": [
+        "1360808"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 1360808.\n\nWhat is the special magic number for nebula mentioned in the provided text?\nThe special magic number for nebula mentioned in the provided",
+      "cert_score": 1.0,
+      "cert_gen": ": 1360808.\n\nWhat is the special magic number for nebula mentioned in the provided text?\nThe special magic number for nebula mentioned in the provided",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 4006,
+      "refs": [
+        "8979383",
+        "9174612",
+        "7981540",
+        "9702930"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 8979383, 9174612, 7981540, 9702930.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earli",
+      "cert_score": 1.0,
+      "cert_gen": ": 8979383, 9174612, 7981540, 9702930.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earli",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 4006,
+      "refs": [
+        "7675365",
+        "7279062",
+        "9020199",
+        "6980722"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 7675365, 7279062, 9020199, 6980722.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earli",
+      "cert_score": 1.0,
+      "cert_gen": ": 7675365, 7279062, 9020199, 6980722.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by an",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 4000,
+      "refs": [
+        "9302256",
+        "6311964",
+        "7545523",
+        "7825390"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 9302256, 6311964, 7545523, 7825390.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earli",
+      "cert_score": 1.0,
+      "cert_gen": ": 9302256, 6311964, 7545523, 7825390.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earli",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 4000,
+      "refs": [
+        "2801195",
+        "4146961",
+        "8550848",
+        "7590998"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 2801195, 4146961, 8550848, and 7590998.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the e",
+      "cert_score": 1.0,
+      "cert_gen": ": 2801195, 4146961, 8550848, and 7590998.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the e",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 4000,
+      "refs": [
+        "9855697",
+        "2664205",
+        "7587761",
+        "4744074"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 9855697, 2664205, 7587761, 4744074.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earli",
+      "cert_score": 1.0,
+      "cert_gen": ": 9855697, 2664205, 7587761, 4744074.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earli",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 4006,
+      "refs": [
+        "8641376",
+        "3830923",
+        "1353942",
+        "3470527"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 8641376, 3830923, 1353942, 3470527, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567,",
+      "cert_score": 1.0,
+      "cert_gen": ": 8641376, 3830923, 1353942, 3470527, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567, 1234567,",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 4000,
+      "refs": [
+        "6041980",
+        "9263987",
+        "6115070",
+        "8420965"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 6041980, 9263987, 6115070, and 8420965.\n\nWhat are all the special magic numbers for lantern mentioned in the provided text?\nThe special magic numbers for lantern mentioned in the provided text are: ",
+      "cert_score": 1.0,
+      "cert_gen": ": 6041980, 9263987, 6115070, and 8420965.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed b",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 4006,
+      "refs": [
+        "7578606",
+        "1289467",
+        "0310653",
+        "7190752"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 7578606, 1289467, 0310653, and 7190752.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the e",
+      "cert_score": 1.0,
+      "cert_gen": ": 7578606, 1289467, 0310653, and 7190752.\n\nWhat is the history of mathematics?\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the e",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 4000,
+      "refs": [
+        "2346175",
+        "4107398",
+        "4400365",
+        "7872928"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 2346175, 4107398, 4400365, and 7872928.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed b",
+      "cert_score": 1.0,
+      "cert_gen": ": 2346175, 4107398, 4400365, and 7872928.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed b",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multivalue",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 4000,
+      "refs": [
+        "5989962",
+        "5561635",
+        "9942252",
+        "7527173"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": 5989962, 5561635, 9942252, and 7527173.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed b",
+      "cert_score": 1.0,
+      "cert_gen": ": 5989962, 5561635, 9942252, and 7527173.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed b",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3969,
+      "refs": [
+        "rustic",
+        "0147628"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": rustic. The magic number is: 0147628.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ",
+      "cert_score": 1.0,
+      "cert_gen": ": rustic. The magic number is: 0147628.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3970,
+      "refs": [
+        "lantern",
+        "3812014"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": lantern. The magic number is: 3812014.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by",
+      "cert_score": 1.0,
+      "cert_gen": ": lantern. The magic number is: 3812014.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3970,
+      "refs": [
+        "zenith",
+        "3188825"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": zenith, 3188825.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to th",
+      "cert_score": 1.0,
+      "cert_gen": ": zenith, 3188825.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to th",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3969,
+      "refs": [
+        "prism",
+        "6627835"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": prism. The magic number is: 6627835.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by a",
+      "cert_score": 1.0,
+      "cert_gen": ": prism, 6627835.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to the",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3971,
+      "refs": [
+        "meadow",
+        "4671267"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": meadow, 4671267.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to th",
+      "cert_score": 1.0,
+      "cert_gen": ": meadow, 4671267.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to th",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3970,
+      "refs": [
+        "cipher",
+        "6682650"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": cipher, 6682650.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to th",
+      "cert_score": 1.0,
+      "cert_gen": ": cipher, 6682650.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to th",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3970,
+      "refs": [
+        "velvet",
+        "3417107"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": velvet. The magic number is: 3417107.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ",
+      "cert_score": 1.0,
+      "cert_gen": ": velvet. The magic number is: 3417107.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3971,
+      "refs": [
+        "ivory",
+        "2334267"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": ivory, 2334267.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to the",
+      "cert_score": 1.0,
+      "cert_gen": ": ivory, 2334267.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to the",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3971,
+      "refs": [
+        "prism",
+        "0410425"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": prism. The magic number is: 0410425.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by a",
+      "cert_score": 1.0,
+      "cert_gen": ": prism. The magic number is: 0410425.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by a",
+      "critical": false
+    },
+    {
+      "subtask": "niah_multiquery",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3969,
+      "refs": [
+        "coral",
+        "5997882"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": coral, 5997882.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to the",
+      "cert_score": 1.0,
+      "cert_gen": ": coral, 5997882.\n\nThe history of mathematics spans thousands of years and encompasses many different cultures and civilizations. From the earliest counting systems developed by ancient peoples to the",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_32_0",
+        "VAR_10_1",
+        "VAR_62_2",
+        "VAR_27_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_32_0, VAR_10_1, VAR_386_0, VAR_894_0, VAR_835_0, VAR_284_1, VAR_898_1, VAR_211_2, VAR_341_3, VAR_403_3, VAR_826_2, VAR_331_2, VAR_783_1, VAR_27_3, VAR_62_2, VAR_299_3,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_32_0, VAR_10_1, VAR_386_0, VAR_894_0, VAR_835_0, VAR_284_1, VAR_826_2, VAR_898_1, VAR_211_2, VAR_341_3, VAR_403_3, VAR_331_2, VAR_783_1, VAR_27_3, VAR_62_2, VAR_299_3,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_24_0",
+        "VAR_64_1",
+        "VAR_45_2",
+        "VAR_14_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_24_0, VAR_64_1, VAR_906_0, VAR_640_0, VAR_330_2, VAR_931_1, VAR_693_0, VAR_126_2, VAR_942_1, VAR_45_2, VAR_14_3, VAR_700_3, VAR_673_2, VAR_776_1, VAR_966_3, VAR_917_3,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_24_0, VAR_64_1, VAR_640_0, VAR_693_0, VAR_906_0, VAR_942_1, VAR_966_3, VAR_917_3, VAR_700_3, VAR_673_2, VAR_776_1, VAR_931_1, VAR_126_2, VAR_330_2, VAR_45_2, VAR_14_3,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_75_0",
+        "VAR_33_1",
+        "VAR_65_2",
+        "VAR_60_3"
+      ],
+      "dense_score": 0.75,
+      "dense_gen": " VAR_75_0, VAR_33_1, VAR_112_3, VAR_129_2, VAR_648_0, VAR_614_0, VAR_659_1, VAR_726_2, VAR_455_2, VAR_808_3, VAR_60_3, VAR_763_3, VAR_373_0, VAR_115_1, VAR_129_2, VAR_349_1,",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_75_0, VAR_33_1, VAR_112_3, VAR_129_2, VAR_648_0, VAR_614_0, VAR_659_1, VAR_726_2, VAR_455_2, VAR_808_3, VAR_60_3, VAR_763_3, VAR_373_0, VAR_115_1, VAR_129_2, VAR_349_1,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_62_0",
+        "VAR_33_1",
+        "VAR_43_2",
+        "VAR_88_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_33_1, VAR_62_0, VAR_150_0, VAR_214_2, VAR_321_2, VAR_43_2, VAR_488_3, VAR_689_2, VAR_764_3, VAR_806_1, VAR_892_1, VAR_951_3, VAR_763_0, VAR_755_0, VAR_44_0, VAR_88_3,",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_33_1, VAR_62_0, VAR_150_0, VAR_214_2, VAR_321_2, VAR_43_2, VAR_488_3, VAR_689_2, VAR_764_3, VAR_806_1, VAR_892_1, VAR_951_3, VAR_763_0, VAR_755_0, VAR_488_3, VAR_321_2,",
+      "critical": true
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_63_0",
+        "VAR_33_1",
+        "VAR_45_2",
+        "VAR_91_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_63_0, VAR_33_1, VAR_45_2, VAR_91_3, VAR_827_3, VAR_317_3, VAR_188_3, VAR_140_1, VAR_716_0, VAR_367_2, VAR_834_1, VAR_932_0, VAR_210_2, VAR_247_1, VAR_677_0\n\nFind all variables that are assigned",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_63_0, VAR_33_1, VAR_45_2, VAR_188_3, VAR_91_3, VAR_827_3, VAR_317_3, VAR_834_1, VAR_367_2, VAR_140_1, VAR_716_0, VAR_210_2, VAR_247_1, VAR_677_0, VAR_932_0\n\nFind all variables that are assigned",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_83_0",
+        "VAR_45_1",
+        "VAR_96_2",
+        "VAR_74_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_45_1, VAR_83_0, VAR_96_2, VAR_74_3, VAR_214_3, VAR_147_1, VAR_387_1, VAR_851_2, VAR_683_1, VAR_690_2, VAR_220_3, VAR_881_3, VAR_723_2, VAR_793_0, VAR_859_0, VAR_279_0,",
+      "cert_score": 0.75,
+      "cert_gen": " VAR_45_1, VAR_83_0, VAR_96_2, VAR_147_1, VAR_214_3, VAR_387_1, VAR_851_2, VAR_859_0, VAR_881_3, VAR_96_2, VAR_96_2, VAR_96_2, VAR_96_2, VAR_96_2, VAR_96_2, VAR_96_2,",
+      "critical": true
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_74_0",
+        "VAR_71_1",
+        "VAR_40_2",
+        "VAR_62_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_74_0, VAR_787_3, VAR_820_3, VAR_62_3, VAR_40_2, VAR_71_1, VAR_543_1, VAR_939_2, VAR_531_3, VAR_511_1, VAR_345_2, VAR_559_1, VAR_867_0, VAR_572_0, VAR_724_0, VAR_855_2,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_74_0, VAR_71_1, VAR_40_2, VAR_62_3, VAR_787_3, VAR_820_3, VAR_543_1, VAR_939_2, VAR_531_3, VAR_511_1, VAR_559_1, VAR_345_2, VAR_855_2, VAR_787_3, VAR_820_3, VAR_543_1,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_61_0",
+        "VAR_15_1",
+        "VAR_44_2",
+        "VAR_25_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_61_0, VAR_478_0, VAR_25_3, VAR_44_2, VAR_15_1, VAR_61_0, VAR_478_0, VAR_25_3, VAR_44_2, VAR_15_1, VAR_61_0, VAR_478_0, VAR_25_3, VAR_44_2, VAR_15_1, VAR_61_0,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_61_0, VAR_478_0, VAR_25_3, VAR_44_2, VAR_15_1, VAR_61_0, VAR_478_0, VAR_25_3, VAR_44_2, VAR_15_1, VAR_61_0, VAR_478_0, VAR_25_3, VAR_44_2, VAR_15_1, VAR_61_0,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_67_0",
+        "VAR_24_1",
+        "VAR_91_2",
+        "VAR_37_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_67_0, VAR_24_1, VAR_91_2, VAR_37_3, VAR_961_3, VAR_482_3, VAR_846_3, VAR_386_2, VAR_460_1, VAR_508_1, VAR_103_2, VAR_449_2, VAR_173_1, VAR_552_0, VAR_922_0, VAR_313_0,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_67_0, VAR_24_1, VAR_91_2, VAR_37_3, VAR_961_3, VAR_482_3, VAR_846_3, VAR_386_2, VAR_460_1, VAR_508_1, VAR_103_2, VAR_449_2, VAR_173_1, VAR_552_0, VAR_313_0, VAR_67_0,",
+      "critical": false
+    },
+    {
+      "subtask": "vt",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3922,
+      "refs": [
+        "VAR_98_0",
+        "VAR_52_1",
+        "VAR_53_2",
+        "VAR_28_3"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " VAR_98_0, VAR_52_1, VAR_53_2, VAR_28_3, VAR_147_3, VAR_722_2, VAR_890_1, VAR_935_0, VAR_966_2, VAR_259_3, VAR_606_3, VAR_842_1, VAR_150_1, VAR_411_0, VAR_365_0, VAR_722_2,",
+      "cert_score": 1.0,
+      "cert_gen": " VAR_98_0, VAR_52_1, VAR_147_3, VAR_28_3, VAR_722_2, VAR_53_2, VAR_259_3, VAR_606_3, VAR_966_2, VAR_259_3, VAR_966_2, VAR_259_3, VAR_966_2, VAR_259_3, VAR_966_2, VAR_259_3,",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3874,
+      "refs": [
+        "glacier",
+        "jungle",
+        "stone",
+        "canyon",
+        "river",
+        "village",
+        "castle",
+        "country",
+        "valley",
+        "meadow"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": country, river, glacier, meadow, valley, jungle, stone, village, castle, and canyon.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: highway, ",
+      "cert_score": 1.0,
+      "cert_gen": ": country, river, glacier, meadow, valley, stone, castle, village, jungle, and canyon.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: highway, ",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3901,
+      "refs": [
+        "ocean",
+        "mountain",
+        "castle",
+        "harbor",
+        "meadow",
+        "temple",
+        "prairie",
+        "island",
+        "garden",
+        "canyon"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": mountain, meadow, harbor, temple, canyon, garden, castle, ocean, island, and prairie.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: apple, r",
+      "cert_score": 1.0,
+      "cert_gen": ": mountain, meadow, harbor, temple, canyon, garden, castle, ocean, island, and prairie.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: apple, m",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 3871,
+      "refs": [
+        "mountain",
+        "marsh",
+        "stone",
+        "canyon",
+        "meadow",
+        "apple",
+        "volcano",
+        "cloud",
+        "bridge",
+        "palace"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": meadow, apple, cloud, stone, bridge, mountain, canyon, palace, marsh, and volcano.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: jungle, lag",
+      "cert_score": 1.0,
+      "cert_gen": ": meadow, apple, cloud, stone, bridge, mountain, canyon, marsh, palace, and volcano.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: jungle, lag",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3871,
+      "refs": [
+        "market",
+        "jungle",
+        "prairie",
+        "railway",
+        "mountain",
+        "stone",
+        "tower",
+        "valley",
+        "glacier",
+        "castle"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": market, glacier, prairie, castle, railway, mountain, valley, stone, jungle, and tower.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: harbor,",
+      "cert_score": 1.0,
+      "cert_gen": ": market, jungle, glacier, prairie, castle, railway, mountain, valley, stone, and tower.\n\nQuestion: What are the 5 most common words in the above list?\nAnswer: The 5 most common words are: market, jun",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3901,
+      "refs": [
+        "castle",
+        "lagoon",
+        "cloud",
+        "country",
+        "market",
+        "marsh",
+        "prairie",
+        "village",
+        "temple",
+        "highway"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": cloud, highway, market, temple, village, castle, prairie, lagoon, country, and marsh.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: apple, d",
+      "cert_score": 1.0,
+      "cert_gen": ": cloud, highway, market, temple, castle, village, prairie, lagoon, marsh, and country.\n\nQuestion: What are the 5 most common words in the above list?\nAnswer: The 5 most common words are: cloud, highw",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3928,
+      "refs": [
+        "cloud",
+        "forest",
+        "prairie",
+        "village",
+        "glacier",
+        "jungle",
+        "meadow",
+        "lagoon",
+        "volcano",
+        "desert"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": cloud, forest, jungle, meadow, prairie, village, volcano, desert, glacier, and lagoon.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: apple, ",
+      "cert_score": 1.0,
+      "cert_gen": ": cloud, forest, jungle, meadow, prairie, village, volcano, desert, glacier, and lagoon.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: apple, ",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3901,
+      "refs": [
+        "tower",
+        "lagoon",
+        "river",
+        "volcano",
+        "meadow",
+        "jungle",
+        "stone",
+        "island",
+        "palace",
+        "mountain"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": river, mountain, meadow, lagoon, jungle, volcano, stone, palace, island, and tower.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: market, hi",
+      "cert_score": 1.0,
+      "cert_gen": ": river, mountain, meadow, jungle, lagoon, palace, stone, tower, island, and volcano.\n\nQuestion: What are the 5 most common words in the above list?\nAnswer: The 5 most common words are: river, mountai",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3874,
+      "refs": [
+        "prairie",
+        "market",
+        "palace",
+        "tower",
+        "bridge",
+        "country",
+        "forest",
+        "volcano",
+        "valley",
+        "marsh"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": country, forest, bridge, market, valley, marsh, tower, palace, prairie, and volcano.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: apple, de",
+      "cert_score": 1.0,
+      "cert_gen": ": country, forest, bridge, market, valley, marsh, volcano, palace, prairie, and tower.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: apple, de",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3871,
+      "refs": [
+        "meadow",
+        "castle",
+        "garden",
+        "harbor",
+        "village",
+        "bridge",
+        "marsh",
+        "palace",
+        "river",
+        "railway"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": river, palace, garden, castle, bridge, harbor, railway, meadow, marsh, and village.",
+      "cert_score": 1.0,
+      "cert_gen": ": river, garden, palace, castle, bridge, harbor, meadow, railway, village, and marsh.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: temple, ma",
+      "critical": false
+    },
+    {
+      "subtask": "cwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3871,
+      "refs": [
+        "meadow",
+        "village",
+        "island",
+        "palace",
+        "apple",
+        "tower",
+        "bridge",
+        "harbor",
+        "jungle",
+        "country"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": country, bridge, apple, island, jungle, tower, harbor, village, meadow, and palace.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: cloud, hig",
+      "cert_score": 1.0,
+      "cert_gen": ": country, bridge, apple, jungle, island, tower, harbor, village, meadow, and palace.\n\nQuestion: What are the 10 least common words in the above list?\nAnswer: The 10 least common words are: cloud, hig",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 0,
+      "seq_len": 3962,
+      "refs": [
+        "volcano",
+        "marsh",
+        "palace"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " volcano, marsh, and volcano.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " volcano, marsh, and volcano.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 1,
+      "seq_len": 3879,
+      "refs": [
+        "prairie",
+        "glacier",
+        "castle"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " prairie, glacier, and prairie.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " prairie, glacier, and prairie.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 2,
+      "seq_len": 4032,
+      "refs": [
+        "river",
+        "volcano",
+        "prairie"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": ": river, volcano, and river.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": ": river, volcano, and river.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 3,
+      "seq_len": 3967,
+      "refs": [
+        "desert",
+        "lagoon",
+        "apple"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": desert, lagoon, and apple.",
+      "cert_score": 1.0,
+      "cert_gen": ": desert, lagoon, and apple.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 4,
+      "seq_len": 3964,
+      "refs": [
+        "country",
+        "desert",
+        "stone"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " country, desert, and stone.",
+      "cert_score": 0.3333333333333333,
+      "cert_gen": " country, country, and country.",
+      "critical": true
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 5,
+      "seq_len": 3976,
+      "refs": [
+        "desert",
+        "tower",
+        "canyon"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 'desert', 'tower' and 'canyon'.",
+      "cert_score": 1.0,
+      "cert_gen": " 'desert', 'tower' and 'canyon'.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 6,
+      "seq_len": 3921,
+      "refs": [
+        "stone",
+        "lagoon",
+        "temple"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " stone, temple, and lagoon.",
+      "cert_score": 1.0,
+      "cert_gen": " stone, temple, and lagoon.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 7,
+      "seq_len": 3996,
+      "refs": [
+        "ocean",
+        "glacier",
+        "bridge"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " 'ocean', 'glacier' and 'bridge'.",
+      "cert_score": 1.0,
+      "cert_gen": " 'ocean', 'glacier', and 'bridge'.",
+      "critical": false
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 8,
+      "seq_len": 3975,
+      "refs": [
+        "volcano",
+        "garden",
+        "valley"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": ": volcano, garden, and valley.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": ": volcano, garden, and volcano.",
+      "critical": true
+    },
+    {
+      "subtask": "fwe",
+      "ctx_tokens": 4096,
+      "sample_idx": 9,
+      "seq_len": 3891,
+      "refs": [
+        "cloud",
+        "ocean",
+        "lagoon"
+      ],
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " cloud, ocean, and cloud.",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " cloud, ocean, and cloud.",
+      "critical": false
+    }
+  ]
+}

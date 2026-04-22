@@ -1,0 +1,130 @@
+cmd: /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/niah.py --contexts 16384 --needles 3 --output /workspace/DotCache/benchmarks/results/arxiv_v1_20260420/14_niah_16K_dense.native.json
+started: 2026-04-20T22:10:52.146798+00:00
+---
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights:   0%|          | 1/291 [00:01<05:10,  1.07s/it]Loading weights:   1%|          | 2/291 [00:02<06:40,  1.39s/it]Loading weights:   1%|▏         | 4/291 [00:02<02:57,  1.62it/s]Loading weights:   2%|▏         | 5/291 [00:03<02:26,  1.95it/s]Loading weights:   2%|▏         | 6/291 [00:03<02:07,  2.24it/s]Loading weights:   3%|▎         | 10/291 [00:03<00:51,  5.48it/s]Loading weights:   4%|▍         | 13/291 [00:03<00:39,  7.10it/s]Loading weights:   5%|▌         | 15/291 [00:04<00:47,  5.79it/s]Loading weights:   6%|▌         | 18/291 [00:04<00:33,  8.15it/s]Loading weights:   8%|▊         | 22/291 [00:04<00:28,  9.32it/s]Loading weights:   8%|▊         | 24/291 [00:05<00:37,  7.04it/s]Loading weights:  10%|▉         | 28/291 [00:05<00:26,  9.95it/s]Loading weights:  11%|█         | 31/291 [00:05<00:25, 10.20it/s]Loading weights:  11%|█▏        | 33/291 [00:06<00:33,  7.60it/s]Loading weights:  13%|█▎        | 37/291 [00:06<00:23, 10.59it/s]Loading weights:  14%|█▎        | 40/291 [00:06<00:25, 10.01it/s]Loading weights:  14%|█▍        | 42/291 [00:07<00:32,  7.56it/s]Loading weights:  16%|█▌        | 46/291 [00:07<00:23, 10.57it/s]Loading weights:  17%|█▋        | 49/291 [00:07<00:23, 10.16it/s]Loading weights:  18%|█▊        | 51/291 [00:08<00:32,  7.50it/s]Loading weights:  19%|█▉        | 55/291 [00:08<00:22, 10.38it/s]Loading weights:  20%|█▉        | 58/291 [00:08<00:21, 10.75it/s]Loading weights:  21%|██        | 60/291 [00:09<00:28,  7.98it/s]Loading weights:  22%|██▏       | 64/291 [00:09<00:20, 10.89it/s]Loading weights:  23%|██▎       | 67/291 [00:09<00:21, 10.61it/s]Loading weights:  24%|██▎       | 69/291 [00:10<00:29,  7.64it/s]Loading weights:  25%|██▌       | 73/291 [00:10<00:20, 10.59it/s]Loading weights:  26%|██▌       | 76/291 [00:10<00:19, 10.77it/s]Loading weights:  27%|██▋       | 78/291 [00:11<00:27,  7.87it/s]Loading weights:  28%|██▊       | 82/291 [00:11<00:19, 10.95it/s]Loading weights:  29%|██▉       | 85/291 [00:11<00:19, 10.47it/s]Loading weights:  30%|██▉       | 87/291 [00:12<00:27,  7.35it/s]Loading weights:  31%|███▏      | 91/291 [00:12<00:19, 10.35it/s]Loading weights:  32%|███▏      | 94/291 [00:12<00:19, 10.04it/s]Loading weights:  33%|███▎      | 96/291 [00:13<00:24,  7.83it/s]Loading weights:  34%|███▍      | 100/291 [00:13<00:17, 10.90it/s]Loading weights:  35%|███▌      | 103/291 [00:13<00:18, 10.37it/s]Loading weights:  36%|███▌      | 105/291 [00:14<00:24,  7.45it/s]Loading weights:  37%|███▋      | 109/291 [00:14<00:17, 10.48it/s]Loading weights:  38%|███▊      | 112/291 [00:14<00:16, 10.85it/s]Loading weights:  39%|███▉      | 114/291 [00:14<00:21,  8.13it/s]Loading weights:  41%|████      | 118/291 [00:14<00:15, 11.36it/s]Loading weights:  42%|████▏     | 121/291 [00:15<00:14, 11.36it/s]Loading weights:  42%|████▏     | 123/291 [00:15<00:21,  7.85it/s]Loading weights:  44%|████▎     | 127/291 [00:15<00:15, 10.87it/s]Loading weights:  45%|████▍     | 130/291 [00:16<00:14, 10.94it/s]Loading weights:  45%|████▌     | 132/291 [00:16<00:20,  7.92it/s]Loading weights:  47%|████▋     | 136/291 [00:16<00:13, 11.18it/s]Loading weights:  48%|████▊     | 139/291 [00:17<00:13, 11.06it/s]Loading weights:  48%|████▊     | 141/291 [00:17<00:18,  7.99it/s]Loading weights:  50%|████▉     | 145/291 [00:17<00:13, 11.04it/s]Loading weights:  51%|█████     | 148/291 [00:18<00:13, 11.00it/s]Loading weights:  52%|█████▏    | 150/291 [00:18<00:18,  7.56it/s]Loading weights:  53%|█████▎    | 154/291 [00:18<00:13, 10.43it/s]Loading weights:  54%|█████▍    | 157/291 [00:18<00:12, 10.82it/s]Loading weights:  55%|█████▍    | 159/291 [00:19<00:16,  7.78it/s]Loading weights:  56%|█████▌    | 163/291 [00:19<00:11, 10.82it/s]Loading weights:  57%|█████▋    | 166/291 [00:19<00:11, 11.20it/s]Loading weights:  58%|█████▊    | 168/291 [00:20<00:15,  7.91it/s]Loading weights:  59%|█████▉    | 172/291 [00:20<00:10, 10.89it/s]Loading weights:  60%|██████    | 175/291 [00:20<00:10, 10.70it/s]Loading weights:  61%|██████    | 177/291 [00:21<00:14,  7.73it/s]Loading weights:  62%|██████▏   | 180/291 [00:21<00:11,  9.70it/s]Loading weights:  63%|██████▎   | 184/291 [00:21<00:10, 10.03it/s]Loading weights:  64%|██████▍   | 186/291 [00:22<00:14,  7.48it/s]Loading weights:  65%|██████▌   | 190/291 [00:22<00:09, 10.49it/s]Loading weights:  66%|██████▋   | 193/291 [00:22<00:09, 10.29it/s]Loading weights:  67%|██████▋   | 195/291 [00:23<00:13,  6.90it/s]Loading weights:  68%|██████▊   | 199/291 [00:23<00:09,  9.67it/s]Loading weights:  69%|██████▉   | 202/291 [00:23<00:08,  9.95it/s]Loading weights:  70%|███████   | 204/291 [00:24<00:11,  7.43it/s]Loading weights:  71%|███████▏  | 208/291 [00:24<00:07, 10.51it/s]Loading weights:  73%|███████▎  | 211/291 [00:24<00:07, 10.82it/s]Loading weights:  73%|███████▎  | 213/291 [00:25<00:10,  7.61it/s]Loading weights:  75%|███████▍  | 217/291 [00:25<00:06, 10.63it/s]Loading weights:  76%|███████▌  | 220/291 [00:25<00:06, 10.84it/s]Loading weights:  76%|███████▋  | 222/291 [00:26<00:09,  7.66it/s]Loading weights:  78%|███████▊  | 226/291 [00:26<00:06, 10.72it/s]Loading weights:  79%|███████▊  | 229/291 [00:26<00:05, 10.86it/s]Loading weights:  79%|███████▉  | 231/291 [00:27<00:07,  8.06it/s]Loading weights:  80%|████████  | 234/291 [00:27<00:05, 10.46it/s]Loading weights:  82%|████████▏ | 238/291 [00:27<00:05, 10.24it/s]Loading weights:  82%|████████▏ | 240/291 [00:28<00:06,  7.53it/s]Loading weights:  84%|████████▎ | 243/291 [00:28<00:04,  9.77it/s]Loading weights:  84%|████████▍ | 245/291 [00:28<00:04, 11.07it/s]Loading weights:  85%|████████▍ | 247/291 [00:28<00:04,  9.65it/s]Loading weights:  86%|████████▌ | 249/291 [00:29<00:06,  6.95it/s]Loading weights:  87%|████████▋ | 253/291 [00:29<00:03, 10.31it/s]Loading weights:  88%|████████▊ | 256/291 [00:29<00:03, 10.52it/s]Loading weights:  89%|████████▊ | 258/291 [00:30<00:04,  7.38it/s]Loading weights:  90%|█████████ | 262/291 [00:30<00:02, 10.58it/s]Loading weights:  91%|█████████ | 265/291 [00:30<00:02, 10.98it/s]Loading weights:  92%|█████████▏| 267/291 [00:31<00:03,  7.83it/s]Loading weights:  93%|█████████▎| 271/291 [00:31<00:01, 10.98it/s]Loading weights:  94%|█████████▍| 274/291 [00:31<00:01, 10.54it/s]Loading weights:  95%|█████████▍| 276/291 [00:32<00:01,  7.58it/s]Loading weights:  96%|█████████▌| 280/291 [00:32<00:01, 10.54it/s]Loading weights:  97%|█████████▋| 283/291 [00:32<00:00, 12.02it/s]Loading weights:  98%|█████████▊| 285/291 [00:32<00:00,  9.06it/s]Loading weights: 100%|██████████| 291/291 [00:32<00:00,  8.88it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Model: 9.09 GB
+
+NIAH: contexts=[16]K, needles=3, default_epsilon=0.0001, top_k_fp16=4, adaptive=tau_cov=0.995 k=[2,None], ranking_fallback=off
+The following generation flags are not valid and may be ignored: ['top_p']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [1/60]      dense 16K d=0.0 n=0 -> OK
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [2/60]  certified 16K d=0.0 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [3/60]      dense 16K d=0.0 n=1 -> OK
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [4/60]  certified 16K d=0.0 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [5/60]      dense 16K d=0.0 n=2 -> OK
+  [6/60]  certified 16K d=0.0 n=2 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [7/60]      dense 16K d=0.1 n=0 -> OK
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [8/60]  certified 16K d=0.1 n=0 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [9/60]      dense 16K d=0.1 n=1 -> OK
+  [10/60]  certified 16K d=0.1 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [11/60]      dense 16K d=0.1 n=2 -> FAIL
+  [12/60]  certified 16K d=0.1 n=2 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [13/60]      dense 16K d=0.2 n=0 -> FAIL
+  [14/60]  certified 16K d=0.2 n=0 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [15/60]      dense 16K d=0.2 n=1 -> OK
+  [16/60]  certified 16K d=0.2 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [17/60]      dense 16K d=0.2 n=2 -> OK
+  [18/60]  certified 16K d=0.2 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [19/60]      dense 16K d=0.3 n=0 -> OK
+  [20/60]  certified 16K d=0.3 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [21/60]      dense 16K d=0.3 n=1 -> OK
+  [22/60]  certified 16K d=0.3 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [23/60]      dense 16K d=0.3 n=2 -> FAIL
+  [24/60]  certified 16K d=0.3 n=2 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [25/60]      dense 16K d=0.4 n=0 -> FAIL
+  [26/60]  certified 16K d=0.4 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [27/60]      dense 16K d=0.4 n=1 -> OK
+  [28/60]  certified 16K d=0.4 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [29/60]      dense 16K d=0.4 n=2 -> FAIL
+  [30/60]  certified 16K d=0.4 n=2 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [31/60]      dense 16K d=0.5 n=0 -> OK
+  [32/60]  certified 16K d=0.5 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [33/60]      dense 16K d=0.5 n=1 -> OK
+  [34/60]  certified 16K d=0.5 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [35/60]      dense 16K d=0.5 n=2 -> FAIL
+  [36/60]  certified 16K d=0.5 n=2 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [37/60]      dense 16K d=0.6 n=0 -> OK
+  [38/60]  certified 16K d=0.6 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [39/60]      dense 16K d=0.6 n=1 -> OK
+  [40/60]  certified 16K d=0.6 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [41/60]      dense 16K d=0.6 n=2 -> OK
+  [42/60]  certified 16K d=0.6 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [43/60]      dense 16K d=0.7 n=0 -> OK
+  [44/60]  certified 16K d=0.7 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [45/60]      dense 16K d=0.7 n=1 -> OK
+  [46/60]  certified 16K d=0.7 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [47/60]      dense 16K d=0.7 n=2 -> FAIL
+  [48/60]  certified 16K d=0.7 n=2 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [49/60]      dense 16K d=0.8 n=0 -> FAIL
+  [50/60]  certified 16K d=0.8 n=0 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [51/60]      dense 16K d=0.8 n=1 -> OK
+  [52/60]  certified 16K d=0.8 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [53/60]      dense 16K d=0.8 n=2 -> FAIL
+  [54/60]  certified 16K d=0.8 n=2 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [55/60]      dense 16K d=0.9 n=0 -> OK
+  [56/60]  certified 16K d=0.9 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [57/60]      dense 16K d=0.9 n=1 -> OK
+  [58/60]  certified 16K d=0.9 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [59/60]      dense 16K d=0.9 n=2 -> OK
+  [60/60]  certified 16K d=0.9 n=2 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+
+dense: 21/30 correct (70.0%)
+
+certified: 18/30 correct (60.0%)
+
+*** 4 CRITICAL FAILURES: dense OK but certified FAILED ***
+  16K d=0.0 n=2: expected 'Zurich', got ' secret is the history of mathematics. The code is'
+  16K d=0.1 n=0: expected 'Crimson Falcon', got ' secret is the location of the hidden treasure. Th'
+  16K d=0.6 n=1: expected '7429-DELTA', got ' secret, code, location, budget, or ID mentioned i'
+  16K d=0.9 n=2: expected 'Zurich', got ' secret, code, location, budget, or ID mentioned i'
+
+==================================================
+Dense accuracy:     70.0%
+Certified accuracy: 60.0%
+Critical failures:  4
+JSON -> /workspace/DotCache/benchmarks/results/arxiv_v1_20260420/14_niah_16K_dense.native.json

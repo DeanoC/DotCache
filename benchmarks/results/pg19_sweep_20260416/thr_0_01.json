@@ -1,0 +1,26 @@
+{
+  "benchmark": "pg19_perplexity",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "context_length": 4096,
+  "num_chunks": 10,
+  "eval_start_frac": 0.5,
+  "concentration_threshold": 0.01,
+  "default_epsilon_override": null,
+  "top_k_override": null,
+  "dense": {
+    "perplexity": 6.915339243245288,
+    "total_nll": 79186.73583984375,
+    "total_tokens": 40950
+  },
+  "certified": {
+    "perplexity": 6.925533900656122,
+    "total_nll": 79227.7081046374,
+    "total_tokens": 40940,
+    "skip_rate": 0.5664376631272622,
+    "skipped_blocks": 2285233933,
+    "total_blocks": 4034396160,
+    "decode_steps": 20470
+  },
+  "ratio": 1.0014742092979447,
+  "delta": 0.010194657410833585
+}

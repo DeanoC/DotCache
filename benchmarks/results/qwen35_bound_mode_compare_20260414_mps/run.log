@@ -1,0 +1,54 @@
+The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+Loading model Qwen/Qwen3.5-0.8B ...
+Loading weights:   0%|          | 0/473 [00:00<?, ?it/s]Loading weights:   0%|          | 1/473 [00:01<10:54,  1.39s/it]Loading weights: 100%|██████████| 473/473 [00:01<00:00, 339.90it/s]
+Loading weights:   0%|          | 0/473 [00:00<?, ?it/s]Loading weights: 100%|██████████| 473/473 [00:00<00:00, 5548.91it/s]
+
+--- Dense reference pass ---
+  [dense] aae_stage_summary: 9 tokens generated, keeping first 8
+  [dense] bench_decode_code: 9 tokens generated, keeping first 8
+  [dense] benchmark_report: 9 tokens generated, keeping first 8
+  [dense] compressed_page_rfc: 9 tokens generated, keeping first 8
+  [dense] hip_call_flow: 9 tokens generated, keeping first 8
+  [dense] local_layer_profiles: 9 tokens generated, keeping first 8
+  [dense] test_attention_vs_dense: 9 tokens generated, keeping first 8
+  [dense] turboquant_comparison_plan: 9 tokens generated, keeping first 8
+
+--- Lane: Spherical only (baseline) ---
+  [spherical_only] aae_stage_summary: 727.66 ms/step, exact=True, M0=4656 M3=0, cert_stop_blocks=582, checkpoints=42
+  [spherical_only] bench_decode_code: 393.33 ms/step, exact=True, M0=1872 M3=48, cert_stop_blocks=240, checkpoints=18
+  [spherical_only] benchmark_report: 638.79 ms/step, exact=True, M0=4656 M3=0, cert_stop_blocks=582, checkpoints=42
+  [spherical_only] compressed_page_rfc: 557.90 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [spherical_only] hip_call_flow: 530.71 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [spherical_only] local_layer_profiles: 517.64 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [spherical_only] test_attention_vs_dense: 389.68 ms/step, exact=True, M0=816 M3=48, cert_stop_blocks=108, checkpoints=12
+  [spherical_only] turboquant_comparison_plan: 551.16 ms/step, exact=False, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+
+--- Lane: Interval bound (paper primary) ---
+  [interval] aae_stage_summary: 660.09 ms/step, exact=True, M0=4656 M3=0, cert_stop_blocks=582, checkpoints=42
+  [interval] bench_decode_code: 322.85 ms/step, exact=True, M0=1872 M3=48, cert_stop_blocks=240, checkpoints=18
+  [interval] benchmark_report: 696.24 ms/step, exact=True, M0=4656 M3=0, cert_stop_blocks=582, checkpoints=42
+  [interval] compressed_page_rfc: 575.59 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [interval] hip_call_flow: 521.19 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [interval] local_layer_profiles: 507.90 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [interval] test_attention_vs_dense: 257.69 ms/step, exact=True, M0=816 M3=48, cert_stop_blocks=108, checkpoints=12
+  [interval] turboquant_comparison_plan: 521.02 ms/step, exact=False, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+
+--- Lane: Interval + Ellipsoidal (full paper) ---
+  [interval_ellip] aae_stage_summary: 887.54 ms/step, exact=True, M0=4656 M3=0, cert_stop_blocks=582, checkpoints=42
+  [interval_ellip] bench_decode_code: 644.20 ms/step, exact=True, M0=1872 M3=48, cert_stop_blocks=240, checkpoints=18
+  [interval_ellip] benchmark_report: 961.53 ms/step, exact=True, M0=4656 M3=0, cert_stop_blocks=582, checkpoints=42
+  [interval_ellip] compressed_page_rfc: 827.09 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [interval_ellip] hip_call_flow: 835.18 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [interval_ellip] local_layer_profiles: 786.85 ms/step, exact=True, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+  [interval_ellip] test_attention_vs_dense: 771.05 ms/step, exact=True, M0=816 M3=48, cert_stop_blocks=108, checkpoints=12
+  [interval_ellip] turboquant_comparison_plan: 928.33 ms/step, exact=False, M0=3120 M3=0, cert_stop_blocks=390, checkpoints=30
+
+=== Summary ===
+  spherical_only      : 538.36 ms/step, exact=0.875, score=203.69 ms/case, cert_stop=384.0 blocks, chkpts=29.2
+  interval            : 507.82 ms/step, exact=0.875, score=254.80 ms/case, cert_stop=384.0 blocks, chkpts=29.2
+  interval_ellip      : 830.22 ms/step, exact=0.875, score=419.87 ms/case, cert_stop=384.0 blocks, chkpts=29.2
+  interval speedup vs spherical: +5.7%
+  interval_ellip speedup vs spherical: -54.2%
+
+JSON -> benchmarks/results/qwen35_bound_mode_compare_20260414_mps/qwen35_bound_mode_compare.json
+MD   -> benchmarks/results/qwen35_bound_mode_compare_20260414_mps/qwen35_bound_mode_compare.md

@@ -15,6 +15,26 @@ from ..page_cache import PreparedPageCache
 from ..page_oracle import PageTraceRecord, save_page_trace
 from ..tracing import ExecutionTrace
 
+# Certified attention imports (lazy — only needed when mode == "certified")
+_certified_attention_imported = False
+certified_attention_layer = None
+TieredKeyCacheLayer = None
+create_tiered_cache_from_model = None
+
+
+def _ensure_certified_imports():
+    global _certified_attention_imported, certified_attention_layer
+    global TieredKeyCacheLayer, create_tiered_cache_from_model
+    if _certified_attention_imported:
+        return
+    from ..kernels.certified_attention import certified_attention_layer as _cal
+    from ..kernels.tiered_kv_cache import TieredKeyCacheLayer as _tkcl
+    from ..kernels.tiered_kv_cache import create_tiered_cache_from_model as _ctcfm
+    certified_attention_layer = _cal
+    TieredKeyCacheLayer = _tkcl
+    create_tiered_cache_from_model = _ctcfm
+    _certified_attention_imported = True
+
 
 def transformers_available() -> bool:
     try:
@@ -41,7 +61,7 @@ else:  # pragma: no cover - exercised in environments without transformers
     AutoTokenizer = None
 
 
-AttentionMode = Literal["dense", "dotcache"]
+AttentionMode = Literal["dense", "dotcache", "certified"]
 
 
 @dataclass(slots=True)
@@ -56,6 +76,161 @@ class LlamaReplayRecord:
     output_states: np.ndarray
     cache_source_layer_id: int | None = None
     gate_states: np.ndarray | None = None
+
+
+@dataclass
+class CertifiedAttentionState:
+    """Runtime state for certified attention mode."""
+    tiered_caches: dict  # layer_id → TieredKeyCacheLayer
+    layer_epsilons: dict[int, float]  # per-layer epsilon overrides
+    default_epsilon: float = 1e-4
+    block_size: int = 16
+    collect_stats: bool = True  # set False during timed runs to avoid GPU syncs
+    append_kv: bool = False  # append new K/V tokens to tiered cache during decode
+    top_k_fp16_keys: int = 4  # top-K blocks use FP16 keys for quality
+    concentration_threshold: float = 0.0  # if max block mass < this, don't skip (diffuse attention safety)
+    # Rung-3 ranking-consistency fallback (detect INT8 vs FP16 ranking disagreement
+    # on the top-K blocks and, on disagreement, recompute that head with full FP16
+    # keys + values). See docs: Ranking-Consistency Fallback Spec.
+    ranking_fallback: bool = False
+    ranking_r: int = 1  # top-r positions that must agree between INT8 and FP16 rankings
+    ranking_fallback_mode: str = "full"  # "full" = per-head dense recompute; "measure" = detect only
+    # Paper §3.3 adaptive top-K* selector. When tau_cov is not None, the
+    # block-skip mask is driven by the per-head cumulative-mass threshold
+    # instead of the block_epsilon certification.
+    tau_cov: float | None = None
+    k_min: int = 2
+    # k_max=None: no upper cap — tau_cov alone dictates K* per head.
+    k_max: int | None = None
+    # Rung-1 expand-coverage fallback (paper §3.4). rung1_threshold is the tail
+    # mass above which k_max is temporarily scaled by rung1_multiplier for
+    # heads that tripped it. Set threshold to 1.0 (or higher) to disable.
+    rung1_threshold: float = 0.02
+    rung1_multiplier: float = 2.0
+    # Score-consistency check (paper §6): defence-in-depth per-block Δ bound.
+    # Expected trigger rate is exactly 0 on well-behaved runs; non-zero counts
+    # indicate Theorem-2 was empirically violated (stale metadata / corruption).
+    score_consistency_check: bool = False
+    eps_guard: float = 0.01
+    # Exploration budget (paper §6): per-step Bernoulli promotion of a small
+    # fraction of non-top-K* blocks to FP16. Monitoring only; 0.0 disables.
+    exploration_rate: float = 0.0
+    # Experimental: compute ONE top-K per KV-head group (union of the 4 Q
+    # heads sharing a KV head, via summed mass) instead of per-Q-head. Bounds
+    # per-layer working set for the FP16 cache — see cache_sweep_tau/
+    # SUMMARY.md. Changes the §3.3 per-head bound to a per-group bound.
+    per_kv_group_topk: bool = False
+    step_stats: list = None  # per-step stats accumulator
+    # Monotonic sequence number that increments on every clear_step_stats()
+    # call. External per-step telemetry collectors (PageinTelemetry) can use
+    # this to detect that step_stats was drained+reset between their calls,
+    # so their slice-from-cursor aggregation doesn't silently return empty
+    # after a caller like pg19_perplexity.py clears the list per iteration.
+    _clear_seq: int = 0
+    # Test 2 phase-timing accumulator. When not None, certified_attention_layer
+    # records per-phase wall time (μs) via torch.cuda.Event timers into this
+    # dict. ~5 GPU syncs per layer per step when enabled — do NOT use during
+    # throughput measurements. Accumulates across layers and across steps;
+    # the harness should snapshot + reset between steps for per-step series.
+    phase_timings: dict | None = None
+
+    def __post_init__(self):
+        if self.step_stats is None:
+            self.step_stats = []
+
+    def clear_step_stats(self) -> list[dict]:
+        stats = self.step_stats
+        self.step_stats = []
+        self._clear_seq += 1
+        return stats
+
+    def aggregate_step_stats(self, since: int = 0) -> dict:
+        """Aggregate stats across layer entries in `step_stats[since:]`.
+
+        Default (`since=0`) sums everything recorded so far — the legacy
+        behaviour used by niah.py's per-cell ranking_fallback_summary. A
+        per-step telemetry collector can pass `since=last_seen_len` to
+        aggregate only entries appended after the previous call, without
+        having to clear the list (which would break the callers that also
+        run the legacy aggregate at the end of a cell)."""
+        entries = self.step_stats if since <= 0 else self.step_stats[since:]
+        if not entries:
+            return {"skip_rate": 0.0, "total_blocks": 0, "skipped_blocks": 0}
+        total = sum(s["total_blocks"] for s in entries)
+        skipped = sum(s["skipped_blocks"] for s in entries)
+        agg = {
+            "skip_rate": skipped / total if total > 0 else 0.0,
+            "total_blocks": total,
+            "skipped_blocks": skipped,
+            "per_layer_skip_rate": {
+                s["layer"]: s["skip_rate"] for s in entries
+            },
+        }
+        # Ranking-consistency fallback aggregates (Rung 3). Only populated when
+        # ranking_fallback is enabled; absent stats default to zero so dense /
+        # non-fallback runs still aggregate cleanly.
+        if any("ranking_heads_total" in s for s in entries):
+            heads_total = sum(s.get("ranking_heads_total", 0) for s in entries)
+            disagree_r1 = sum(s.get("ranking_disagree_r1", 0) for s in entries)
+            disagree_r3 = sum(s.get("ranking_disagree_r3", 0) for s in entries)
+            triggered = sum(s.get("ranking_fallback_triggered", 0) for s in entries)
+            agg["ranking_heads_total"] = heads_total
+            agg["ranking_disagree_r1"] = disagree_r1
+            agg["ranking_disagree_r3"] = disagree_r3
+            agg["ranking_fallback_triggered"] = triggered
+            agg["ranking_disagree_rate_r1"] = (disagree_r1 / heads_total) if heads_total else 0.0
+            agg["ranking_disagree_rate_r3"] = (disagree_r3 / heads_total) if heads_total else 0.0
+            agg["ranking_fallback_rate"] = (triggered / heads_total) if heads_total else 0.0
+        # Score-consistency violation totals (defence-in-depth canary).
+        if any("score_consistency_violation_heads" in s for s in entries):
+            agg["score_consistency_violation_heads_total"] = sum(
+                s.get("score_consistency_violation_heads", 0) for s in entries
+            )
+        if any("exploration_blocks" in s for s in entries):
+            agg["exploration_blocks_total"] = sum(
+                s.get("exploration_blocks", 0) for s in entries
+            )
+        # Page-in telemetry rollup (sum across layers for this step).
+        if any("h2d_total_bytes" in s for s in entries):
+            agg["h2d_key_bytes"] = int(sum(s.get("h2d_key_bytes", 0) for s in entries))
+            agg["h2d_value_bytes"] = int(sum(s.get("h2d_value_bytes", 0) for s in entries))
+            agg["h2d_total_bytes"] = int(agg["h2d_key_bytes"] + agg["h2d_value_bytes"])
+            agg["h2d_key_blocks"] = int(sum(s.get("h2d_key_blocks", 0) for s in entries))
+            agg["h2d_value_blocks"] = int(sum(s.get("h2d_value_blocks", 0) for s in entries))
+        if any("vram_fp16_key_cache_bytes" in s for s in entries):
+            agg["vram_fp16_key_cache_bytes"] = int(sum(
+                s.get("vram_fp16_key_cache_bytes", 0) for s in entries
+            ))
+            agg["vram_fp16_value_cache_bytes"] = int(sum(
+                s.get("vram_fp16_value_cache_bytes", 0) for s in entries
+            ))
+        # Per-rung step flag: True if any layer triggered the rung this step.
+        for rung_k in ("rung1_fired", "rung2_fired", "rung3_fired", "rung4_fired"):
+            if any(rung_k in s for s in entries):
+                agg[rung_k] = any(bool(s.get(rung_k)) for s in entries)
+                agg[rung_k.replace("fired", "fired_layers")] = int(sum(
+                    1 for s in entries if bool(s.get(rung_k))
+                ))
+        # FP16 key cache rollup (paper §3.2 tiered memory). Sum hits/misses
+        # across layers for this step; capacity is a constant per layer.
+        if any("fp16_cache_capacity_blocks" in s for s in entries):
+            agg["fp16_cache_capacity_blocks"] = int(entries[0].get("fp16_cache_capacity_blocks", 0))
+            agg["fp16_cache_hits"] = int(sum(s.get("fp16_cache_hits_step", 0) for s in entries))
+            agg["fp16_cache_misses"] = int(sum(s.get("fp16_cache_misses_step", 0) for s in entries))
+            agg["fp16_cache_evictions"] = int(sum(s.get("fp16_cache_evictions_step", 0) for s in entries))
+            agg["fp16_cache_resident_blocks_sum"] = int(sum(
+                s.get("fp16_cache_resident_blocks", 0) for s in entries
+            ))
+            total_acc = agg["fp16_cache_hits"] + agg["fp16_cache_misses"]
+            agg["fp16_cache_hit_rate"] = (
+                float(agg["fp16_cache_hits"]) / total_acc if total_acc else 0.0
+            )
+        # K* rollup (mean across layers, when adaptive is active).
+        k_star_means = [s.get("k_star_mean") for s in entries if s.get("k_star_mean") is not None]
+        if k_star_means:
+            agg["k_star_mean"] = float(sum(k_star_means) / len(k_star_means))
+            agg["k_star_max"] = int(max(s.get("k_star_max", 0) for s in entries))
+        return agg
 
 
 @dataclass(slots=True)
@@ -345,6 +520,12 @@ class DotCacheLlamaAttention(nn.Module):
                 cache_position=cache_position,
                 **kwargs,
             )
+        if self.adapter.mode == "certified":
+            return self._forward_certified(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                cache_position=cache_position,
+            )
         return self._forward_dotcache(
             hidden_states,
             position_embeddings=position_embeddings,
@@ -368,6 +549,88 @@ class DotCacheLlamaAttention(nn.Module):
         value_states = self.base_attention.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         cos, sin = position_embeddings
         return llama_mod.apply_rotary_pos_emb(query_states, key_states, cos, sin), value_states
+
+    def _project_q_only(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
+    ) -> torch.Tensor:
+        """Project only Q (skip K/V projection since KV is in tiered cache)."""
+        if position_embeddings is None:
+            raise ValueError("position_embeddings are required for the Llama attention path")
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.base_attention.head_dim)
+        query_states = self.base_attention.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        # Apply RoPE to Q only (K doesn't need it — already applied during prefill)
+        cos, sin = position_embeddings
+        # RoPE: apply_rotary_pos_emb returns (q_rotated, k_rotated) — we only need q
+        query_states = llama_mod.apply_rotary_pos_emb(query_states, query_states, cos, sin)[0]
+        return query_states
+
+    def _forward_certified(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        cache_position: torch.LongTensor | None = None,
+    ) -> tuple[torch.Tensor, None]:
+        """Certified attention: fused INT8 scoring + selective attend via Triton kernels."""
+        if tuple(hidden_states.shape[:2]) != (1, 1):
+            raise ValueError("Certified decode mode only supports batch=1 and query_len=1")
+
+        cert_state = self.adapter.certified_state
+        cache = cert_state.tiered_caches.get(self.layer_idx)
+        if cache is None:
+            raise ValueError(f"No tiered cache for layer {self.layer_idx}")
+
+        # Project Q, K, V with RoPE (need K/V for append)
+        (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
+        # query_states: [1, num_q_heads, 1, head_dim]
+        # Keep query in model's native dtype (BF16) — SDPA attend matches dense precision
+        q_all = query_states[0, :, 0, :]  # [num_q, head_dim]
+
+        # Append new K/V to tiered cache (grows context for future steps)
+        # Preserve model's native dtype (BF16) — don't force FP16
+        if cert_state.append_kv:
+            cache.append_token(
+                key_states[0],    # [kv_heads, 1, head_dim]
+                value_states[0],  # [kv_heads, 1, d_v]
+            )
+
+        # Certified attention: Phase 1 (INT8 score+certify) + Phase 2 (selective attend)
+        epsilon = cert_state.layer_epsilons.get(self.layer_idx, cert_state.default_epsilon)
+        gqa_group = self.config.num_attention_heads // self.config.num_key_value_heads
+        q_scale = float(self.base_attention.scaling)
+
+        collect = cert_state.collect_stats
+        context_states, stats = certified_attention_layer(
+            cache, q_all, gqa_group, q_scale, block_epsilon=epsilon,
+            collect_stats=collect,
+            top_k_fp16_keys=cert_state.top_k_fp16_keys,
+            concentration_threshold=cert_state.concentration_threshold,
+            ranking_fallback=cert_state.ranking_fallback,
+            ranking_r=cert_state.ranking_r,
+            ranking_fallback_mode=cert_state.ranking_fallback_mode,
+            tau_cov=cert_state.tau_cov,
+            k_min=cert_state.k_min,
+            k_max=cert_state.k_max,
+            rung1_threshold=cert_state.rung1_threshold,
+            rung1_multiplier=cert_state.rung1_multiplier,
+            score_consistency_check=cert_state.score_consistency_check,
+            eps_guard=cert_state.eps_guard,
+            exploration_rate=cert_state.exploration_rate,
+            phase_timings=cert_state.phase_timings,
+            per_kv_group_topk=cert_state.per_kv_group_topk,
+        )
+
+        # Accumulate stats (only if collection enabled)
+        if collect and stats:
+            cert_state.step_stats.append({"layer": self.layer_idx, **stats})
+
+        # Output projection
+        context_tensor = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
+        projected_output = self.base_attention.o_proj(context_tensor.reshape(1, 1, -1).contiguous())
+
+        return projected_output, None
 
     def _forward_dense_with_capture(
         self,
@@ -551,6 +814,7 @@ class LlamaDotCacheModelAdapter:
         self.output_projection_ms_total = 0.0
         self.layer_runtime_profiles = [LlamaLayerRuntimeProfile(layer_id=layer_id) for layer_id in range(model.config.num_hidden_layers)]
         self._current_token_index_override: int | None = None
+        self.certified_state: CertifiedAttentionState | None = None
         self._install_wrappers()
 
     @property
@@ -564,7 +828,65 @@ class LlamaDotCacheModelAdapter:
             self._wrappers.append(wrapper)
 
     def set_mode(self, mode: AttentionMode) -> None:
+        if mode == "certified" and self.certified_state is None:
+            raise ValueError("Must call load_certified_cache() before setting mode to 'certified'")
         self.mode = mode
+
+    def load_certified_cache(
+        self,
+        past_key_values,
+        *,
+        layer_epsilons: dict[int, float] | None = None,
+        epsilon_profile: Any = None,
+        context_length: int | None = None,
+        default_epsilon: float = 1e-4,
+        block_size: int = 16,
+        use_int4_values: bool = False,
+    ) -> None:
+        """Build tiered caches from prefill KV and prepare for certified decode.
+
+        Args:
+            past_key_values: HF DynamicCache from prefill
+            layer_epsilons: per-layer epsilon dict (simple mode)
+            epsilon_profile: EpsilonProfile instance (context-aware mode)
+            context_length: context length for profile lookup (required if epsilon_profile set)
+            default_epsilon: fallback epsilon for uncalibrated layers
+            block_size: tokens per block for INT8 quantisation
+            use_int4_values: if True, use INT4 per-group values (45% less VRAM)
+        """
+        _ensure_certified_imports()
+        layer_ids = list(range(self.model.config.num_hidden_layers))
+
+        if use_int4_values:
+            from ..kernels.tiered_kv_cache import create_tiered_cache_int4v_from_model
+            tiered_caches = create_tiered_cache_int4v_from_model(
+                past_key_values, layer_ids, block_size=block_size,
+            )
+        else:
+            tiered_caches = create_tiered_cache_from_model(
+                past_key_values, layer_ids, block_size=block_size,
+            )
+
+        # Resolve layer epsilons
+        if epsilon_profile is not None:
+            if context_length is None:
+                # Infer from KV cache length
+                if hasattr(past_key_values, "layers"):
+                    context_length = past_key_values.layers[0].keys[0].shape[1]
+                else:
+                    context_length = 8192  # fallback
+            resolved_epsilons = epsilon_profile.get_layer_epsilons(context_length)
+        elif layer_epsilons is not None:
+            resolved_epsilons = layer_epsilons
+        else:
+            resolved_epsilons = {}
+
+        self.certified_state = CertifiedAttentionState(
+            tiered_caches=tiered_caches,
+            layer_epsilons=resolved_epsilons,
+            default_epsilon=default_epsilon,
+            block_size=block_size,
+        )
 
     def set_capture(self, enabled: bool) -> None:
         self.capture_enabled = bool(enabled)
@@ -606,6 +928,7 @@ class LlamaDotCacheModelAdapter:
         self.capture_step_index = -1
         self.active_trace = None
         self._current_token_index_override = None
+        self.certified_state = None
         self.reset_runtime_metrics()
 
     def reconfigure(self, dotcache_config: DotCacheConfig, *, backend: str | None = None) -> None:
@@ -857,10 +1180,33 @@ def _prefill_prompt(
     adapter: LlamaDotCacheModelAdapter,
     input_ids,
     attention_mask,
+    *,
+    chunk_size: int | None = None,
 ):
     adapter.set_mode("dense")
     adapter.set_capture(False)
-    outputs = _run_inference(lambda: model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True))
+    total_len = int(input_ids.shape[1])
+    if chunk_size is None or chunk_size <= 0 or chunk_size >= total_len:
+        outputs = _run_inference(lambda: model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True))
+    else:
+        past_key_values = None
+        outputs = None
+        for start in range(0, total_len, chunk_size):
+            end = min(start + chunk_size, total_len)
+            chunk_input_ids = input_ids[:, start:end]
+            chunk_attention_mask = attention_mask[:, :end]
+            cache_position = torch.arange(start, end, device=input_ids.device, dtype=torch.long)
+            outputs = _run_inference(
+                lambda cid=chunk_input_ids, cam=chunk_attention_mask, pkv=past_key_values, cp=cache_position: model(
+                    input_ids=cid,
+                    attention_mask=cam,
+                    past_key_values=pkv,
+                    use_cache=True,
+                    cache_position=cp,
+                    position_ids=cp.unsqueeze(0),
+                )
+            )
+            past_key_values = outputs.past_key_values
     if _torch_backend_matches_device(adapter.backend, input_ids.device.type):
         prefill_layers = extract_past_key_values_tensors(outputs.past_key_values)
     else:

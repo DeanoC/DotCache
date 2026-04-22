@@ -1,0 +1,331 @@
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights:   1%|          | 2/291 [00:00<00:24, 11.58it/s]Loading weights:   2%|▏         | 5/291 [00:00<00:16, 16.97it/s]Loading weights:   3%|▎         | 10/291 [00:00<00:10, 25.66it/s]Loading weights:   4%|▍         | 13/291 [00:00<00:10, 26.60it/s]Loading weights:   5%|▌         | 16/291 [00:00<00:10, 25.47it/s]Loading weights:   8%|▊         | 22/291 [00:00<00:10, 26.85it/s]Loading weights:   9%|▊         | 25/291 [00:01<00:10, 24.36it/s]Loading weights:  11%|█         | 31/291 [00:01<00:09, 26.32it/s]Loading weights:  12%|█▏        | 34/291 [00:01<00:10, 24.41it/s]Loading weights:  14%|█▎        | 40/291 [00:01<00:09, 26.72it/s]Loading weights:  15%|█▍        | 43/291 [00:01<00:09, 24.96it/s]Loading weights:  16%|█▌        | 46/291 [00:01<00:09, 25.52it/s]Loading weights:  17%|█▋        | 50/291 [00:02<00:10, 23.95it/s]Loading weights:  19%|█▊        | 54/291 [00:02<00:08, 26.82it/s]Loading weights:  20%|█▉        | 58/291 [00:02<00:09, 24.73it/s]Loading weights:  21%|██        | 61/291 [00:02<00:09, 24.33it/s]Loading weights:  22%|██▏       | 65/291 [00:02<00:09, 24.37it/s]Loading weights:  23%|██▎       | 68/291 [00:02<00:09, 23.95it/s]Loading weights:  25%|██▍       | 72/291 [00:02<00:08, 27.10it/s]Loading weights:  26%|██▌       | 76/291 [00:03<00:08, 25.46it/s]Loading weights:  27%|██▋       | 79/291 [00:03<00:08, 23.89it/s]Loading weights:  29%|██▊       | 83/291 [00:03<00:08, 25.50it/s]Loading weights:  30%|██▉       | 86/291 [00:03<00:08, 23.71it/s]Loading weights:  31%|███▏      | 91/291 [00:03<00:07, 25.75it/s]Loading weights:  32%|███▏      | 94/291 [00:03<00:07, 24.74it/s]Loading weights:  33%|███▎      | 97/291 [00:03<00:08, 22.99it/s]Loading weights:  35%|███▌      | 103/291 [00:04<00:07, 25.33it/s]Loading weights:  36%|███▋      | 106/291 [00:04<00:07, 24.04it/s]Loading weights:  38%|███▊      | 110/291 [00:04<00:07, 25.37it/s]Loading weights:  39%|███▉      | 113/291 [00:04<00:07, 24.94it/s]Loading weights:  40%|████      | 117/291 [00:04<00:06, 28.32it/s]Loading weights:  42%|████▏     | 121/291 [00:04<00:06, 25.53it/s]Loading weights:  43%|████▎     | 124/291 [00:05<00:07, 23.60it/s]Loading weights:  44%|████▎     | 127/291 [00:05<00:07, 23.36it/s]Loading weights:  45%|████▍     | 130/291 [00:05<00:06, 24.25it/s]Loading weights:  46%|████▌     | 133/291 [00:05<00:06, 23.31it/s]Loading weights:  47%|████▋     | 137/291 [00:05<00:06, 24.78it/s]Loading weights:  48%|████▊     | 140/291 [00:05<00:06, 24.48it/s]Loading weights:  49%|████▉     | 144/291 [00:05<00:05, 27.70it/s]Loading weights:  51%|█████     | 148/291 [00:05<00:05, 25.51it/s]Loading weights:  52%|█████▏    | 151/291 [00:06<00:05, 23.42it/s]Loading weights:  53%|█████▎    | 154/291 [00:06<00:05, 23.43it/s]Loading weights:  54%|█████▍    | 157/291 [00:06<00:05, 24.89it/s]Loading weights:  55%|█████▍    | 160/291 [00:06<00:05, 24.37it/s]Loading weights:  56%|█████▋    | 164/291 [00:06<00:05, 24.25it/s]Loading weights:  57%|█████▋    | 167/291 [00:06<00:05, 21.13it/s]Loading weights:  59%|█████▉    | 171/291 [00:06<00:04, 24.42it/s]Loading weights:  60%|██████    | 175/291 [00:07<00:04, 24.49it/s]Loading weights:  61%|██████    | 178/291 [00:07<00:04, 23.59it/s]Loading weights:  63%|██████▎   | 184/291 [00:07<00:04, 25.70it/s]Loading weights:  64%|██████▍   | 187/291 [00:07<00:04, 23.97it/s]Loading weights:  66%|██████▌   | 191/291 [00:07<00:03, 25.54it/s]Loading weights:  67%|██████▋   | 194/291 [00:07<00:03, 24.85it/s]Loading weights:  68%|██████▊   | 198/291 [00:07<00:03, 27.83it/s]Loading weights:  69%|██████▉   | 202/291 [00:08<00:03, 23.58it/s]Loading weights:  70%|███████   | 205/291 [00:08<00:03, 23.02it/s]Loading weights:  73%|███████▎  | 211/291 [00:08<00:03, 25.17it/s]Loading weights:  74%|███████▎  | 214/291 [00:08<00:03, 24.83it/s]Loading weights:  76%|███████▌  | 220/291 [00:08<00:02, 25.90it/s]Loading weights:  77%|███████▋  | 223/291 [00:09<00:02, 25.30it/s]Loading weights:  78%|███████▊  | 226/291 [00:09<00:02, 25.34it/s]Loading weights:  79%|███████▊  | 229/291 [00:09<00:02, 25.54it/s]Loading weights:  80%|███████▉  | 232/291 [00:09<00:02, 24.87it/s]Loading weights:  81%|████████  | 236/291 [00:09<00:02, 25.11it/s]Loading weights:  82%|████████▏ | 239/291 [00:09<00:02, 21.27it/s]Loading weights:  84%|████████▎ | 243/291 [00:09<00:01, 24.61it/s]Loading weights:  85%|████████▍ | 247/291 [00:10<00:01, 23.02it/s]Loading weights:  86%|████████▌ | 250/291 [00:10<00:01, 23.14it/s]Loading weights:  88%|████████▊ | 256/291 [00:10<00:01, 24.67it/s]Loading weights:  89%|████████▉ | 259/291 [00:10<00:01, 23.46it/s]Loading weights:  90%|█████████ | 262/291 [00:10<00:01, 24.80it/s]Loading weights:  91%|█████████ | 265/291 [00:10<00:01, 25.51it/s]Loading weights:  92%|█████████▏| 268/291 [00:10<00:00, 23.55it/s]Loading weights:  94%|█████████▍| 274/291 [00:11<00:00, 26.55it/s]Loading weights:  95%|█████████▌| 277/291 [00:11<00:00, 24.26it/s]Loading weights:  96%|█████████▌| 280/291 [00:11<00:00, 25.01it/s]Loading weights:  97%|█████████▋| 283/291 [00:11<00:00, 24.90it/s]Loading weights:  98%|█████████▊| 286/291 [00:11<00:00, 22.54it/s]Loading weights:  99%|█████████▉| 289/291 [00:11<00:00, 23.90it/s]Loading weights: 100%|██████████| 291/291 [00:11<00:00, 24.76it/s]
+Model: 9.09 GB
+
+NIAH: contexts=[8]K, needles=10, default_epsilon=0.0001, top_k_fp16=4, adaptive=tau_cov=0.995 k=[2,128], ranking_fallback=full(r=1)
+The following generation flags are not valid and may be ignored: ['top_p']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [1/200]      dense 8K d=0.0 n=0 -> OK
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  [2/200]  certified 8K d=0.0 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [3/200]      dense 8K d=0.0 n=1 -> OK
+  [4/200]  certified 8K d=0.0 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [5/200]      dense 8K d=0.0 n=2 -> FAIL
+  [6/200]  certified 8K d=0.0 n=2 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [7/200]      dense 8K d=0.0 n=3 -> FAIL
+  [8/200]  certified 8K d=0.0 n=3 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [9/200]      dense 8K d=0.0 n=4 -> OK
+  [10/200]  certified 8K d=0.0 n=4 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [11/200]      dense 8K d=0.0 n=5 -> FAIL
+  [12/200]  certified 8K d=0.0 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [13/200]      dense 8K d=0.0 n=6 -> OK
+  [14/200]  certified 8K d=0.0 n=6 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [15/200]      dense 8K d=0.0 n=7 -> FAIL
+  [16/200]  certified 8K d=0.0 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [17/200]      dense 8K d=0.0 n=8 -> OK
+  [18/200]  certified 8K d=0.0 n=8 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [19/200]      dense 8K d=0.0 n=9 -> FAIL
+  [20/200]  certified 8K d=0.0 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [21/200]      dense 8K d=0.1 n=0 -> OK
+  [22/200]  certified 8K d=0.1 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [23/200]      dense 8K d=0.1 n=1 -> OK
+  [24/200]  certified 8K d=0.1 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [25/200]      dense 8K d=0.1 n=2 -> FAIL
+  [26/200]  certified 8K d=0.1 n=2 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [27/200]      dense 8K d=0.1 n=3 -> FAIL
+  [28/200]  certified 8K d=0.1 n=3 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [29/200]      dense 8K d=0.1 n=4 -> OK
+  [30/200]  certified 8K d=0.1 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [31/200]      dense 8K d=0.1 n=5 -> FAIL
+  [32/200]  certified 8K d=0.1 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [33/200]      dense 8K d=0.1 n=6 -> FAIL
+  [34/200]  certified 8K d=0.1 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [35/200]      dense 8K d=0.1 n=7 -> FAIL
+  [36/200]  certified 8K d=0.1 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [37/200]      dense 8K d=0.1 n=8 -> FAIL
+  [38/200]  certified 8K d=0.1 n=8 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [39/200]      dense 8K d=0.1 n=9 -> FAIL
+  [40/200]  certified 8K d=0.1 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [41/200]      dense 8K d=0.2 n=0 -> OK
+  [42/200]  certified 8K d=0.2 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [43/200]      dense 8K d=0.2 n=1 -> OK
+  [44/200]  certified 8K d=0.2 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [45/200]      dense 8K d=0.2 n=2 -> OK
+  [46/200]  certified 8K d=0.2 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [47/200]      dense 8K d=0.2 n=3 -> FAIL
+  [48/200]  certified 8K d=0.2 n=3 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [49/200]      dense 8K d=0.2 n=4 -> FAIL
+  [50/200]  certified 8K d=0.2 n=4 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [51/200]      dense 8K d=0.2 n=5 -> FAIL
+  [52/200]  certified 8K d=0.2 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [53/200]      dense 8K d=0.2 n=6 -> FAIL
+  [54/200]  certified 8K d=0.2 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [55/200]      dense 8K d=0.2 n=7 -> FAIL
+  [56/200]  certified 8K d=0.2 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [57/200]      dense 8K d=0.2 n=8 -> FAIL
+  [58/200]  certified 8K d=0.2 n=8 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [59/200]      dense 8K d=0.2 n=9 -> FAIL
+  [60/200]  certified 8K d=0.2 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [61/200]      dense 8K d=0.3 n=0 -> OK
+  [62/200]  certified 8K d=0.3 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [63/200]      dense 8K d=0.3 n=1 -> OK
+  [64/200]  certified 8K d=0.3 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [65/200]      dense 8K d=0.3 n=2 -> OK
+  [66/200]  certified 8K d=0.3 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [67/200]      dense 8K d=0.3 n=3 -> FAIL
+  [68/200]  certified 8K d=0.3 n=3 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [69/200]      dense 8K d=0.3 n=4 -> FAIL
+  [70/200]  certified 8K d=0.3 n=4 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [71/200]      dense 8K d=0.3 n=5 -> FAIL
+  [72/200]  certified 8K d=0.3 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [73/200]      dense 8K d=0.3 n=6 -> FAIL
+  [74/200]  certified 8K d=0.3 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [75/200]      dense 8K d=0.3 n=7 -> FAIL
+  [76/200]  certified 8K d=0.3 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [77/200]      dense 8K d=0.3 n=8 -> FAIL
+  [78/200]  certified 8K d=0.3 n=8 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [79/200]      dense 8K d=0.3 n=9 -> FAIL
+  [80/200]  certified 8K d=0.3 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [81/200]      dense 8K d=0.4 n=0 -> OK
+  [82/200]  certified 8K d=0.4 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [83/200]      dense 8K d=0.4 n=1 -> OK
+  [84/200]  certified 8K d=0.4 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [85/200]      dense 8K d=0.4 n=2 -> OK
+  [86/200]  certified 8K d=0.4 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [87/200]      dense 8K d=0.4 n=3 -> FAIL
+  [88/200]  certified 8K d=0.4 n=3 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [89/200]      dense 8K d=0.4 n=4 -> FAIL
+  [90/200]  certified 8K d=0.4 n=4 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [91/200]      dense 8K d=0.4 n=5 -> FAIL
+  [92/200]  certified 8K d=0.4 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [93/200]      dense 8K d=0.4 n=6 -> FAIL
+  [94/200]  certified 8K d=0.4 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [95/200]      dense 8K d=0.4 n=7 -> FAIL
+  [96/200]  certified 8K d=0.4 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [97/200]      dense 8K d=0.4 n=8 -> FAIL
+  [98/200]  certified 8K d=0.4 n=8 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [99/200]      dense 8K d=0.4 n=9 -> FAIL
+  [100/200]  certified 8K d=0.4 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [101/200]      dense 8K d=0.5 n=0 -> OK
+  [102/200]  certified 8K d=0.5 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [103/200]      dense 8K d=0.5 n=1 -> OK
+  [104/200]  certified 8K d=0.5 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [105/200]      dense 8K d=0.5 n=2 -> OK
+  [106/200]  certified 8K d=0.5 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [107/200]      dense 8K d=0.5 n=3 -> OK
+  [108/200]  certified 8K d=0.5 n=3 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [109/200]      dense 8K d=0.5 n=4 -> OK
+  [110/200]  certified 8K d=0.5 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [111/200]      dense 8K d=0.5 n=5 -> FAIL
+  [112/200]  certified 8K d=0.5 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [113/200]      dense 8K d=0.5 n=6 -> FAIL
+  [114/200]  certified 8K d=0.5 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [115/200]      dense 8K d=0.5 n=7 -> FAIL
+  [116/200]  certified 8K d=0.5 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [117/200]      dense 8K d=0.5 n=8 -> FAIL
+  [118/200]  certified 8K d=0.5 n=8 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [119/200]      dense 8K d=0.5 n=9 -> FAIL
+  [120/200]  certified 8K d=0.5 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [121/200]      dense 8K d=0.6 n=0 -> OK
+  [122/200]  certified 8K d=0.6 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [123/200]      dense 8K d=0.6 n=1 -> OK
+  [124/200]  certified 8K d=0.6 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [125/200]      dense 8K d=0.6 n=2 -> OK
+  [126/200]  certified 8K d=0.6 n=2 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [127/200]      dense 8K d=0.6 n=3 -> FAIL
+  [128/200]  certified 8K d=0.6 n=3 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [129/200]      dense 8K d=0.6 n=4 -> FAIL
+  [130/200]  certified 8K d=0.6 n=4 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [131/200]      dense 8K d=0.6 n=5 -> FAIL
+  [132/200]  certified 8K d=0.6 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [133/200]      dense 8K d=0.6 n=6 -> FAIL
+  [134/200]  certified 8K d=0.6 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [135/200]      dense 8K d=0.6 n=7 -> FAIL
+  [136/200]  certified 8K d=0.6 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [137/200]      dense 8K d=0.6 n=8 -> FAIL
+  [138/200]  certified 8K d=0.6 n=8 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [139/200]      dense 8K d=0.6 n=9 -> FAIL
+  [140/200]  certified 8K d=0.6 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [141/200]      dense 8K d=0.7 n=0 -> OK
+  [142/200]  certified 8K d=0.7 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [143/200]      dense 8K d=0.7 n=1 -> OK
+  [144/200]  certified 8K d=0.7 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [145/200]      dense 8K d=0.7 n=2 -> OK
+  [146/200]  certified 8K d=0.7 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [147/200]      dense 8K d=0.7 n=3 -> OK
+  [148/200]  certified 8K d=0.7 n=3 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [149/200]      dense 8K d=0.7 n=4 -> OK
+  [150/200]  certified 8K d=0.7 n=4 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [151/200]      dense 8K d=0.7 n=5 -> FAIL
+  [152/200]  certified 8K d=0.7 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [153/200]      dense 8K d=0.7 n=6 -> FAIL
+  [154/200]  certified 8K d=0.7 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [155/200]      dense 8K d=0.7 n=7 -> FAIL
+  [156/200]  certified 8K d=0.7 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [157/200]      dense 8K d=0.7 n=8 -> FAIL
+  [158/200]  certified 8K d=0.7 n=8 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [159/200]      dense 8K d=0.7 n=9 -> FAIL
+  [160/200]  certified 8K d=0.7 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [161/200]      dense 8K d=0.8 n=0 -> OK
+  [162/200]  certified 8K d=0.8 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [163/200]      dense 8K d=0.8 n=1 -> OK
+  [164/200]  certified 8K d=0.8 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [165/200]      dense 8K d=0.8 n=2 -> OK
+  [166/200]  certified 8K d=0.8 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [167/200]      dense 8K d=0.8 n=3 -> FAIL
+  [168/200]  certified 8K d=0.8 n=3 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [169/200]      dense 8K d=0.8 n=4 -> OK
+  [170/200]  certified 8K d=0.8 n=4 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [171/200]      dense 8K d=0.8 n=5 -> FAIL
+  [172/200]  certified 8K d=0.8 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [173/200]      dense 8K d=0.8 n=6 -> FAIL
+  [174/200]  certified 8K d=0.8 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [175/200]      dense 8K d=0.8 n=7 -> FAIL
+  [176/200]  certified 8K d=0.8 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [177/200]      dense 8K d=0.8 n=8 -> OK
+  [178/200]  certified 8K d=0.8 n=8 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [179/200]      dense 8K d=0.8 n=9 -> FAIL
+  [180/200]  certified 8K d=0.8 n=9 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [181/200]      dense 8K d=0.9 n=0 -> OK
+  [182/200]  certified 8K d=0.9 n=0 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [183/200]      dense 8K d=0.9 n=1 -> OK
+  [184/200]  certified 8K d=0.9 n=1 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [185/200]      dense 8K d=0.9 n=2 -> OK
+  [186/200]  certified 8K d=0.9 n=2 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [187/200]      dense 8K d=0.9 n=3 -> FAIL
+  [188/200]  certified 8K d=0.9 n=3 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [189/200]      dense 8K d=0.9 n=4 -> OK
+  [190/200]  certified 8K d=0.9 n=4 -> OK
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [191/200]      dense 8K d=0.9 n=5 -> FAIL
+  [192/200]  certified 8K d=0.9 n=5 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [193/200]      dense 8K d=0.9 n=6 -> FAIL
+  [194/200]  certified 8K d=0.9 n=6 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [195/200]      dense 8K d=0.9 n=7 -> FAIL
+  [196/200]  certified 8K d=0.9 n=7 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [197/200]      dense 8K d=0.9 n=8 -> FAIL
+  [198/200]  certified 8K d=0.9 n=8 -> FAIL
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [199/200]      dense 8K d=0.9 n=9 -> FAIL
+  [200/200]  certified 8K d=0.9 n=9 -> FAIL
+
+dense: 39/100 correct (39.0%)
+
+certified: 37/100 correct (37.0%)
+
+*** 4 CRITICAL FAILURES: dense OK but certified FAILED ***
+  8K d=0.1 n=4: expected 'RX-9031', got ' secret, code, location, budget, or ID mentioned i'
+  8K d=0.5 n=4: expected 'RX-9031', got ' secret, code, location, budget, or ID mentioned i'
+  8K d=0.6 n=2: expected 'Zurich', got ' secret is the history of mathematics. The code is'
+  8K d=0.7 n=3: expected '4.7 million', got ' secret is the history of mathematics. The code is'
+
+==================================================
+Dense accuracy:     39.0%
+Certified accuracy: 37.0%
+Critical failures:  4
+Ranking fallback: mode=full r=1 disagree_r1=0.1% disagree_r3=2.4% triggered=0.1% (5182/4491264)
+JSON -> /workspace/DotCache/benchmarks/results/niah_8k_tau_sweep_20260422/niah_8k_tau0995_n100.json

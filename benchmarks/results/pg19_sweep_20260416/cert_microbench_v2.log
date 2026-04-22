@@ -1,0 +1,96 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights:   0%|          | 1/291 [00:01<09:37,  1.99s/it]Loading weights:   1%|          | 2/291 [00:04<10:01,  2.08s/it]Loading weights:   1%|▏         | 4/291 [00:04<04:21,  1.10it/s]Loading weights:   2%|▏         | 5/291 [00:04<03:37,  1.32it/s]Loading weights:   2%|▏         | 6/291 [00:05<02:57,  1.61it/s]Loading weights:   3%|▎         | 9/291 [00:05<01:21,  3.46it/s]Loading weights:   4%|▍         | 11/291 [00:05<00:57,  4.87it/s]Loading weights:   4%|▍         | 13/291 [00:05<00:57,  4.86it/s]Loading weights:   5%|▌         | 15/291 [00:06<01:14,  3.72it/s]Loading weights:   6%|▌         | 18/291 [00:06<00:47,  5.75it/s]Loading weights:   7%|▋         | 20/291 [00:06<00:38,  7.12it/s]Loading weights:   8%|▊         | 22/291 [00:07<00:45,  5.95it/s]Loading weights:   8%|▊         | 24/291 [00:08<01:03,  4.23it/s]Loading weights:   9%|▉         | 27/291 [00:08<00:41,  6.31it/s]Loading weights:  10%|▉         | 29/291 [00:08<00:34,  7.70it/s]Loading weights:  11%|█         | 31/291 [00:08<00:39,  6.60it/s]Loading weights:  11%|█▏        | 33/291 [00:09<00:56,  4.58it/s]Loading weights:  12%|█▏        | 36/291 [00:09<00:37,  6.73it/s]Loading weights:  13%|█▎        | 38/291 [00:09<00:31,  8.03it/s]Loading weights:  14%|█▎        | 40/291 [00:10<00:36,  6.83it/s]Loading weights:  14%|█▍        | 42/291 [00:11<00:57,  4.33it/s]Loading weights:  15%|█▌        | 45/291 [00:11<00:39,  6.25it/s]Loading weights:  17%|█▋        | 49/291 [00:11<00:34,  7.03it/s]Loading weights:  18%|█▊        | 51/291 [00:12<00:53,  4.45it/s]Loading weights:  19%|█▊        | 54/291 [00:12<00:39,  6.05it/s]Loading weights:  19%|█▉        | 56/291 [00:12<00:33,  7.08it/s]Loading weights:  20%|█▉        | 58/291 [00:13<00:37,  6.22it/s]Loading weights:  21%|██        | 60/291 [00:14<00:48,  4.77it/s]Loading weights:  22%|██▏       | 64/291 [00:14<00:31,  7.16it/s]Loading weights:  23%|██▎       | 67/291 [00:14<00:31,  7.21it/s]Loading weights:  24%|██▎       | 69/291 [00:15<00:41,  5.35it/s]Loading weights:  25%|██▌       | 73/291 [00:15<00:28,  7.64it/s]Loading weights:  26%|██▌       | 76/291 [00:16<00:30,  6.94it/s]Loading weights:  27%|██▋       | 78/291 [00:16<00:42,  5.01it/s]Loading weights:  28%|██▊       | 81/291 [00:17<00:31,  6.60it/s]Loading weights:  29%|██▊       | 83/291 [00:17<00:27,  7.61it/s]Loading weights:  29%|██▉       | 85/291 [00:17<00:30,  6.67it/s]Loading weights:  30%|██▉       | 87/291 [00:18<00:41,  4.91it/s]Loading weights:  31%|███       | 90/291 [00:18<00:29,  6.85it/s]Loading weights:  32%|███▏      | 94/291 [00:19<00:28,  6.89it/s]Loading weights:  33%|███▎      | 96/291 [00:19<00:41,  4.69it/s]Loading weights:  34%|███▍      | 100/291 [00:20<00:28,  6.75it/s]Loading weights:  35%|███▌      | 103/291 [00:20<00:26,  6.96it/s]Loading weights:  36%|███▌      | 105/291 [00:21<00:37,  4.92it/s]Loading weights:  37%|███▋      | 108/291 [00:21<00:27,  6.63it/s]Loading weights:  38%|███▊      | 110/291 [00:21<00:23,  7.71it/s]Loading weights:  38%|███▊      | 112/291 [00:21<00:24,  7.21it/s]Loading weights:  39%|███▉      | 114/291 [00:22<00:37,  4.77it/s]Loading weights:  40%|████      | 117/291 [00:22<00:26,  6.53it/s]Loading weights:  41%|████      | 119/291 [00:22<00:21,  7.86it/s]Loading weights:  42%|████▏     | 121/291 [00:23<00:25,  6.61it/s]Loading weights:  42%|████▏     | 123/291 [00:24<00:39,  4.29it/s]Loading weights:  44%|████▎     | 127/291 [00:24<00:24,  6.64it/s]Loading weights:  45%|████▍     | 130/291 [00:24<00:24,  6.57it/s]Loading weights:  45%|████▌     | 132/291 [00:25<00:32,  4.92it/s]Loading weights:  47%|████▋     | 136/291 [00:25<00:21,  7.30it/s]Loading weights:  48%|████▊     | 139/291 [00:26<00:20,  7.35it/s]Loading weights:  48%|████▊     | 141/291 [00:26<00:28,  5.32it/s]Loading weights:  50%|████▉     | 145/291 [00:27<00:19,  7.66it/s]Loading weights:  51%|█████     | 148/291 [00:27<00:19,  7.39it/s]Loading weights:  52%|█████▏    | 150/291 [00:28<00:27,  5.14it/s]Loading weights:  53%|█████▎    | 153/291 [00:28<00:19,  6.97it/s]Loading weights:  53%|█████▎    | 155/291 [00:28<00:16,  8.13it/s]Loading weights:  54%|█████▍    | 157/291 [00:29<00:20,  6.55it/s]Loading weights:  55%|█████▍    | 159/291 [00:29<00:26,  4.90it/s]Loading weights:  56%|█████▌    | 163/291 [00:29<00:17,  7.30it/s]Loading weights:  57%|█████▋    | 166/291 [00:30<00:17,  7.34it/s]Loading weights:  58%|█████▊    | 168/291 [00:31<00:23,  5.33it/s]Loading weights:  59%|█████▉    | 172/291 [00:31<00:15,  7.55it/s]Loading weights:  60%|██████    | 175/291 [00:31<00:16,  7.23it/s]Loading weights:  61%|██████    | 177/291 [00:32<00:23,  4.94it/s]Loading weights:  62%|██████▏   | 180/291 [00:32<00:17,  6.49it/s]Loading weights:  63%|██████▎   | 182/291 [00:32<00:14,  7.68it/s]Loading weights:  63%|██████▎   | 184/291 [00:33<00:15,  6.71it/s]Loading weights:  64%|██████▍   | 186/291 [00:34<00:21,  4.84it/s]Loading weights:  65%|██████▍   | 189/291 [00:34<00:15,  6.76it/s]Loading weights:  66%|██████▌   | 191/291 [00:34<00:12,  7.85it/s]Loading weights:  66%|██████▋   | 193/291 [00:34<00:15,  6.53it/s]Loading weights:  67%|██████▋   | 195/291 [00:35<00:19,  4.92it/s]Loading weights:  68%|██████▊   | 199/291 [00:35<00:12,  7.62it/s]Loading weights:  69%|██████▉   | 202/291 [00:36<00:12,  7.35it/s]Loading weights:  70%|███████   | 204/291 [00:36<00:17,  5.04it/s]Loading weights:  71%|███████   | 207/291 [00:36<00:12,  6.92it/s]Loading weights:  72%|███████▏  | 209/291 [00:37<00:10,  7.88it/s]Loading weights:  73%|███████▎  | 211/291 [00:37<00:11,  7.26it/s]Loading weights:  73%|███████▎  | 213/291 [00:38<00:16,  4.77it/s]Loading weights:  75%|███████▍  | 217/291 [00:38<00:10,  7.22it/s]Loading weights:  76%|███████▌  | 220/291 [00:38<00:09,  7.26it/s]Loading weights:  76%|███████▋  | 222/291 [00:39<00:12,  5.36it/s]Loading weights:  78%|███████▊  | 226/291 [00:39<00:08,  7.82it/s]Loading weights:  79%|███████▊  | 229/291 [00:40<00:08,  7.38it/s]Loading weights:  79%|███████▉  | 231/291 [00:40<00:10,  5.52it/s]Loading weights:  81%|████████  | 235/291 [00:40<00:07,  7.82it/s]Loading weights:  82%|████████▏ | 238/291 [00:41<00:07,  7.51it/s]Loading weights:  82%|████████▏ | 240/291 [00:42<00:09,  5.58it/s]Loading weights:  84%|████████▍ | 244/291 [00:42<00:06,  7.74it/s]Loading weights:  85%|████████▍ | 247/291 [00:42<00:05,  7.39it/s]Loading weights:  86%|████████▌ | 249/291 [00:43<00:07,  5.36it/s]Loading weights:  87%|████████▋ | 253/291 [00:43<00:04,  7.68it/s]Loading weights:  88%|████████▊ | 256/291 [00:44<00:04,  7.41it/s]Loading weights:  89%|████████▊ | 258/291 [00:45<00:06,  4.89it/s]Loading weights:  90%|█████████ | 262/291 [00:45<00:04,  6.76it/s]Loading weights:  91%|█████████ | 265/291 [00:45<00:03,  6.64it/s]Loading weights:  91%|█████████▏| 266/291 [00:46<00:04,  5.52it/s]Loading weights:  92%|█████████▏| 267/291 [00:46<00:04,  4.96it/s]Loading weights:  93%|█████████▎| 270/291 [00:46<00:03,  6.86it/s]Loading weights:  93%|█████████▎| 271/291 [00:46<00:02,  7.20it/s]Loading weights:  94%|█████████▍| 274/291 [00:47<00:02,  7.20it/s]Loading weights:  95%|█████████▍| 275/291 [00:47<00:02,  5.82it/s]Loading weights:  95%|█████████▍| 276/291 [00:47<00:03,  4.91it/s]Loading weights:  96%|█████████▌| 280/291 [00:47<00:01,  8.36it/s]Loading weights:  97%|█████████▋| 283/291 [00:48<00:00,  9.21it/s]Loading weights:  98%|█████████▊| 285/291 [00:49<00:01,  5.20it/s]Loading weights:  99%|█████████▉| 289/291 [00:49<00:00,  7.59it/s]Loading weights: 100%|██████████| 291/291 [00:49<00:00,  5.90it/s]
+/usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+WALL: 100 cert steps in 8.83s -> 88.3 ms/step
+Profile dumped to: benchmarks/results/pg19_sweep_20260416/cert_microbench.prof
+
+=== TOP 40 by cumulative time ===
+         6796156 function calls (6428481 primitive calls) in 10.454 seconds
+
+   Ordered by: cumulative time
+   List reduced from 468 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+42200/100    0.063    0.000   10.928    0.109 /usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py:1769(_wrapped_call_impl)
+42200/100    0.098    0.000   10.928    0.109 /usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py:1777(_call_impl)
+      100    0.001    0.000   10.927    0.109 /usr/local/lib/python3.12/dist-packages/transformers/utils/generic.py:870(wrapper)
+      100    0.002    0.000   10.926    0.109 /usr/local/lib/python3.12/dist-packages/transformers/models/llama/modeling_llama.py:443(forward)
+      100    0.001    0.000   10.916    0.109 /usr/local/lib/python3.12/dist-packages/transformers/utils/generic.py:890(wrapper)
+      100    0.002    0.000   10.914    0.109 /usr/local/lib/python3.12/dist-packages/transformers/utils/output_capturing.py:217(wrapper)
+      100    0.014    0.000   10.814    0.108 /usr/local/lib/python3.12/dist-packages/transformers/models/llama/modeling_llama.py:372(forward)
+     3200    0.007    0.000   10.803    0.003 /usr/local/lib/python3.12/dist-packages/transformers/modeling_layers.py:59(__call__)
+     3200    0.084    0.000   10.775    0.003 /usr/local/lib/python3.12/dist-packages/transformers/models/llama/modeling_llama.py:303(forward)
+     3200    0.016    0.000    7.501    0.002 /DotCache/dotcache/integrations/llama.py:379(forward)
+     3200    0.101    0.000    7.486    0.002 /DotCache/dotcache/integrations/llama.py:453(_forward_certified)
+    22400    0.107    0.000    6.972    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/nn/modules.py:1097(forward)
+    22400    0.026    0.000    6.833    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:351(matmul)
+    22400    0.054    0.000    6.807    0.000 /usr/local/lib/python3.12/dist-packages/torch/autograd/function.py:560(apply)
+    22400    0.249    0.000    6.614    0.000 {built-in method apply}
+    22400    0.296    0.000    6.365    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:96(forward)
+118524/44800    0.072    0.000    5.295    0.000 /usr/local/lib/python3.12/dist-packages/torch/_compile.py:41(inner)
+118524/44800    0.157    0.000    5.255    0.000 /usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py:924(_fn)
+118524/44800    0.129    0.000    5.120    0.000 /usr/local/lib/python3.12/dist-packages/torch/library.py:750(func_no_dynamo)
+96124/51324    0.038    0.000    4.833    0.000 /usr/local/lib/python3.12/dist-packages/torch/_ops.py:828(__call__)
+     3200    0.032    0.000    3.841    0.001 /DotCache/dotcache/integrations/llama.py:421(_project_qkv)
+    22400    0.010    0.000    3.476    0.000 /usr/local/lib/python3.12/dist-packages/torch/_ops.py:1232(__call__)
+    22400    0.143    0.000    3.466    0.000 {built-in method torch._ops.bitsandbytes.int8_mixed_scaled_mm}
+    22400    0.283    0.000    3.229    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/default/ops.py:61(_)
+     3200    0.044    0.000    2.725    0.001 /usr/local/lib/python3.12/dist-packages/transformers/models/llama/modeling_llama.py:182(forward)
+    22400    0.052    0.000    2.236    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/default/ops.py:100(_)
+     3200    0.296    0.000    2.233    0.001 /DotCache/dotcache/kernels/certified_attention.py:150(certified_attention_layer)
+    22400    0.032    0.000    2.196    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/functional.py:2000(int8_vectorwise_quant)
+    22400    0.855    0.000    1.843    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/cuda/ops.py:127(_)
+    22400    0.066    0.000    1.187    0.000 {built-in method torch._ops.bitsandbytes.}
+    22400    0.077    0.000    1.039    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/cuda/ops.py:14(_)
+    22400    0.549    0.000    0.891    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/cuda/ops.py:25(_int8_linear_matmul_impl)
+     3200    0.041    0.000    0.810    0.000 /DotCache/dotcache/kernels/fused_score_certify.py:322(fused_score_certify_multihead)
+    22400    0.243    0.000    0.739    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/cuda/ops.py:88(_)
+    87600    0.656    0.000    0.656    0.000 {method 'to' of 'torch._C.TensorBase' objects}
+     3200    0.015    0.000    0.599    0.000 /usr/local/lib/python3.12/dist-packages/triton/runtime/jit.py:390(<lambda>)
+     3200    0.089    0.000    0.584    0.000 /usr/local/lib/python3.12/dist-packages/triton/runtime/jit.py:547(run)
+     3200    0.104    0.000    0.472    0.000 /DotCache/dotcache/kernels/certified_attention.py:89(sdpa_attend_with_skip)
+     6500    0.167    0.000    0.400    0.000 /usr/local/lib/python3.12/dist-packages/transformers/models/llama/modeling_llama.py:62(forward)
+   291200    0.062    0.000    0.371    0.000 /usr/local/lib/python3.12/dist-packages/torch/__init__.py:1669(_check)
+
+
+
+=== TOP 30 by tottime (self time) ===
+         6796156 function calls (6428481 primitive calls) in 10.454 seconds
+
+   Ordered by: internal time
+   List reduced from 468 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+    22400    0.855    0.000    1.843    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/cuda/ops.py:127(_)
+    87600    0.656    0.000    0.656    0.000 {method 'to' of 'torch._C.TensorBase' objects}
+    22400    0.549    0.000    0.891    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/cuda/ops.py:25(_int8_linear_matmul_impl)
+   108552    0.309    0.000    0.309    0.000 {built-in method torch.empty}
+     3200    0.296    0.000    2.233    0.001 /DotCache/dotcache/kernels/certified_attention.py:150(certified_attention_layer)
+    22400    0.296    0.000    6.365    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/autograd/_functions.py:96(forward)
+    22400    0.283    0.000    3.229    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/default/ops.py:61(_)
+    32124    0.251    0.000    0.251    0.000 {method 'any' of 'torch._C.TensorBase' objects}
+    60800    0.250    0.000    0.250    0.000 {method 'reshape' of 'torch._C.TensorBase' objects}
+    22400    0.249    0.000    6.614    0.000 {built-in method apply}
+    22400    0.243    0.000    0.739    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/backends/cuda/ops.py:88(_)
+     3200    0.205    0.000    0.205    0.000 {method 'item' of 'torch._C.TensorBase' objects}
+   291200    0.185    0.000    0.308    0.000 /usr/local/lib/python3.12/dist-packages/torch/__init__.py:1637(_check_with)
+    22592    0.182    0.000    0.182    0.000 {method 'abs' of 'torch._C.TensorBase' objects}
+     6500    0.167    0.000    0.400    0.000 /usr/local/lib/python3.12/dist-packages/transformers/models/llama/modeling_llama.py:62(forward)
+     6524    0.158    0.000    0.158    0.000 {built-in method torch.argwhere}
+     6524    0.158    0.000    0.158    0.000 {method 'addmm' of 'torch._C.TensorBase' objects}
+118524/44800    0.157    0.000    5.255    0.000 /usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py:924(_fn)
+     3200    0.144    0.000    0.297    0.000 /DotCache/dotcache/kernels/tiered_kv_cache.py:292(append_token)
+    22400    0.143    0.000    3.466    0.000 {built-in method torch._ops.bitsandbytes.int8_mixed_scaled_mm}
+118524/44800    0.129    0.000    5.120    0.000 /usr/local/lib/python3.12/dist-packages/torch/library.py:750(func_no_dynamo)
+     3200    0.128    0.000    0.276    0.000 /usr/local/lib/python3.12/dist-packages/transformers/models/llama/modeling_llama.py:145(apply_rotary_pos_emb)
+    15524    0.128    0.000    0.128    0.000 {built-in method torch.cat}
+    67200    0.127    0.000    0.145    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/functional.py:427(_get_tensor_stream)
+     6524    0.108    0.000    0.122    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/_ops.py:127(_)
+    22400    0.107    0.000    6.972    0.000 /usr/local/lib/python3.12/dist-packages/bitsandbytes/nn/modules.py:1097(forward)
+     3200    0.104    0.000    0.472    0.000 /DotCache/dotcache/kernels/certified_attention.py:89(sdpa_attend_with_skip)
+     3200    0.103    0.000    0.103    0.000 {built-in method torch._C._nn.scaled_dot_product_attention}
+     3200    0.101    0.000    7.486    0.002 /DotCache/dotcache/integrations/llama.py:453(_forward_certified)
+42200/100    0.098    0.000   10.928    0.109 /usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py:1777(_call_impl)
+
+

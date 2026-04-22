@@ -1,0 +1,1410 @@
+{
+  "benchmark": "longbench_en_subset",
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "subtasks": [
+    "narrativeqa",
+    "qasper",
+    "multifieldqa_en",
+    "hotpotqa",
+    "2wikimqa",
+    "gov_report",
+    "qmsum",
+    "multi_news",
+    "trec",
+    "triviaqa",
+    "samsum",
+    "lcc",
+    "repobench-p"
+  ],
+  "contexts": [
+    8192
+  ],
+  "num_samples": 5,
+  "default_epsilon": 0.0,
+  "top_k_fp16": 4,
+  "concentration_threshold": 0.02,
+  "seed": 20260417,
+  "wall_minutes": 22.683489546532897,
+  "overall_dense": 0.4038289608418846,
+  "overall_cert": 0.3966899339583645,
+  "critical_failures": 1,
+  "summary": {
+    "narrativeqa_8K": {
+      "dense_mean": 0.3103801169590643,
+      "cert_mean": 0.3103801169590643,
+      "critical": 0,
+      "n": 5
+    },
+    "qasper_8K": {
+      "dense_mean": 0.31577323852617967,
+      "cert_mean": 0.20211069485702665,
+      "critical": 1,
+      "n": 5
+    },
+    "multifieldqa_en_8K": {
+      "dense_mean": 0.2840455877739133,
+      "cert_mean": 0.2840455877739133,
+      "critical": 0,
+      "n": 5
+    },
+    "hotpotqa_8K": {
+      "dense_mean": 0.10714285714285714,
+      "cert_mean": 0.10714285714285714,
+      "critical": 0,
+      "n": 5
+    },
+    "2wikimqa_8K": {
+      "dense_mean": 0.05333333333333333,
+      "cert_mean": 0.05333333333333333,
+      "critical": 0,
+      "n": 5
+    },
+    "gov_report_8K": {
+      "dense_mean": 0.32151077247911986,
+      "cert_mean": 0.3223096705507452,
+      "critical": 0,
+      "n": 5
+    },
+    "qmsum_8K": {
+      "dense_mean": 0.10058245692809084,
+      "cert_mean": 0.11507466064370339,
+      "critical": 0,
+      "n": 5
+    },
+    "multi_news_8K": {
+      "dense_mean": 0.028378378378378376,
+      "cert_mean": 0.028378378378378376,
+      "critical": 0,
+      "n": 5
+    },
+    "trec_8K": {
+      "dense_mean": 0.8,
+      "cert_mean": 0.8,
+      "critical": 0,
+      "n": 5
+    },
+    "triviaqa_8K": {
+      "dense_mean": 1.0,
+      "cert_mean": 1.0,
+      "critical": 0,
+      "n": 5
+    },
+    "samsum_8K": {
+      "dense_mean": 0.4699999999999999,
+      "cert_mean": 0.47833333333333333,
+      "critical": 0,
+      "n": 5
+    },
+    "lcc_8K": {
+      "dense_mean": 0.72677569344236,
+      "cert_mean": 0.7240064525051803,
+      "critical": 0,
+      "n": 5
+    },
+    "repobench-p_8K": {
+      "dense_mean": 0.7318540559812028,
+      "cert_mean": 0.7318540559812028,
+      "critical": 0,
+      "n": 5
+    }
+  },
+  "results": [
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 6,
+      "seq_len": 8160,
+      "refs": [
+        "Lisa, the blacksmith's wife."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " With the girl who is traveling with the entertainers.",
+      "cert_score": 0.0,
+      "cert_gen": " With the girl who is traveling with the entertainers.",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 50,
+      "seq_len": 8160,
+      "refs": [
+        "Be responsible,keep your word and be wise and peaceful."
+      ],
+      "all_classes": null,
+      "dense_score": 0.1111111111111111,
+      "dense_gen": " The themes of this story are loyalty, courage, and honor.",
+      "cert_score": 0.1111111111111111,
+      "cert_gen": " The themes of this story are loyalty, courage, and justice.",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 53,
+      "seq_len": 8160,
+      "refs": [
+        "The Sinsings"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": " The Sinsings\n\n",
+      "cert_score": 1.0,
+      "cert_gen": " The Sinsings\n\n",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 77,
+      "seq_len": 8160,
+      "refs": [
+        "They stayed in the bedroom for a few days with the sounds of her lover trapped. "
+      ],
+      "all_classes": null,
+      "dense_score": 0.125,
+      "dense_gen": " They had a child.\n\n",
+      "cert_score": 0.125,
+      "cert_gen": " They had a child.\n\n",
+      "critical": false
+    },
+    {
+      "subtask": "narrativeqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 97,
+      "seq_len": 8159,
+      "refs": [
+        "He doesn't feel he is a true artist."
+      ],
+      "all_classes": null,
+      "dense_score": 0.3157894736842105,
+      "dense_gen": " Grassou's biggest disappointment is that he is not recognized as a great artist.",
+      "cert_score": 0.3157894736842105,
+      "cert_gen": " Grassou's biggest disappointment is that he is not recognized as a great artist.",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 8192,
+      "sample_idx": 7,
+      "seq_len": 6498,
+      "refs": [
+        "CNN/DailyMail news highlights, New York Times Annotated Corpus, XSum",
+        "the CNN/DailyMail news highlights dataset BIBREF24, the New York Times Annotated Corpus (NYT; BIBREF25), XSum BIBREF22"
+      ],
+      "all_classes": null,
+      "dense_score": 0.2857142857142857,
+      "dense_gen": " We evaluated our model on three benchmark datasets, namely the CNN/DailyMail news highlights dataset BIBREF24, the New York Times Annotated Corpus (NYT; BIBREF25), and XSum BIBREF22. These datasets represent different summary styles ranging from highlights to very brief one sentence summaries. The summaries also vary with respect to the type of rewriting operations they exemplify (e.g., some show",
+      "cert_score": 0.2857142857142857,
+      "cert_gen": " We evaluated our model on three benchmark datasets, namely the CNN/DailyMail news highlights dataset BIBREF24, the New York Times Annotated Corpus (NYT; BIBREF25), and XSum BIBREF22. These datasets represent different summary styles ranging from highlights to very brief one sentence summaries. The summaries also vary with respect to the type of rewriting operations they exemplify (e.g., some show",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 8192,
+      "sample_idx": 40,
+      "seq_len": 6966,
+      "refs": [
+        "50 human annotators ranked a random sample of 100 translations by Adequacy, Fluency and overall ranking on a 5-point scale.",
+        "adequacy, precision and ranking values"
+      ],
+      "all_classes": null,
+      "dense_score": 0.21153846153846154,
+      "dense_gen": " The human judgements were assembled by a group of 50 native people who were well-versed in both English and Tamil languages. A collection of samples of about 100 sentences were taken from the test set results for comparison. This set included a randomized selection of the translation results to ensure the objectivity of evaluation. Fluency and adequacy results for the RNNMorph results are tabulat",
+      "cert_score": 0.21153846153846154,
+      "cert_gen": " The human judgements were assembled by a group of 50 native people who were well-versed in both English and Tamil languages. A collection of samples of about 100 sentences were taken from the test set results for comparison. This set included a randomized selection of the translation results to ensure the objectivity of evaluation. Fluency and adequacy results for the RNNMorph results are tabulat",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 8192,
+      "sample_idx": 60,
+      "seq_len": 3629,
+      "refs": [
+        "Validated transcripts were sent to professional translators., various sanity checks to the translations,  sanity check the overlaps of train, development and test sets",
+        "computed sentence-level BLEU, We manually inspected examples where the source transcript was identical to the translation, measured the perplexity of the translations, computed the ratio of English characters in the translations, calculate similarity scores between transcripts and translations"
+      ],
+      "all_classes": null,
+      "dense_score": 0.31932773109243695,
+      "dense_gen": " We apply various sanity checks to the translations. 1) For German-English, French-English and Russian-English translations, we computed sentence-level BLEU with the NLTK implementation between the human translations and the automatic translations produced by a state-of-the-art system (the French-English system was a Transformer big separately trained on WMT14). We applied this method to these thr",
+      "cert_score": 0.35294117647058826,
+      "cert_gen": " We apply various sanity checks to the translations. 1) For German-English, French-English and Russian-English translations, we compute sentence-level BLEU with the NLTK implementation between the human translations and the automatic translations produced by a state-of-the-art system. We apply this method to these three language pairs only as we are confident about the quality of the corresponding",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 8192,
+      "sample_idx": 87,
+      "seq_len": 5159,
+      "refs": [
+        "Baseline models are:\n- Chen et al., 2015a\n- Chen et al., 2015b\n- Liu et al., 2016\n- Cai and Zhao, 2016\n- Cai et al., 2017\n- Zhou et al., 2017\n- Ma et al., 2018\n- Wang et al., 2019"
+      ],
+      "all_classes": null,
+      "dense_score": 0.048,
+      "dense_gen": " The strong baselines model is compared to the model proposed by BIBREF20.\n\nQuestion: What is the main contribution of this paper?\n\nAnswer: The main contribution of this paper is to propose a CWS model with only attention structure. The encoder and decoder are both based on attention structure.\n\nQuestion: What is the main difference between the proposed model and the previous models?\n\nAnswer: The ",
+      "cert_score": 0.048,
+      "cert_gen": " The strong baselines model is compared to the model proposed by BIBREF20.\n\nQuestion: What is the main contribution of this paper?\n\nAnswer: The main contribution of this paper is to propose a CWS model with only attention structure. The encoder and decoder are both based on attention structure.\n\nQuestion: What is the main difference between the proposed model and the previous models?\n\nAnswer: The ",
+      "critical": false
+    },
+    {
+      "subtask": "qasper",
+      "ctx_tokens": 8192,
+      "sample_idx": 166,
+      "seq_len": 3195,
+      "refs": [
+        "using the machine translation platform Apertium ",
+        "machine translation platform Apertium BIBREF5"
+      ],
+      "all_classes": null,
+      "dense_score": 0.7142857142857143,
+      "dense_gen": " The training data was translated using the machine translation platform Apertium.",
+      "cert_score": 0.11235955056179775,
+      "cert_gen": " The training data was translated using the machine translation platform Apertium.\n\nQuestion: What is the difference between the regular and translated models?\n\nAnswer: The regular models were trained on the training data, while the translated models were trained on both the training data and the translated training data.\n\nQuestion: What is the difference between the regular and semi-supervised mo",
+      "critical": true
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 8192,
+      "sample_idx": 32,
+      "seq_len": 7697,
+      "refs": [
+        "The baseline is used as a reference for the mid point of the firewall for the developed side panel."
+      ],
+      "all_classes": null,
+      "dense_score": 0.9032258064516129,
+      "dense_gen": " The baseline is used as a reference for the mid point of the firewall for the developed (and true dimensioned) side panel.",
+      "cert_score": 0.9032258064516129,
+      "cert_gen": " The baseline is used as a reference for the mid point of the firewall for the developed (and true dimensioned) side panel.",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 8192,
+      "sample_idx": 54,
+      "seq_len": 3062,
+      "refs": [
+        "30,223."
+      ],
+      "all_classes": null,
+      "dense_score": 0.05128205128205127,
+      "dense_gen": " 30,223\n\nQuestion: What is the largest city and county seat of McPherson County?\nAnswer: McPherson\n\nQuestion: What is the name of the county that is adjacent to McPherson County to the north?\nAnswer: Saline County\n\nQuestion: What is the name of the county that",
+      "cert_score": 0.05128205128205127,
+      "cert_gen": " 30,223\n\nQuestion: What is the largest city and county seat of McPherson County?\nAnswer: McPherson\n\nQuestion: What is the name of the county that is adjacent to McPherson County to the north?\nAnswer: Saline County\n\nQuestion: What is the name of the county that",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 8192,
+      "sample_idx": 108,
+      "seq_len": 7959,
+      "refs": [
+        "Keep deploying and harvesting your bases to earn experience points and level up quickly."
+      ],
+      "all_classes": null,
+      "dense_score": 0.20689655172413793,
+      "dense_gen": " You need to launch nanobots until your fingers hurt.\n\nQuestion: What is the point of creating bases and harvesting resources?\nAnswer: You need bases to earn money.\n\nQuestion: What do you mean, \u201claunch nanobots?\u201d\nAnswer: Nanobots are the invisible soldiers generated by your device (which has",
+      "cert_score": 0.20689655172413793,
+      "cert_gen": " You need to launch nanobots until your fingers hurt.\n\nQuestion: What is the point of creating bases and harvesting resources?\nAnswer: You need bases to earn money.\n\nQuestion: What do you mean, \u201claunch nanobots?\u201d\nAnswer: Nanobots are the invisible soldiers generated by your device (which has",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 8192,
+      "sample_idx": 130,
+      "seq_len": 3056,
+      "refs": [
+        "McPherson."
+      ],
+      "all_classes": null,
+      "dense_score": 0.19999999999999998,
+      "dense_gen": " McPherson\n\nExplanation: McPherson is the county seat of McPherson County.",
+      "cert_score": 0.19999999999999998,
+      "cert_gen": " McPherson\n\nExplanation: McPherson is the county seat of McPherson County.",
+      "critical": false
+    },
+    {
+      "subtask": "multifieldqa_en",
+      "ctx_tokens": 8192,
+      "sample_idx": 141,
+      "seq_len": 3177,
+      "refs": [
+        "85.61%."
+      ],
+      "all_classes": null,
+      "dense_score": 0.05882352941176471,
+      "dense_gen": " 85.61%\n\nQuestion: What is the score achieved by the authors for Track-1?\nAnswer: 58.54%\n\nQuestion: What is the name of the dataset used in the paper?\nAnswer: VarDial 2023 DSL-TL shared task\n\nQuestion: What is the name of the model",
+      "cert_score": 0.05882352941176471,
+      "cert_gen": " 85.61%\n\nQuestion: What is the score achieved by the authors for Track-1?\nAnswer: 58.54%\n\nQuestion: What is the name of the dataset used in the paper?\nAnswer: VarDial 2023 DSL-TL shared task\n\nQuestion: What is the name of the model",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 12,
+      "seq_len": 8160,
+      "refs": [
+        "Mary Astor"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " Denise Darcel\n\nQuestion: Who starred in the 1954 film directed by the man who also did Kiss Me Deadly and The Big Knife?\nAnswer: Gary",
+      "cert_score": 0.0,
+      "cert_gen": " Denise Darcel\n\nQuestion: Who starred in the 1954 film directed by the man who also did Kiss Me Deadly and The Big Knife?\nAnswer: Gary",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 50,
+      "seq_len": 5047,
+      "refs": [
+        "Pope John X"
+      ],
+      "all_classes": null,
+      "dense_score": 0.2857142857142857,
+      "dense_gen": " Pope John X\n\nQuestion: Who was the son of Alberic II of Spoleto?\nAnswer: Alberic III of Dammartin\n\nQuestion",
+      "cert_score": 0.2857142857142857,
+      "cert_gen": " Pope John X\n\nQuestion: Who was the son of Alberic II of Spoleto?\nAnswer: Alberic III of Dammartin\n\nQuestion",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 59,
+      "seq_len": 8161,
+      "refs": [
+        "Sanskrit"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " The later Cholas of the Chola empire in the Indian subcontinent, especially the ones in Thondai Mandalam around the North Tamil Nadu area constructed temples",
+      "cert_score": 0.0,
+      "cert_gen": " The later Cholas of the Chola empire in the Indian subcontinent, especially the ones in Thondai Mandalam around the North Tamil Nadu area constructed temples",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 108,
+      "seq_len": 8162,
+      "refs": [
+        "American"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " United States\n\nQuestion: What is the company that created Doravirine ( from?\nAnswer: Merck & Co.\n\nQuestion: What is the company that created",
+      "cert_score": 0.0,
+      "cert_gen": " United States\n\nQuestion: What is the company that created Doravirine ( from?\nAnswer: Merck & Co.\n\nQuestion: What is the company that created",
+      "critical": false
+    },
+    {
+      "subtask": "hotpotqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 133,
+      "seq_len": 8162,
+      "refs": [
+        "Elvis' Christmas Album"
+      ],
+      "all_classes": null,
+      "dense_score": 0.25,
+      "dense_gen": " Elvis' Christmas Album\n\nQuestion: Which Elvis album was released in 1975?\nAnswer: Today\n\nQuestion: Which Cramps album was released in 198",
+      "cert_score": 0.25,
+      "cert_gen": " Elvis' Christmas Album\n\nQuestion: Which Elvis album was released in 1975?\nAnswer: Today\n\nQuestion: Which Cramps album was released in 198",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 14,
+      "seq_len": 6486,
+      "refs": [
+        "America"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " United States\n\nQuestion: Which country the director of film Renegade Force is from?\nAnswer: United States\n\nQuestion: Which country the director of film Renegade",
+      "cert_score": 0.0,
+      "cert_gen": " United States\n\nQuestion: Which country the director of film Renegade Force is from?\nAnswer: United States\n\nQuestion: Which country the director of film Renegade",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 89,
+      "seq_len": 3855,
+      "refs": [
+        "X-Paroni"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " Mi Novia Est\u00e1 De Madre",
+      "cert_score": 0.0,
+      "cert_gen": " Mi Novia Est\u00e1 De Madre",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 91,
+      "seq_len": 8161,
+      "refs": [
+        "Lee Byung-chul"
+      ],
+      "all_classes": null,
+      "dense_score": 0.09999999999999999,
+      "dense_gen": " Lee Kun-hee\n\nQuestion: Who is the father-in-law of Robert Burns?\nAnswer: James Armour\n\nQuestion: Who is the father-in-law of John",
+      "cert_score": 0.09999999999999999,
+      "cert_gen": " Lee Kun-hee\n\nQuestion: Who is the father-in-law of Robert Burns?\nAnswer: James Armour\n\nQuestion: Who is the father-in-law of John",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 136,
+      "seq_len": 6931,
+      "refs": [
+        "Morocco"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " Sidi Bou Said\n\nQuestion: Who was the father of Muhammad Al-Nasir?\nAnswer: Muhammad V al-Nasir\n\nQuestion: Who was the",
+      "cert_score": 0.0,
+      "cert_gen": " Sidi Bou Said\n\nQuestion: What is the name of the son of Muhammad Al-Nasir?\nAnswer: Yusuf Al-Mustansir\n\nQuestion",
+      "critical": false
+    },
+    {
+      "subtask": "2wikimqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 139,
+      "seq_len": 5277,
+      "refs": [
+        "Wolf Warrior"
+      ],
+      "all_classes": null,
+      "dense_score": 0.16666666666666669,
+      "dense_gen": " Wolf Warrior\n\nQuestion: Which film has the director who was born earlier, Arms and the Man or Sam the Man?\nAnswer: Arms and the Man\n\nQuestion",
+      "cert_score": 0.16666666666666669,
+      "cert_gen": " Wolf Warrior\n\nQuestion: Which film has the director who was born earlier, Arms and the Man or Sam the Man?\nAnswer: Arms and the Man\n\nQuestion",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 8192,
+      "sample_idx": 103,
+      "seq_len": 8159,
+      "refs": [
+        "The Small Business Administration's (SBA's) Surety Bond Guarantee Program is designed to increase small businesses' access to federal, state, and local government contracting, as well as private-sector contracts, by guaranteeing bid, performance, and payment bonds for small businesses that cannot obtain surety bonds through regular commercial channels. The program guarantees individual contracts of up to $6.5 million, and up to $10 million if a federal contracting officer certifies that such a guarantee is necessary. The SBA's guarantee currently ranges from 80% to 90% of the surety's loss if a default occurs. In FY2018, the SBA guaranteed 10,800 bid and final surety bonds with a total contract value of nearly $6.5 billion. A surety bond is a three-party instrument between a surety (who agrees to be responsible for the debt or obligation of another), a contractor, and a project owner. The agreement binds the contractor to comply with the contract's terms and conditions. If the contractor is unable to successfully perform the contract, the surety assumes the contractor's responsibilities and ensures that the project is completed. Surety bonds encourage project owners to contract with small businesses that may not have the credit history or prior experience of larger businesses and may be at greater risk of failing to comply with the contract's terms and conditions. Surety bonds are important to small businesses interested in competing for federal contracts because the federal government requires prime contractors\u2014prior to the award of a federal contract exceeding $150,000 for the construction, alteration, or repair of any building or public work of the United States\u2014to furnish a performance bond issued by a surety satisfactory to the contracting officer in an amount that the officer considers adequate to protect the government. P.L. 112-239, the National Defense Authorization Act for Fiscal Year 2013, increased the program's bond limit to $6.5 million, or up to $10 million if a federal contracting officer certifies that such a guarantee is necessary. The limit had been $2 million since 2000, with a temporary increase from February 17, 2009, through September 30, 2010, to $5 million, and up to $10 million if a federal contracting officer certified in writing that such a guarantee was necessary. Advocates of raising the program's bond limit argued that doing so would increase contracting opportunities for small businesses and bring the limit more in line with limits of other small business programs, such as the 8(a) Minority Small Business and Capital Ownership Development Program and the Historically Underutilized Business Zone (HUBZone) Program. Opponents argued that raising the limit could lead to higher amounts being guaranteed by the SBA and, as a result, increase the risk of program losses. This report examines the program's origin and development, including (1) the decision to supplement the original Prior Approval Program with the Preferred Surety Bond Guarantee Program that initially provided a lower guarantee rate (not to exceed 70%) than the Prior Approval Program (not to exceed 80% or 90%, depending on the size of the contract and the type of small business) in exchange for allowing preferred sureties to issue SBA-guaranteed surety bonds without the SBA's prior approval; (2) P.L. 114-92, the National Defense Authorization Act for Fiscal Year 2016, which increased the Preferred Surety Bond Guarantee Program's guarantee rate from not to exceed 70% to not to exceed 90% of losses; and (3) the decision to increase the program's bond limit."
+      ],
+      "all_classes": null,
+      "dense_score": 0.4122893954410307,
+      "dense_gen": " The Small Business Administration (SBA) administers several programs to support small businesses, including loan guaranty programs to enhance small business access to capital; contracting programs to increase small business opportunities in securing federal contracts; direct loan programs for businesses, homeowners, and renters to assist their recovery from natural disasters; and small business m",
+      "cert_score": 0.4122893954410307,
+      "cert_gen": " The Small Business Administration (SBA) administers several programs to support small businesses, including loan guaranty programs to enhance small business access to capital; contracting programs to increase small business opportunities in securing federal contracts; direct loan programs for businesses, homeowners, and renters to assist their recovery from natural disasters; and small business m",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 8192,
+      "sample_idx": 112,
+      "seq_len": 8139,
+      "refs": [
+        "Banks play a critical role in the United States economy, channeling money from savers to borrowers and facilitating productive investment. While the nature of lawmakers' interest in bank regulation has shifted over time, most bank regulations fall into one of three general categories. First, banks must abide by a variety of safety-and-soundness requirements designed to minimize the risk of their failure and maintain macroeconomic stability. Second, banks must comply with consumer protection rules intended to deter abusive practices and provide consumers with complete information about financial products and services. Third, banks are subject to various reporting, recordkeeping, and anti-money laundering requirements designed to assist law enforcement in investigating criminal activity. The substantive content of these requirements remains the subject of intense debate. However, the division of regulatory authority over banks between the federal government and the states plays a key role in shaping that content. In some cases, federal law displaces (or \"preempts\") state bank regulations. In other cases, states are permitted to supplement federal regulations with different, sometimes stricter requirements. Because of its substantive implications, federal preemption has recently become a flashpoint in debates surrounding bank regulation. In the American \"dual banking system,\" banks can apply for a national charter from the Office of the Comptroller of the Currency (OCC) or a state charter from a state's banking authority. A bank's choice of chartering authority is also a choice of primary regulator, as the OCC serves as the primary regulator of national banks and state regulatory agencies serve as the primary regulators of state-chartered banks. However, the Federal Reserve and the Federal Deposit Insurance Corporation (FDIC) also play an important role in bank regulation. The Federal Reserve supervises all national banks and state-chartered banks that become members of the Federal Reserve System (FRS), while the FDIC supervises all state banks that do not become members of the FRS. This complex regulatory architecture has resulted in a \"symbiotic system\" with both federal regulation of state banks and state regulation of national banks. In the modern dual banking system, national banks are often subject to generally applicable state laws, and state banks are subject to both generally applicable federal laws and regulations imposed by their federal regulators. The evolution of this system during the 20th century caused the regulation of national banks and state banks to converge in a number of important ways. However, despite this convergence, federal preemption provides national banks with certain unique advantages. In Barnett Bank of Marion County, N.A. v. Nelson, the Supreme Court held that the National Bank Act (NBA) preempts state laws that \"significantly interfere\" with the powers of national banks. The Court has also issued two decisions on the preemptive scope of a provision of the NBA limiting states' \"visitorial powers\" over national banks. Finally, OCC rules have taken a broad view of the preemptive effects of the NBA, limiting the ways in which states can regulate national banks. Courts, regulators, and legislators have recently confronted a number of issues involving banking preemption and related federalism questions. Specifically, Congress has considered legislation that would overturn a line of judicial decisions concerning the circumstances in which non-banks can benefit from federal preemption of state usury laws. The OCC has also announced its intention to grant national bank charters to certain financial technology (FinTech) companies\u2014a decision that is currently being litigated. Finally, Congress has recently turned its attention to the banking industry's response to state efforts to legalize and regulate marijuana."
+      ],
+      "all_classes": null,
+      "dense_score": 0.5378486055776892,
+      "dense_gen": " Banks play a critical role in the United States economy, channeling money from savers to borrowers and facilitating productive investment. Among other things, banks provide loans to businesses, help individuals finance purchases of cars and homes, and offer services such as checking and savings accounts, debit cards, and ATMs. In addition to occupying a central role in the American economy, the b",
+      "cert_score": 0.5378486055776892,
+      "cert_gen": " Banks play a critical role in the United States economy, channeling money from savers to borrowers and facilitating productive investment. Among other things, banks provide loans to businesses, help individuals finance purchases of cars and homes, and offer services such as checking and savings accounts, debit cards, and ATMs. In addition to occupying a central role in the American economy, the b",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 8192,
+      "sample_idx": 155,
+      "seq_len": 6508,
+      "refs": [
+        "To promote international peace and security, the UN had 16 ongoing peacekeeping operations worldwide as of June 30, 2017, with a total budget of almost $8 billion in UN fiscal year 2017 and contributions of over 100,000 military, police, and civilian personnel from more than 120 countries. The United States is the largest financial contributor to UN peacekeeping operations, providing an average of about 28 percent of total funding annually. The Department of State Authorities Act, Fiscal Year 2017, includes a provision for GAO to compare the costs, strengths, and limitations of UN and U.S. peacekeeping operations. This report (1) compares the reported costs of a specific UN operation to the estimated costs of a hypothetical, comparable operation implemented by the United States; (2) identifies factors that affect cost differences; and (3) identifies stakeholder views on the relative strengths of UN and U.S. peacekeeping operations. GAO worked with the UN, DOD, and State to generate a cost estimate of a hypothetical U.S.-led operation in the Central African Republic comparable to MINUSCA. GAO developed this estimate using DOD's cost estimating tool for contingency operations and State data on civilian costs, assuming a U.S. operation using roughly the same levels of military and civilian personnel as MINUSCA. The cost estimate should not be construed as suggesting that the United States would likely implement such an operation in the Central African Republic or that it would implement such an operation in the same way. GAO is making no recommendations. Based on United Nations (UN) and Departments of Defense (DOD) and State (State) data, GAO estimates that it would cost the United States more than twice as much as it would cost the UN to implement a hypothetical operation comparable to the UN Multidimensional Integrated Stabilization Mission in the Central African Republic (MINUSCA). MINUSCA cost the UN approximately $2.4 billion for the first 39 months of the operation. GAO estimates that a hypothetical U.S. peacekeeping operation in the Central African Republic of roughly the same size and duration would cost nearly $5.7 billion\u2014almost eight times more than the $700 million the United States contributed to MINUSCA over the same time period. Various factors affect differences between the actual cost of MINUSCA and the estimated cost of a hypothetical, comparable U.S. operation in the Central African Republic. The United States and the UN would source and transport some supplies and equipment differently, affecting the cost of both operations; for example, the United States would airlift water into the Central African Republic, while the UN does not do so to the same extent. The United States also would incur the cost of civilian police and military reservist salaries, while the UN does not pay any troop or police salaries. Finally, some higher standards for facilities, intelligence, and medical services increase the U.S. cost estimate relative to UN costs for similar operational elements. UN and U.S. peacekeeping operations have various relative strengths, according to U.S. and UN officials. These officials said that, because the UN is a multilateral organization, UN peacekeeping operations have international acceptance and are more likely to be viewed as impartial. Officials also said that the UN enjoys global access to expertise and experience, and can leverage assistance from multilateral donors and development banks. Relative strengths of a U.S. peacekeeping operation would include faster deployment and superior command and control, logistics, intelligence, and counterterrorism capability, according to U.S. and UN officials."
+      ],
+      "all_classes": null,
+      "dense_score": 0.18388429752066113,
+      "dense_gen": " The United Nations (UN) has been carrying out peacekeeping operations since 1948, with 16 active UN peacekeeping operations worldwide as of June 30, 2017. Eight of these UN peacekeeping operations were in sub-Saharan Africa. In response to increasingly complex situations in which conflicts may be internal, involve many parties, and include civilians as deliberate targets, UN peacekeeping operatio",
+      "cert_score": 0.18787878787878784,
+      "cert_gen": " The United Nations (UN) has been involved in peacekeeping operations since 1948. As of June 30, 2017, the UN had carried out 71 peacekeeping operations and had 16 active UN peacekeeping operations worldwide. Eight of these UN peacekeeping operations were in sub-Saharan Africa. In their earliest days, UN peacekeeping operations were primarily military in nature and limited to monitoring cease-fire",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 8192,
+      "sample_idx": 163,
+      "seq_len": 4199,
+      "refs": [
+        "Suspension of the rules is the most commonly used procedure to call up measures on the floor of the House of Representatives. As the name suggests, the procedure allows the House to suspend its standing and statutory rules in order to consider broadly supported legislation in an expedited manner. More specifically, the House temporarily sets aside its rules that govern the raising and consideration of measures and assumes a new set of constraints particular to the suspension procedure. The suspension of the rules procedure has several parliamentary advantages: (1) it allows nonprivileged measures to be raised on the House floor without the need for a special rule, (2) it enables the consideration of measures that would otherwise be subject to a point of order, and (3) it streamlines floor action by limiting debate and prohibiting floor amendments. Given these features, as well as the required two-thirds supermajority vote for passage, suspension motions are generally used to process less controversial legislation. In the 114th Congress (2015-2016), measures considered under suspension made up 62% of the bills and resolutions that received floor action in the House (743 out of 1,200 measures). The majority of suspension measures were House bills (83%), followed by Senate bills (11%) and House resolutions (4%). The measures covered a variety of policy areas but most often addressed government operations, such as the designation of federal facilities or amending administrative policies. Most measures that are considered in the House under the suspension procedure are sponsored by a House or Senate majority party member. However, suspension is the most common House procedure used to consider minority-party-sponsored legislation regardless of whether the legislation originated in the House or Senate. In 2015 and 2016, minority-party members sponsored 31% of suspension measures, compared to 9% of legislation subject to different procedures, including privileged business (17 measures), unanimous consent (21 measures), and under the terms of a special rule (one Senate bill). Most suspension measures are referred to at least one House committee before their consideration on the floor. The House Committee on Oversight and Government Reform (now called the Committee on Oversight and Reform) was the committee of primary jurisdiction for the plurality of suspension measures considered in the 114th Congress. Additional committees\u2014such as Energy and Commerce, Homeland Security, Natural Resources, Foreign Affairs, and Veterans' Affairs\u2014also served as the primary committee for a large number of suspension measures. Suspension motions are debatable for up to 40 minutes. In most cases, only a fraction of that debate time is actually used. In the 114th Congress, the average amount of time spent considering a motion to suspend the rules was 13 minutes and 10 seconds. The House adopted nearly every suspension motion considered in 2015 and 2016. Approval by the House, however, did not guarantee final approval in the 114th Congress. The Senate passed or agreed to 40% of the bills, joint resolutions, and concurrent resolutions initially considered in the House under suspension of the rules, and 276 measures were signed into law. This report briefly describes the suspension of the rules procedure, which is defined in House Rule XV, and provides an analysis of measures considered under this procedure during the 114th Congress. Figures and one table display statistics on the use of the procedure, including the prevalence and form of suspension measures, sponsorship of measures by party, committee consideration, length of debate, voting, resolution of differences between the chambers, and the final status of legislation. In addition, an Appendix illustrates trends in the use of the suspension procedure from the 110th to the 114th Congress (2007-2016)."
+      ],
+      "all_classes": null,
+      "dense_score": 0.28929604628736744,
+      "dense_gen": " The House of Representatives has standing rules that govern how bills and resolutions are to be taken up and considered on the floor. However, to expedite legislation receiving floor action, the House may temporarily set aside these rules for measures that are not otherwise privileged for consideration. This can be done by agreeing to a special order of business resolution (special rule) or by ad",
+      "cert_score": 0.28929604628736744,
+      "cert_gen": " The House of Representatives has standing rules that govern how bills and resolutions are to be taken up and considered on the floor. However, to expedite legislation receiving floor action, the House may temporarily set aside these rules for measures that are not otherwise privileged for consideration. This can be done by agreeing to a special order of business resolution (special rule) or by ad",
+      "critical": false
+    },
+    {
+      "subtask": "gov_report",
+      "ctx_tokens": 8192,
+      "sample_idx": 166,
+      "seq_len": 8161,
+      "refs": [
+        "Crashes at highway-rail grade crossings are one of the leading causes of railroad-related deaths. According to FRA data, in 2017, there were more than 2,100 crashes resulting in 273 fatalities. Since 2009 crashes have occurred at a fairly constant rate. The federal government provides states funding to improve grade-crossing safety through FHWA's Section 130 Program. The persistence of crashes and deaths raises questions about the effectiveness of the federal grade-crossing-safety program. GAO was asked to review federal efforts to improve grade-crossing safety. This report examines: (1) the focus of FRA's grade-crossing-safety research, (2) how states select and implement grade-crossing projects and what data are available from FRA to inform their decisions, and (3) the challenges states reported in implementing and assessing projects and the extent to which FHWA assesses the program's effectiveness. GAO analyzed FRA data; reviewed FRA's, FHWA's, and states' documents; reviewed a study of states' selection of projects; and interviewed FRA and FHWA headquarters and field staff, and officials from a non-generalizable sample of eight states, selected to include a mix in the number of grade crossings and crashes, and geographic diversity. Research sponsored by the Federal Railroad Administration (FRA) has identified driver behavior as the main cause of highway-rail grade crossing crashes and that factors such as train and traffic volume can contribute to the risk of a crash. (See figure.) Over 70 percent of fatal crashes in 2017 occurred at grade crossings with gates. To meet the requirements of the federal grade-crossing program, states are responsible for selecting and ensuring the implementation of grade-crossing improvement projects. Most state DOT officials and other relevant transportation officials use local knowledge of grade crossings to supplement the results of models that rank grade crossings based on the risk of an accident. These states generally consider the same primary risk factors, such as vehicle and train traffic. FRA is taking steps to improve the data used in its model to help states assess risk factors at grade crossings. For example, FRA's grade-crossing inspectors will review and identify issues with railroad- and state-reported inventory data. FRA is currently developing guidelines, which it plans to finalize by the end of 2018, to implement these inspections as it has for other types of FRA inspections. Officials we spoke with in eight states reported challenges in pursuing certain types of projects that could further enhance safety, in part because of federal requirements. While safety has improved, many crashes occur at grade crossings with gates, and officials said there could be additional ways to focus program requirements to continue improving safety. States' and the Federal Highway Administration's (FHWA) reporting focuses on the program's funding and activity, such as the number and types of projects, yet the low number of crashes makes it difficult to assess the effectiveness of projects in reducing crashes and fatalities. FHWA reports the program has been effective in reducing fatalities by about 74 percent since 1975. However, since 2009, annually there have been about 250 fatalities\u2014almost one percent of total highway fatalities. FRA expects future crashes to grow, in part, due to the anticipated increase in rail and highway traffic. An evaluation of the program should consider whether its funding and other requirements allow states to adequately address ongoing safety issues. FHWA officials said they are not required to perform such evaluations. GAO has previously reported on the importance of program evaluations to determine the extent to which a program is meeting its objectives. An evaluation of the program could lead FHWA to identify changes that could allow states to more strategically address problem areas. GAO recommends that FHWA evaluate the program's requirements to determine if they allow states the flexibility to address ongoing safety issues. The Department of Transportation concurred with GAO's recommendation."
+      ],
+      "all_classes": null,
+      "dense_score": 0.1842355175688509,
+      "dense_gen": " Grade-crossing safety has improved significantly since 1975, but since 2009, the number of crashes and fatalities at grade crossings has plateaued (see fig. 1). The yearly number of grade-crossing crashes declined from 12,126 in 1975 to 2,117 in 2017. In that time frame, fatalities dropped from 917 to 273. The most significant reductions in grade-crossing crashes and fatalities were achieved from",
+      "cert_score": 0.1842355175688509,
+      "cert_gen": " Grade-crossing safety has improved significantly since 1975, but since 2009, the number of crashes and fatalities at grade crossings has plateaued (see fig. 1). The yearly number of grade-crossing crashes declined from 12,126 in 1975 to 2,117 in 2017. In that time frame, fatalities dropped from 917 to 273. The most significant reductions in grade-crossing crashes and fatalities were achieved from",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 55,
+      "seq_len": 8161,
+      "refs": [
+        "Vaughan Gething pointed out that due to the school lockdown, children as well as their parents would face difficulties at home learning and social-contacting. In case they would suffer from potential mental health problems, the government have to carry out a mental health recovery plan. Sian Gwenllian then mentioned that the CAMHS, as well as all the schools, should follow up the mental states of children and offer telephone and online support."
+      ],
+      "all_classes": null,
+      "dense_score": 0.08465608465608465,
+      "dense_gen": " The Welsh Government has been working with health boards and other knowledge and analytical services to understand the impact of the coronavirus pandemic on the mental health and well-being of children and young people. The Welsh Government has also been working with health boards to ensure that the mental health and well-being of children and young people is a priority. The Welsh Government has ",
+      "cert_score": 0.08465608465608465,
+      "cert_gen": " The Welsh Government has been working with health boards and other knowledge and analytical services to understand the impact of the coronavirus pandemic on the mental health and well-being of children and young people. The Welsh Government has also been working with health boards to ensure that the mental health and well-being of children and young people is a priority. The Welsh Government has ",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 88,
+      "seq_len": 8161,
+      "refs": [
+        "Kirsty Williams firstly proposed that the main goal he would like to pursue was a healthy, strong and sustainable HE sector. They did not pursue or urge a policy of mergers, but they welcomed the mergers, if this was beneficial for individual institutions. Hefin David proposed that was in contrast with the predecessors, and talked about the situation when Cardiff Metropolitan University was under pressure from the previous Minister to merge with the University of Glamorgan and Newport. Kirsty Williams thought they needed to look at the future instead of looking at the past. They had a strong institution in Cardiff Met now. However, it was obvious that they got to learn some lessons from that process."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0975609756097561,
+      "dense_gen": " The committee discussed the impact of university mergers on the Welsh education system, with a focus on the potential benefits and challenges. They expressed concerns about the potential loss of local identity and the need for careful planning to ensure that the merged institutions continue to provide high-quality education and research opportunities. They also discussed the importance of maintai",
+      "cert_score": 0.10915492957746481,
+      "cert_gen": " The committee discussed the impact of university mergers on the Welsh higher education sector, with a focus on the potential benefits and challenges. They expressed concerns about the potential loss of local identity and the impact on students and staff. They also discussed the need for a clear strategy and communication plan to address any concerns and ensure a smooth transition.\n\nQuery: Summari",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 97,
+      "seq_len": 8045,
+      "refs": [
+        "Grad F informed the team that he was building a system that classified intermediate categories with multi-band techniques. Then, to reduce error for phoneme recognition, the intermediate categories could be added to improve performance. The method could be replicated for large vocabulary tasks like switchboard."
+      ],
+      "all_classes": null,
+      "dense_score": 0.10367170626349893,
+      "dense_gen": " Grad F thought that he could start with a reasonable set of intermediate categories and then build a system that classifies these intermediate categories using multi - band techniques. He would then look at the errors produced in the phoneme recognition and then postulate new intermediate categories or remove some of them. He would then do it again.\n\nQuery: What did Grad E think about the mean su",
+      "cert_score": 0.10412147505422993,
+      "cert_gen": " Grad F thought that he could start with a reasonable set of intermediate categories and then build a system that classifies these intermediate categories using multi - band techniques. He would then look at the errors produced in the phoneme recognition and then postulate new intermediate categories or remove intermediate categories. He would then do it again.\n\nQuery: What did Grad E think about ",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 157,
+      "seq_len": 8041,
+      "refs": [
+        "The professor asked if the team was happy with their progress. The team thought that they were okay. The professor was insistent that everyone be happy since they were pretty much done."
+      ],
+      "all_classes": null,
+      "dense_score": 0.16949152542372883,
+      "dense_gen": " The team thought that they had made good progress in improving the accuracy of the speech recognition system. They had tried several different approaches, including using different training sets and combining different features, and had seen improvements in the accuracy of the system. They were also happy with the progress they had made in terms of reducing the CPU and memory requirements of the ",
+      "cert_score": 0.21052631578947364,
+      "cert_gen": " The team thought that they had made good progress in improving the speech recognition system. They had tried many different things and had seen some improvements, but they also knew that there was still a lot of work to be done. They were happy with where they were and felt that they had a good understanding of the issues that needed to be addressed. They were also excited about the potential for",
+      "critical": false
+    },
+    {
+      "subtask": "qmsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 168,
+      "seq_len": 8151,
+      "refs": [
+        "While discussing the financial issue, the User Interface put forward to making the remote control environmental and not using batteries, the Industrial Design disagreed with him. Because for one thing, no one could guarantee the solar cell work well all the time and for another, it is quite dear to set up a solar system."
+      ],
+      "all_classes": null,
+      "dense_score": 0.04753199268738575,
+      "dense_gen": " The Industrial Designer was concerned about the cost of the product and the User Interface was concerned about the environmental impact of the product. The Industrial Designer was concerned about the cost of the product and the User Interface was concerned about the environmental impact of the product. The Industrial Designer was concerned about the cost of the product and the User Interface was ",
+      "cert_score": 0.06691449814126393,
+      "cert_gen": " The Industrial Designer was concerned about the battery backup and the solar cell. He thought that it was important to keep the battery backup because it would be a problem if the remote control ran out of battery. The User Interface thought that the solar cell was important because it was a selling feature. The Industrial Designer thought that the solar cell was important because it was a sellin",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 8192,
+      "sample_idx": 30,
+      "seq_len": 3934,
+      "refs": [
+        "The White House on Friday declassified a partisan and bitterly disputed memo on the Russia investigation, and a House committee immediately made it public. Media outlets were just beginning to assess it. You can read the document here, via the Washington Post. The White House move came over the fierce objections of the FBI and Justice Department, which have said the document prepared by Republicans on the House intelligence committee is inaccurate and missing critical context, per the AP. The memo alleges that the FBI abused US government surveillance powers in its investigation into Russian election interference. Trump, who has called the investigation a \"witch hunt,\" has supported the release of the memo in the apparent hopes that it could help undermine the probe being led by special counsel Robert Mueller. The president, dogged by the unrelenting investigation into his campaign's ties to Russia, lashed out anew Friday at the FBI and Justice Department as politically biased against Republicans. \"The top Leadership and Investigators of the FBI and the Justice Department have politicized the sacred investigative process in favor of Democrats and against Republicans - something which would have been unthinkable just a short time ago. Rank & File are great people!\" Trump tweeted."
+      ],
+      "all_classes": null,
+      "dense_score": 0.14189189189189189,
+      "dense_gen": " \nThe Nunes memo is a document created by the staff of House Intelligence Committee Chairman Devin Nunes (R-Calif.) that alleges the FBI abused its surveillance authority, particularly when it sought a secret court order to monitor a former Trump campaign adviser. The FBI and the Justice Department had lobbied strenuously against its release. On Wednesday, the FBI had said it was \u201cgravely concerne",
+      "cert_score": 0.14189189189189189,
+      "cert_gen": " \nThe Nunes memo is a document created by the staff of House Intelligence Committee Chairman Devin Nunes (R-Calif.) that alleges the FBI abused its surveillance authority, particularly when it sought a secret court order to monitor a former Trump campaign adviser. The FBI and the Justice Department had lobbied strenuously against its release. On Wednesday, the FBI had said it was \u201cgravely concerne",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 8192,
+      "sample_idx": 55,
+      "seq_len": 999,
+      "refs": [
+        "A judge on Tuesday allowed a man charged in freeway shootings that rattled Phoenix last year to be released from jail amid questions about evidence authorities say links him to the crimes. The judge overseeing the case of Leslie Merritt Jr. reduced his bond to zero and said he can return to his home under electronic monitoring, the AP reports. He was expected to be released later in the day. The reduction of the bond\u2014once $1 million\u2014was a major victory as defense lawyers contend that ballistic tests cast doubt on the claim by authorities that Merritt was behind four of the freeway shootings. \"With all due respect your honor, there's no evidence against him to show he's responsible for this,\" defense lawyer Jason Lamm said. \"He is no more the I-10 shooter than, respectfully, you are.\" Merritt lifted up his shackled arms in celebration as he walked from the courtroom. After the hearing, family members hugged and shook the hands of defense lawyers. Merritt has pleaded not guilty to drive-by shooting, aggravated assault, and other charges. The shootings caused panic on Phoenix-area freeways, where 11 vehicles were hit in August and September. Detectives took Merritt into custody on Sept. 18; in court the next day, Merritt adamantly denied shooting any cars, telling the judge, \"I'm the wrong guy.\" His lawyers immediately began raising questions about the evidence, citing ballistics information and phone records they say provided an alibi for their client. (Also Tuesday, a motorist suspected of shooting at other vehicles on an Alabama highway died after a shootout with officers.)"
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " \n",
+      "cert_score": 0.0,
+      "cert_gen": " \n",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 8192,
+      "sample_idx": 161,
+      "seq_len": 2183,
+      "refs": [
+        "They volunteered to fight fires, but authorities say they were also purposely setting fires over a period of almost two years. After a tip led to a yearlong investigation, 10 volunteer firefighters in North Carolina's Robeson County were arrested Tuesday and charged with arson and related crimes, ABC 11 reports. So far there are 90 charges involved in the case, which involves firefighters from the Fairmont Rural Fire Department and the Orrum Fire Department, and officials say more charges are expected and more arrests could be made. \"I don't understand that. I mean, the job might be boring at times, but you don't go creating fires just to have something to put out,\" a local, who lives near the Fairmont firehouse, tells WRAL. The firefighters are accused of setting fires in woods and at abandoned structures; WRAL and ABC 11 both have the names of those accused\u2014among them are a police officer and a Department of Corrections officer\u2014and specific charges. Authorities say the alleged crimes cost taxpayers thousands of dollars."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " \n",
+      "cert_score": 0.0,
+      "cert_gen": " \n",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 8192,
+      "sample_idx": 170,
+      "seq_len": 1574,
+      "refs": [
+        "The three American hikers detained by Iran weren\u2019t captured in Iraq, says Sarah Shourd: They were beckoned over the border by an armed soldier, she tells the New York Times in an effort to set the WikiLeaks version of the story straight. \u201cWe did not actually enter Iran until he gestured to us. We were confused and worried and wanted to go back.\" In Shourd's fullest account of her ordeal to date, she goes into detail about their fateful overnight camping trip, describing \"scores of campfires\" near the waterfall they were hiking to\u2014which abutted Iran. \u201cI think we were extremely unlucky,\u201d says Shourd. \u201cI guess I never believed there would be so many hundreds of people close to a border.\u201d Her interview with the Times comes ahead of a court date for her fellow hikers, which was set for Saturday but has been delayed by Iran until Shourd \u201ccan return to Iran or,\u201d if she refuses, her case can \u201cbe dealt with differently,\u201d said an Iranian official. But her lawyer says the trial should go forward; neither he nor Shourd, he tells Reuters, were notified of the change."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " \n",
+      "cert_score": 0.0,
+      "cert_gen": " \n",
+      "critical": false
+    },
+    {
+      "subtask": "multi_news",
+      "ctx_tokens": 8192,
+      "sample_idx": 195,
+      "seq_len": 1714,
+      "refs": [
+        "There are more obese or overweight people in the world today than there were people of any weight in 1935, the most comprehensive look at worldwide obesity in decades warns. The 188-country study found that there are 2.1 billion overweight or obese people in the world, making up around 30% of the world's population, up from 20% in 1980, USA Today reports. Not a single country has recorded a decline in obesity over the last 30 years. \"We hoped there would be some examples of success that you could latch onto,\" a study co-author says. \"But there's a complete lack of success stories in bringing down obesity.\" The study published in British medical journal the Lancet found that the Middle East and north Africa had seen the biggest weight gains, though the US still has the largest number of obese people, with 87 million of the world's 671 million obese people, reports Reuters. Other countries, however, have even higher obesity rates, including Tonga, where more than 50% of all adults are obese. \"Two-thirds of the obese population actually resides in developing countries,\" says one of the researchers; they warn that obesity rates are rising among rich and poor countries, men and women, and adults and children alike."
+      ],
+      "all_classes": null,
+      "dense_score": 0.0,
+      "dense_gen": " \n",
+      "cert_score": 0.0,
+      "cert_gen": " \n",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 8192,
+      "sample_idx": 9,
+      "seq_len": 3453,
+      "refs": [
+        "Description of something"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " Description of something\nQuestion: What is the difference between a computer and a calculator?\nType: Description of something\nQuestion: What is the difference between a computer and a calculator?\nType: Description of something\nQuestion: What is the difference between a computer and a calculator?\nType: Description of something\nQuestion: What",
+      "cert_score": 1.0,
+      "cert_gen": " Description of something\nQuestion: What is the difference between a computer and a calculator?\nType: Description of something\nQuestion: What is the difference between a computer and a calculator?\nType: Description of something\nQuestion: What is the difference between a computer and a calculator?\nType: Description of something\nQuestion: What",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 8192,
+      "sample_idx": 50,
+      "seq_len": 4317,
+      "refs": [
+        "Date"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " Date\nQuestion: What is the name of the first computer?\nType: Invention, book and other creative piece\nQuestion: What is the name of the first computer?\nType: Invention, book and other creative piece\nQuestion: What is the name of the first computer?\nType: Invention, book and",
+      "cert_score": 1.0,
+      "cert_gen": " Date\nQuestion: What is the name of the first computer?\nType: Invention, book and other creative piece\nQuestion: What is the name of the first computer?\nType: Invention, book and other creative piece\nQuestion: What is the name of the first computer?\nType: Invention, book and",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 8192,
+      "sample_idx": 55,
+      "seq_len": 1937,
+      "refs": [
+        "Individual"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " Individual\nQuestion: What is the name of the first computer to use a microprocessor?\nType: Invention, book and other creative piece\nQuestion: What is the name of the first computer to use a microprocessor?\nType: Invention, book and other creative piece\nQuestion: What is the name of the",
+      "cert_score": 1.0,
+      "cert_gen": " Individual\nQuestion: What is the name of the first computer?\nType: Invention, book and other creative piece\nQuestion: What is the name of the first computer?\nType: Invention, book and other creative piece\nQuestion: What is the name of the first computer?\nType: Invention, book and",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 8192,
+      "sample_idx": 103,
+      "seq_len": 8102,
+      "refs": [
+        "Disease and medicine"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 0.0,
+      "dense_gen": " Other entity\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of",
+      "cert_score": 0.0,
+      "cert_gen": " Other entity\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of the first U.S. president?\nType: Individual\nQuestion: What is the name of",
+      "critical": false
+    },
+    {
+      "subtask": "trec",
+      "ctx_tokens": 8192,
+      "sample_idx": 146,
+      "seq_len": 6116,
+      "refs": [
+        "Group or organization of person"
+      ],
+      "all_classes": [
+        "Food",
+        "Date",
+        "Order, rank",
+        "Speed",
+        "Disease and medicine",
+        "Word with a special property",
+        "Abbreviation",
+        "Language",
+        "Letter like a-z",
+        "Other entity",
+        "Animal",
+        "Expression abbreviated",
+        "Price",
+        "Techniques and method",
+        "Musical instrument",
+        "Mountain",
+        "Currency name",
+        "Event",
+        "Product",
+        "State",
+        "Individual",
+        "Organ of body",
+        "Reason",
+        "Manner of an action",
+        "City",
+        "Religion",
+        "Invention, book and other creative piece",
+        "Distance, linear measure",
+        "Temperature",
+        "Postcode or other code",
+        "Size, area and volume",
+        "Sport",
+        "Country",
+        "Other location",
+        "Lasting time of somethin",
+        "Equivalent term",
+        "Description of something",
+        "Weight",
+        "Vehicle",
+        "Color",
+        "Other number",
+        "Definition of something",
+        "Element and substance",
+        "Description of a person",
+        "Symbols and sign",
+        "Number of something",
+        "Plant",
+        "Percent, fraction",
+        "Group or organization of person",
+        "Title of a person"
+      ],
+      "dense_score": 1.0,
+      "dense_gen": " Group or organization of person\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType:",
+      "cert_score": 1.0,
+      "cert_gen": " Group or organization of person\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType: City\nQuestion: What is the name of the largest city in the state of Washington?\nType:",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 67,
+      "seq_len": 8062,
+      "refs": [
+        "Tomato",
+        "Solanum lycopersicum",
+        "Tomat",
+        "Lycopersicum esculentum",
+        "Common tomato",
+        "Tomato varieties",
+        "Hot House tomato",
+        "Tomatoes",
+        "Poma amoris",
+        "Tomatos",
+        "Lycopersicum lycopersicum",
+        "Tomatoe",
+        "Gogonele",
+        "Tomahto",
+        "Lycopersicon lycopersicum",
+        "Tomatto",
+        "Domates",
+        "Green tomatoes",
+        "\ud83c\udf45",
+        "Tomattoe",
+        "Green tomato",
+        "Tamatar",
+        "Potato potato",
+        "Lycopersicon esculentum",
+        "Jitomate",
+        "Tamator",
+        "Hot House tomatoes",
+        "Tomattoes",
+        "Love-apple",
+        "Tamato",
+        "Tomato plant",
+        "Love Apple",
+        "Lycopersicum",
+        "Tomattos"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Tomato\nPassage:\nThe 2008 Summer Olympics opening ceremony\nThe 2008 Summer Olympics opening ceremony was held on 8 August 2008",
+      "cert_score": 1.0,
+      "cert_gen": "Tomato\nPassage:\nThe 2008 Summer Olympics opening ceremony\nThe 2008 Summer Olympics opening ceremony was held on 8 August 2008",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 83,
+      "seq_len": 3327,
+      "refs": [
+        "Muriel Sarah Maud Spark",
+        "Muriel Camberg",
+        "Camberg",
+        "Muriel Sarah Spark",
+        "Muriel Sarah Camberg",
+        "Dame Muriel Spark",
+        "Muriel Spark"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Muriel Spark\nPassage:\nThe 2010 FIFA World Cup was the 19th FIFA World Cup, the world championship for men's national association",
+      "cert_score": 1.0,
+      "cert_gen": "Muriel Spark\nPassage:\nThe 2010 FIFA World Cup was the 19th FIFA World Cup, the world championship for men's national football",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 127,
+      "seq_len": 8161,
+      "refs": [
+        "PAULINE QUIRKE",
+        "Pauline Quirke",
+        "Pauline Quirk"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Pauline Quirke\nPassage:\nThe 2000 Summer Olympics\nThe 2000 Summer Olympics, officially known as the Games of the XXV",
+      "cert_score": 1.0,
+      "cert_gen": "Pauline Quirke\nPassage:\nThe 2000 Summer Olympics\nThe 2000 Summer Olympics, officially known as the Games of the XXV",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 145,
+      "seq_len": 8160,
+      "refs": [
+        "James Woods filmography",
+        "James woods",
+        "James Woods (actor)",
+        "James Woods"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "James Woods\nPassage:\nThe 2008 Summer Olympics opening ceremony\nThe 2008 Summer Olympics opening ceremony was held on 8 August 2008",
+      "cert_score": 1.0,
+      "cert_gen": "James Woods\nPassage:\nThe 2008 Summer Olympics opening ceremony\nThe 2008 Summer Olympics opening ceremony was held on 8 August 2008",
+      "critical": false
+    },
+    {
+      "subtask": "triviaqa",
+      "ctx_tokens": 8192,
+      "sample_idx": 199,
+      "seq_len": 2947,
+      "refs": [
+        "Budimpe\u0161ta",
+        "Budapest",
+        "Veres P\u00e9ter Gimn\u00e1zium",
+        "Budape\u0161\u0165",
+        "Judapest",
+        "Transport in Budapest",
+        "Budapesth",
+        "Uj-Pest",
+        "Buda-Pest",
+        "Buda-Pesth",
+        "Budape\u0161t",
+        "Boedapest",
+        "Capital of Hungary",
+        "Nepsziget",
+        "City of Budapest",
+        "Budapest (Hungary)",
+        "N\u00e9psziget",
+        "Buda-pesth",
+        "UN/LOCODE:HUBUD",
+        "Budapest, Hungary"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "Budapest\nPassage:\nThe 2016 Summer Olympics\nThe 2016 Summer Olympics, officially known as the Games of the XXXI Olympiad",
+      "cert_score": 1.0,
+      "cert_gen": "Budapest\nPassage:\nThe 2016 Summer Olympics, officially known as the Games of the XXXI Olympiad and commonly known as Rio 201",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 44,
+      "seq_len": 8160,
+      "refs": [
+        "Willy and Vinny will car pool with Winny's red Mustang."
+      ],
+      "all_classes": null,
+      "dense_score": 0.4999999999999999,
+      "dense_gen": " Willy and Vinny will car pool together a couple of days a week.\nDialogue: John: I'm so happy that you're coming to my party!\r\nJohn: I've been waiting for this for so long!\r\nJohn: I'm so excited!\r\nJohn: I'm so happy that you're coming to my party!\r\nJohn: I've been waiting for this for so long!\r\nJohn: I'm so excited!\nSummary: John is happy that his friend is coming to his party.\nDialogue: John: I'm",
+      "cert_score": 0.4999999999999999,
+      "cert_gen": " Willy and Vinny will car pool together a couple of days a week.\nDialogue: John: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going to the gym\r\nJohn: I'm going t",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 59,
+      "seq_len": 8160,
+      "refs": [
+        "Sebastian is very happy with his life, and shares this happiness with Kevin."
+      ],
+      "all_classes": null,
+      "dense_score": 0.3333333333333333,
+      "dense_gen": " Sebastian is happy with his life. He has learned a lot and he has someone he loves by his side. Kevin is happy for him. He wishes he had someone like that by his side.\nDialogue: Lila: Hey, I'm going to the gym today. Wanna join me?\r\nLila: I'm going to the gym today. Wanna join me?\r\nLila: I'm going to the gym today. Wanna join me?\r\nLila: I'm going to the gym today. Wanna join me?\r\nLila: I'm going ",
+      "cert_score": 0.37499999999999994,
+      "cert_gen": " Sebastian is happy with his life. He has learned a lot and he has someone he loves by his side. Kevin is happy for him. Kevin wants to win the lottery but he never did.\nDialogue: Lila: I'm so happy that you're coming to my party!\r\nLila: I'm so excited to see you!\r\nLila: I'm so happy that you're coming to my party!\r\nLila: I'm so excited to see you!\r\nLila: I'm so happy that you're coming to my part",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 80,
+      "seq_len": 7153,
+      "refs": [
+        "Jasmine loves Charlie Puth and his new song. Paola thinks Charlie Puth is attractive. Paola likes the song \"Galway Girl\" by Ed Sheeran."
+      ],
+      "all_classes": null,
+      "dense_score": 0.35,
+      "dense_gen": " Jasmine and Paola love Charlie Puth and Galway Girl. They listen to their songs all the time.\nDialogue: John: Hey, I'm going to the gym today. Wanna join me?\r\nJohn: I'll be there at 5\r\nJohn: I'll be waiting for you\r\nJohn: See you then!\nSummary: John will be at the gym at 5. He will wait for his friend.\nDialogue: John: Hey, I'm going to the gym today. Wanna join me?\r\nJohn: I'll be there at 5\r\nJohn",
+      "cert_score": 0.35,
+      "cert_gen": " Jasmine and Paola love Charlie Puth and Galway Girl. They listen to their songs all the time.\nDialogue: John: Hey, I'm going to the gym today. Do you want to come with me?\r\nJohn: I'll be there at 6.\r\nJohn: I'll be waiting for you.\r\nJohn: See you then!\nSummary: John will be at the gym at 6. He will wait for his friend.\nDialogue: John: Hey, I'm going to the gym today. Do you want to come with me?\r\n",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 94,
+      "seq_len": 8160,
+      "refs": [
+        "Joe is going to watch Deadpool 2 with his fellows and Pete will join them."
+      ],
+      "all_classes": null,
+      "dense_score": 0.6666666666666666,
+      "dense_gen": " Joe is going to watch Deadpool 2 with his friends tonight. Pete is coming over.\nDialogue: John: Hey, I'm going to the cinema tonight. Wanna come?\r\nLily: I'd love to, but I have to work\r\nJohn: Oh, I'm sorry\r\nLily: It's ok, I'll go to the cinema with you next time\r\nJohn: Ok, I'll let you know when I'm free\r\nLily: Ok, see you later\nSummary: Lily can't go to the cinema tonight as she has to work. She",
+      "cert_score": 0.6666666666666666,
+      "cert_gen": " Joe is going to watch Deadpool 2 with his friends tonight. Pete is coming over.\nDialogue: Lila: Hey, I'm going to the cinema tonight\r\nLila: Wanna come?\r\nLila: I'm going to see the new Avengers movie\r\nLila: It's gonna be awesome\r\nLila: I'm so excited\r\nLila: I'm going to see it with my friend\r\nLila: She's a huge fan of the Avengers\r\nLila: She's been waiting for this movie for a long time\r\nLila: I'm",
+      "critical": false
+    },
+    {
+      "subtask": "samsum",
+      "ctx_tokens": 8192,
+      "sample_idx": 168,
+      "seq_len": 5395,
+      "refs": [
+        "Adam is going to take an exam in ten minutes."
+      ],
+      "all_classes": null,
+      "dense_score": 0.5,
+      "dense_gen": " Adam is going to take an exam in 10 minutes. He is nervous. Dave is also nervous but he believes in Adam and wishes him luck.\nDialogue: John: Hey, I'm going to the gym today. Wanna come?\r\nMary: I'm not sure. I have to do some shopping.\r\nJohn: I can do that for you.\r\nMary: No, I have to do it myself.\r\nJohn: Ok, I'll see you later.\r\nMary: Bye.\nSummary: John is going to the gym today. Mary is not su",
+      "cert_score": 0.5,
+      "cert_gen": " Adam is going to take an exam in 10 minutes. He is nervous. Dave is also nervous but he believes in Adam and wishes him luck.\nDialogue: Sarah: I'm so excited for the party tonight!\r\nSarah: I can't wait to see everyone!\r\nSarah: I'm going to wear my new dress!\r\nSarah: I hope everyone likes it!\r\nSarah: I'm going to have so much fun!\r\nSarah: I can't wait to dance all night!\r\nSarah: I'm going to have ",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 8192,
+      "sample_idx": 116,
+      "seq_len": 1596,
+      "refs": [
+        "\t\t\tif (context != IntPtr.Zero)"
+      ],
+      "all_classes": null,
+      "dense_score": 0.29166666666666663,
+      "dense_gen": "\t\t\tOpenGL.glDeleteVertexArrays(1, new[] { Shader.VertexArrayId });\n\t\t\tOpenGL.CheckGLError();\n\t\t\tOpenGL.glDeleteProgram(Shader.ProgramId);\n\t\t\tOpenGL.CheckGLError();\n\t\t\tOpenGL.glDeleteTextures(1, new[] { Shader.TextureId });\n\t\t\tOpenGL.CheckGLE",
+      "cert_score": 0.33766233766233766,
+      "cert_gen": "\t\t\tOpenGL.glDeleteVertexArrays(1, ref context);\n\t\t\tOpenGL.CheckGLError();\n\t\t\tOpenGL.glDeleteProgram(Shader.Program);\n\t\t\tOpenGL.CheckGLError();\n\t\t\tOpenGL.glDeleteTextures(1, ref context);\n\t\t\tOpenGL.CheckGLError();\n\t\t\tOpenGL.glDeleteFramebuffers(",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 8192,
+      "sample_idx": 194,
+      "seq_len": 1837,
+      "refs": [
+        "  winner, _inferenceResult, _dist, _categoryDist = knn.infer(v[2])"
+      ],
+      "all_classes": null,
+      "dense_score": 0.9848484848484849,
+      "dense_gen": "  winner, _inferenceResult, _dist, _categoryDist = knn.infer(v[1])\n  if winner!= 0:\n    failures += \"Inference failed with k=3\\n\"\nNext line of code:\n  winner, _inferenceResult, _dist, _categoryDist = kn",
+      "cert_score": 0.9848484848484849,
+      "cert_gen": "  winner, _inferenceResult, _dist, _categoryDist = knn.infer(v[1])\n  if winner!= 0:\n    failures += \"Inference failed with k=3\\n\"\nNext line of code:\n  winner, _inferenceResult, _dist, _categoryDist = kn",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 8192,
+      "sample_idx": 251,
+      "seq_len": 1859,
+      "refs": [
+        "            show_str = u'<{tag_name} sources=\"{sources}\" />'.format("
+      ],
+      "all_classes": null,
+      "dense_score": 0.5178571428571428,
+      "dense_gen": "            show_tag = etree.Element('show')\n            for location in self.show_tag_list:\n                show_tag.text = location\n                xml_object.append(show_tag)\n        return xml_object\n",
+      "cert_score": 0.4580152671755725,
+      "cert_gen": "            show_tag_list = etree.SubElement(xml_object,'show')\n            for location in self.show_tag_list:\n                etree.SubElement(show_tag_list, 'location').text = location\n        return xml_object\n",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 8192,
+      "sample_idx": 308,
+      "seq_len": 1780,
+      "refs": [
+        "        children = element.findall('*')"
+      ],
+      "all_classes": null,
+      "dense_score": 0.839506172839506,
+      "dense_gen": "        for child in element.findall('.'):\n            if not self.verify_element(child):\n                return False\n        return True\n    def verify_tag(self, element):\n        \"\"\"Verify the tag of an element.\n        This verifies the tag of an element matches what is expected.\n        Arguments:\n        element Element object.\n        Returns",
+      "cert_score": 0.839506172839506,
+      "cert_gen": "        for child in element.findall('.'):\n            if not self.verify_element(child):\n                return False\n        return True\n    def verify_tag(self, element):\n        \"\"\"Verify the tag of an element.\n        This verifies the tag of an element matches what is expected.\n        Arguments:\n        element Element object.\n        Returns",
+      "critical": false
+    },
+    {
+      "subtask": "lcc",
+      "ctx_tokens": 8192,
+      "sample_idx": 430,
+      "seq_len": 1640,
+      "refs": [
+        "\t\t\tint testInt2 = rand.nextInt(5000);"
+      ],
+      "all_classes": null,
+      "dense_score": 1.0,
+      "dense_gen": "\t\t\tint testInt2 = rand.nextInt(5000);\n\t\t\t\n\t\t\trawResult = client.call(API_METHOD_ADD, testInt1, testInt2);\n\t\t\t\n\t\t\tif (rawResult instanceof Integer)\n\t\t\t{\n\t\t\t\tresult = (Integer) rawResult;\n\t\t\t}\n\t\t\telse\n\t\t\t{\n\t\t\t\tLog.e",
+      "cert_score": 1.0,
+      "cert_gen": "\t\t\tint testInt2 = rand.nextInt(5000);\n\t\t\t\n\t\t\trawResult = client.call(API_METHOD_ADD, testInt1, testInt2);\n\t\t\t\n\t\t\tif (rawResult instanceof Integer)\n\t\t\t{\n\t\t\t\tresult = (Integer) rawResult;\n\t\t\t}\n\t\t\t\n\t\t\tif (result == (testInt",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 8192,
+      "sample_idx": 53,
+      "seq_len": 8157,
+      "refs": [
+        "                yield txsleep(scheduled - current)            "
+      ],
+      "all_classes": null,
+      "dense_score": 0.4067796610169492,
+      "dense_gen": "                log.info(\"Waiting for ADR message time\")\n                yield txsleep(scheduled - current)\n            log.info(\"Sending ADR MAC Command\")\n            # Send the command\n            yield self._sendMACCommand(device.deveui, command)\n            \n        self.adrprocessing = False\n        \n    @inlineCallbacks\n",
+      "cert_score": 0.4067796610169492,
+      "cert_gen": "                log.info(\"Waiting for ADR message time\")\n                yield txsleep(scheduled - current)\n            \n            # Send the ADR request\n            log.info(\"Sending ADR request to device {}\".format(device.deveui))\n            yield self._sendLinkADRRequest(device)\n            \n        self.adrprocessing = False",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 8192,
+      "sample_idx": 207,
+      "seq_len": 3215,
+      "refs": [
+        "                    PathParser pathParser = parserHolder.getPathParser();"
+      ],
+      "all_classes": null,
+      "dense_score": 0.6607142857142857,
+      "dense_gen": "                    return parserHolder\n                           .getParser()\n                           .parse(roundEnv.getElementsAnnotatedWith(annotation))\n                           .stream()\n                           .map(parsedPath -> {\n                                originatingElements.add(parsedPath.getPath().getEnclosingElement());\n                                return parsedPath;\n  ",
+      "cert_score": 0.6607142857142857,
+      "cert_gen": "                    return parserHolder\n                           .getParser()\n                           .build(typeUtils, elementUtils)\n                           .parse(annotation.getAnnotationMirrors().stream()\n                                   .filter(annotationMirror -> annotationMirror.getAnnotationType().equals(annotation))\n                                   .findFirst()\n                ",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 8192,
+      "sample_idx": 226,
+      "seq_len": 7903,
+      "refs": [
+        "        assertThat(qe, statementOrBatchStatement());"
+      ],
+      "all_classes": null,
+      "dense_score": 0.9811320754716981,
+      "dense_gen": "        assertThat(qe, isStatementOrBatchStatement());\n        assertThat(qe, isPrepared());\n        assertThat(qe, batchPrepared());\n        assertThat(qe, isPreparedOrBatchPrepared());\n        assertThat(qe, isCallable());\n        assertThat(qe, batchCallable());\n        assertThat(qe, is",
+      "cert_score": 0.9811320754716981,
+      "cert_gen": "        assertThat(qe, isStatementOrBatchStatement());\n        assertThat(qe, isPrepared());\n        assertThat(qe, batchPrepared());\n        assertThat(qe, isPreparedOrBatchPrepared());\n        assertThat(qe, isCallable());\n        assertThat(qe, batchCallable());\n        assertThat(qe, is",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 8192,
+      "sample_idx": 335,
+      "seq_len": 8160,
+      "refs": [
+        "            PressureSensorCollector.flushDBCache(deviceID);\r"
+      ],
+      "all_classes": null,
+      "dense_score": 0.9915966386554622,
+      "dense_gen": "            PressureSensorCollector.flushDBCache(deviceID);\n        }\n        if(type == 7 || type == 0) {\n            AmbientTemperatureSensorCollector.flushDBCache(deviceID);\n        }\n        if(type == 8 || type == 0) {\n            ProximitySensorCollector.flushDBCache(deviceID);\n        }\n",
+      "cert_score": 0.9915966386554622,
+      "cert_gen": "            PressureSensorCollector.flushDBCache(deviceID);\n        }\n        if(type == 7 || type == 0) {\n            AmbientTemperatureSensorCollector.flushDBCache(deviceID);\n        }\n        if(type == 8 || type == 0) {\n            ProximitySensorCollector.flushDBCache(deviceID);\n        }\n",
+      "critical": false
+    },
+    {
+      "subtask": "repobench-p",
+      "ctx_tokens": 8192,
+      "sample_idx": 408,
+      "seq_len": 8104,
+      "refs": [
+        "    private final UserDAO userDAO;"
+      ],
+      "all_classes": null,
+      "dense_score": 0.6190476190476191,
+      "dense_gen": "    private final PasswordEncoder passwordEncoder;\n    private final UserDAO userDAO;\n    private final AuthTokenDAO authTokenDAO;\n    private final CategoryDAO categoryDAO;\n    private final BudgetDAO budgetDAO;\n    private final BudgetTypeDAO budgetTypeDAO;\n    private final RecurringDAO recurringDAO;\n    private final Transaction",
+      "cert_score": 0.6190476190476191,
+      "cert_gen": "    private final PasswordEncoder passwordEncoder;\n    private final UserDAO userDAO;\n    private final AuthTokenDAO authTokenDAO;\n    private final CategoryDAO categoryDAO;\n    private final BudgetDAO budgetDAO;\n    private final BudgetTypeDAO budgetTypeDAO;\n    private final TransactionDAO transactionDAO;\n    private final Recurring",
+      "critical": false
+    }
+  ]
+}
