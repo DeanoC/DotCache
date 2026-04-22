@@ -81,14 +81,19 @@ def compute_tier2_residual_mass(
     S_b: torch.Tensor,       # [num_q_heads, num_blocks] block sums
     skip_mask: torch.Tensor,  # [num_q_heads, num_blocks] bool (True=skip)
     top_k: int = TOP_K_BLOCKS,
-) -> torch.Tensor:
+    return_details: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute per-head tier-2 residual mass ρ from Phase 1 outputs.
 
     ρ = 1 - α_K - β, where:
       α_K = fraction of mass on top-K blocks (by m_b)
       β = fraction of mass on skipped blocks
 
-    Returns: [num_q_heads] float32, the worst-case ρ per head.
+    Returns ρ: [num_q_heads] float32, worst-case per head.
+
+    When return_details=True, also returns (mass_frac, topk_idx) so callers
+    can compute tighter per-block bounds (e.g. Σ_b ρ_b · η_b) without
+    recomputing the softmax mass partition.
     """
     num_q_heads, num_blocks = m_b.shape
 
@@ -111,7 +116,62 @@ def compute_tier2_residual_mass(
 
     # ρ = 1 - α_K - β (clamped to [0, 1])
     rho = (1.0 - alpha_K - beta).clamp(min=0.0, max=1.0)
+    if return_details:
+        return rho, mass_frac, topk_idx
     return rho
+
+
+def compute_value_error_bound(
+    mass_frac: torch.Tensor,       # [num_q_heads, num_blocks] from compute_tier2_residual_mass
+    topk_idx: torch.Tensor,        # [num_q_heads, top_k] indices of top-K blocks
+    skip_mask: torch.Tensor,       # [num_q_heads, num_blocks] bool (True = skipped)
+    eta_per_block: torch.Tensor,   # [num_kv_heads, num_blocks] per-block INT4 error bound η_b
+    gqa_group: int,
+) -> torch.Tensor:
+    """Tight per-head value-error bound Σ_{b ∉ top-K ∪ skipped} mass_frac[h,b] · η[kv(h), b].
+
+    Upper-bounds the INT4 output error for that head's weighted V sum on
+    the residual (non-top-K, non-skipped) blocks. Strictly ≤ ρ_total · η_max
+    (the conservative bound used by the legacy `decide_v_format` scalar path)
+    because η_max ≥ η_b ∀b and ρ_total = Σ_b mass_frac over the residual set.
+
+    Cheap: the mass_frac and topk_idx inputs are already computed inside
+    `compute_tier2_residual_mass(..., return_details=True)`, so the only
+    extra work is a scatter + two elementwise ops + one reduction.
+
+    Returns: [num_q_heads] float32, the per-head tight bound. Callers
+    typically take .max() across heads for a per-layer step decision.
+    """
+    num_q_heads, num_blocks_mass = mass_frac.shape
+    num_kv_heads, num_blocks_eta = eta_per_block.shape
+
+    # Trailing partial blocks appear in mass_frac (the residual-mass path
+    # cats a pad row for them) but have no INT4 data in eta_per_block —
+    # they're always FP16-attended, so they contribute zero to E_val and
+    # trimming to num_blocks_eta is equivalent. Any blocks past
+    # num_blocks_eta are either (a) the trailing partial, always in
+    # top-K → residual False anyway, or (b) skipped → residual False.
+    num_blocks = min(num_blocks_mass, num_blocks_eta)
+    mass_frac_q = mass_frac[:, :num_blocks]
+    skip_mask_q = skip_mask[:, :num_blocks]
+    eta_q = eta_per_block[:, :num_blocks]
+
+    # Residual mask: not top-K AND not skipped (these are the blocks we
+    # attend to with INT4 values — i.e. where η_b contributes to the bound).
+    residual = torch.ones_like(mass_frac_q, dtype=torch.bool)
+    # topk_idx may index into the (possibly padded) num_blocks_mass range;
+    # clamp it so we don't scatter past the trimmed extent.
+    topk_trim = topk_idx.clamp(max=num_blocks - 1)
+    residual.scatter_(1, topk_trim, False)
+    residual &= ~skip_mask_q
+
+    # Broadcast η from [num_kv_heads, num_blocks] → [num_q_heads, num_blocks]
+    # via the GQA mapping kv_of(qh) = qh // gqa_group.
+    kv_idx = torch.arange(num_q_heads, device=mass_frac.device) // gqa_group
+    eta_per_qhead = eta_q[kv_idx]  # [num_q_heads, num_blocks]
+
+    e_val = (mass_frac_q * eta_per_qhead * residual.to(mass_frac.dtype)).sum(dim=1)
+    return e_val
 
 
 def decide_v_format(
@@ -119,14 +179,33 @@ def decide_v_format(
     eta_int4: float,          # worst-case INT4 error bound for this layer
     tolerance: float = DEFAULT_V_TOLERANCE,
 ) -> str:
-    """Decide INT4 vs FP16 values based on mass-weighted error bound.
+    """Decide INT4 vs FP16 values based on the legacy loose bound
+    ρ_worst · η_worst < tolerance.
 
-    Uses worst-case ρ across all heads (conservative, per-layer decision).
+    This upper-bounds Σ_b ρ_b · η_b via ρ_total · η_max. For a tighter
+    per-block bound, see `decide_v_format_tight` below.
+
     Returns 'int4' or 'fp16'.
     """
     rho_worst = rho.max().item()
     int4_error = eta_int4 * rho_worst
     return "int4" if int4_error < tolerance else "fp16"
+
+
+def decide_v_format_tight(
+    e_val_head: torch.Tensor,   # [num_q_heads] from compute_value_error_bound
+    tolerance: float = DEFAULT_V_TOLERANCE,
+) -> str:
+    """Decide INT4 vs FP16 values using the tight per-block bound
+    max_h Σ_{b ∉ top-K ∪ skipped} mass_frac[h, b] · η_b.
+
+    Strictly less conservative than `decide_v_format` (returns 'int4'
+    at least as often). Use when the paper's certified bound should
+    track achieved per-step error, not its ρ_total·η_max upper bound.
+
+    Returns 'int4' or 'fp16'.
+    """
+    return "int4" if e_val_head.max().item() < tolerance else "fp16"
 
 
 def compute_adaptive_topk_mask(
@@ -528,6 +607,15 @@ def certified_attention_layer(
     exploration_generator: torch.Generator | None = None,
     phase_timings: dict | None = None,
     per_kv_group_topk: bool = False,
+    # Value-error bound mode (paper §3.4 follow-up). "loose" keeps the
+    # legacy ρ_worst · η_worst check used by decide_v_format — an upper
+    # bound on Σ_b ρ_b · η_b but wastes slack. "tight" computes the actual
+    # Σ_b ρ_b · η_b per head and uses its max for decide_v_format. Tight
+    # will flip INT4 more often than loose (strictly less conservative).
+    # Either way, telemetry emits e_val_max/e_val_mean from the tight bound.
+    # Default "tight" (paper-correct); see CertifiedAttentionState for the
+    # sweep that confirmed the flip is safe at v_tolerance=0.5.
+    value_error_mode: str = "tight",
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Full certified attention for one layer, all heads.
 
@@ -997,11 +1085,42 @@ def certified_attention_layer(
             )
     elif cache.values_int4_packed is not None:
         # INT4 values: must use Triton kernel (SDPA can't handle INT4)
+        e_val_head: torch.Tensor | None = None
+        # Fail fast on typos — silently loosening a certification check
+        # because someone wrote "tigt" would invalidate the experiment
+        # without a signal.
+        if value_error_mode not in ("loose", "tight"):
+            raise ValueError(
+                f"value_error_mode must be 'loose' or 'tight', got {value_error_mode!r}"
+            )
         if collect_stats:
             with _PhaseTimer(phase_timings, "value_check"):
-                rho = compute_tier2_residual_mass(m_b, S_b, skip_mask)
+                # Keep mass_frac + topk_idx so the tight bound can reuse
+                # them without recomputing the softmax mass partition.
+                # top_k here must match top_k_fp16_keys — the set of blocks
+                # this layer actually force-attends. Using the module
+                # default would make E_val's residual set diverge from the
+                # attended set, invalidating the bound.
+                rho, mass_frac, topk_idx = compute_tier2_residual_mass(
+                    m_b, S_b, skip_mask,
+                    top_k=top_k_fp16_keys,
+                    return_details=True,
+                )
                 eta_int4 = cache.values_int4_errors.max().item()
-                v_format = decide_v_format(rho, eta_int4, v_tolerance)
+                # Tight per-head bound Σ_b ρ_b · η_b. Always computed so
+                # telemetry can report it, regardless of which bound the
+                # v_format decision uses.
+                e_val_head = compute_value_error_bound(
+                    mass_frac=mass_frac,
+                    topk_idx=topk_idx,
+                    skip_mask=skip_mask,
+                    eta_per_block=cache.values_int4_errors,
+                    gqa_group=gqa_group,
+                )
+                if value_error_mode == "tight":
+                    v_format = decide_v_format_tight(e_val_head, v_tolerance)
+                else:
+                    v_format = decide_v_format(rho, eta_int4, v_tolerance)
         else:
             v_format = "int4"
 
@@ -1133,7 +1252,18 @@ def certified_attention_layer(
             stats["rho_max"] = rho.max().item()
             stats["rho_mean"] = rho.mean().item()
             stats["eta_int4"] = eta_int4
-            stats["int4_error_bound"] = eta_int4 * rho.max().item()
+            # Loose bound used by decide_v_format's legacy scalar path.
+            stats["int4_error_bound_loose"] = eta_int4 * rho.max().item()
+            # Back-compat alias; removed once downstream harnesses migrate
+            # to the explicit _loose / _tight naming.
+            stats["int4_error_bound"] = stats["int4_error_bound_loose"]
+            # Tight per-block bound Σ_b ρ_b · η_b, max across heads. This
+            # is the "achieved" value-error upper bound per step the paper
+            # should report alongside ε_val — always ≤ int4_error_bound_loose.
+            if e_val_head is not None:
+                stats["e_val_max"] = float(e_val_head.max().item())
+                stats["e_val_mean"] = float(e_val_head.mean().item())
+                stats["value_error_mode"] = value_error_mode
         # Adaptive K* telemetry (paper §3.3). Present only when enabled.
         if k_star is not None:
             stats["k_star_mean"] = float(k_star.float().mean().item())
