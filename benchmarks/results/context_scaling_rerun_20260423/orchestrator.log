@@ -1,0 +1,56 @@
+
+=== 2026-04-23T05:24:06Z :: context-scaling Paper-1 rerun start ===
+
+=== 2026-04-23T05:24:06Z :: moved previous Paper-2 JSON → /workspace/DotCache/benchmarks/results/context_scaling_rerun_20260423/certified_64k_int8model.PAPER2_REJECTED.json ===
+
+=== 2026-04-23T05:24:06Z :: running bench_certified_64k.py with Paper-1 config (8K..64K, 32 steps each) ===
+
+=== 2026-04-23T05:25:45Z :: bench_certified_64k.py exit=0 ===
+
+=== 2026-04-23T05:25:45Z :: copied Paper-1 JSON → /workspace/DotCache/benchmarks/results/context_scaling_rerun_20260423/certified_64k_int8model.PAPER1.json ===
+  Dense:     40.8 ms/step, peak 13.46 GB
+  Certified: 90.6 ms/step, peak 19.60 GB
+  Speedup:   -121.8%
+  INT8-tail rate: 87.0% (fraction served from cheap INT8-key path; every block attended)
+  VRAM saved: -6.14 GB
+
+============================================================
+  48K context, 32 decode steps (INT8 model)
+============================================================
+  Prompt: 35445 tokens
+  Prefill: 6644 ms, peak 15.56 GB (chunked)
+  Tiered: 8553 MB VRAM, 2356 MB CPU (1608 ms)
+  After free: 20.01 GB
+  Dense:     41.3 ms/step, peak 13.82 GB
+  Certified: 90.3 ms/step, peak 20.37 GB
+  Speedup:   -118.9%
+  INT8-tail rate: 87.9% (fraction served from cheap INT8-key path; every block attended)
+  VRAM saved: -6.55 GB
+
+============================================================
+  64K context, 32 decode steps (INT8 model)
+============================================================
+  Prompt: 35445 tokens
+  Prefill: 6693 ms, peak 15.56 GB (chunked)
+  Tiered: 8553 MB VRAM, 2356 MB CPU (1594 ms)
+  After free: 20.01 GB
+  Dense:     41.5 ms/step, peak 13.82 GB
+  Certified: 91.1 ms/step, peak 20.37 GB
+  Speedup:   -119.6%
+  INT8-tail rate: 87.9% (fraction served from cheap INT8-key path; every block attended)
+  VRAM saved: -6.55 GB
+
+============================================================
+CONTEXT SCALING (INT8 model, chunked prefill)
+============================================================
+  Ctx  Dense ms  Cert ms  Ratio  INT8-tail  Dense GB  Cert GB  Saved
+   8K     35.1    83.3   2.4x     58.6%    10.19   11.83 -1.64
+  16K     37.3    82.3   2.2x     76.7%    11.28   14.42 -3.13
+  32K     40.8    90.6   2.2x     87.0%    13.46   19.60 -6.14
+  48K     41.3    90.3   2.2x     87.9%    13.82   20.37 -6.55
+  64K     41.5    91.1   2.2x     87.9%    13.82   20.37 -6.55
+
+JSON -> benchmarks/results/certified_64k_int8model.json
+
+=== 2026-04-23T05:25:45Z :: context-scaling Paper-1 rerun done (exit=0) ===
+Results in /workspace/DotCache/benchmarks/results/context_scaling_rerun_20260423
