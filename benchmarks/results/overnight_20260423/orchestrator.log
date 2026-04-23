@@ -1,0 +1,236 @@
+
+=== 2026-04-22T20:02:00Z :: overnight suite start ===
+
+=== 2026-04-22T20:02:00Z :: 1b: 64K cap sweep (per-KV-group, new LRU + kernel) ===
+
+=== 2026-04-22T20:02:00Z ::   cap=256 → /workspace/DotCache/benchmarks/results/overnight_20260423/cap_256_kvgroup.log ===
+  cert FAST_ATTEND=1        mean 1091.02 ms  p50 1087.05 ms  p95 1140.31 ms  p99 1167.41 ms  tok/s   0.92
+
+=== Ratios ===
+
+=== 2026-04-22T20:03:54Z ::   cap=512 → /workspace/DotCache/benchmarks/results/overnight_20260423/cap_512_kvgroup.log ===
+  cert FAST_ATTEND=1        mean 1090.30 ms  p50 1088.38 ms  p95 1121.43 ms  p99 1151.85 ms  tok/s   0.92
+
+=== Ratios ===
+
+=== 2026-04-22T20:05:47Z ::   cap=1024 → /workspace/DotCache/benchmarks/results/overnight_20260423/cap_1024_kvgroup.log ===
+  cert FAST_ATTEND=1        mean 1127.27 ms  p50 1111.77 ms  p95 1195.92 ms  p99 1229.65 ms  tok/s   0.89
+
+=== Ratios ===
+
+=== 2026-04-22T20:07:42Z ::   cap=2048 → /workspace/DotCache/benchmarks/results/overnight_20260423/cap_2048_kvgroup.log ===
+  cert FAST_ATTEND=1        mean  897.69 ms  p50  899.70 ms  p95  937.65 ms  p99  955.78 ms  tok/s   1.11
+
+=== Ratios ===
+
+=== 2026-04-22T20:09:20Z :: 1c: context-scaling (8K..64K, 32 decode steps per cell) ===
+  Prefill: 6838 ms, peak 15.56 GB (chunked)
+  Tiered: 8556 MB VRAM, 2357 MB CPU (1431 ms)
+  After free: 20.01 GB
+  Dense:     42.8 ms/step, peak 13.82 GB
+  Certified: 128.0 ms/step, peak 20.60 GB
+  Speedup:   -198.6%
+  Skip rate: 80.6%
+  VRAM saved: -6.78 GB
+
+============================================================
+CONTEXT SCALING (INT8 model, chunked prefill)
+============================================================
+  Ctx  Dense ms  Cert ms  Ratio   Skip  Dense GB  Cert GB  Saved
+   8K     36.4    60.9   1.7x 51.2%    10.19   11.88 -1.69
+  16K     37.9    79.3   2.1x 71.4%    11.28   14.50 -3.22
+  32K     42.6   119.3   2.8x 80.2%    13.46   19.73 -6.27
+  48K     52.2   128.4   2.5x 80.6%    13.82   20.60 -6.78
+  64K     42.8   128.0   3.0x 80.6%    13.82   20.60 -6.78
+
+JSON -> benchmarks/results/certified_64k_int8model.json
+
+=== 2026-04-22T20:11:01Z :: 2: value-error sweep at ctx=16384 → /workspace/DotCache/benchmarks/results/overnight_20260423/value_error_sweep_ctx16384.log ===
+432 (step, layer) records collected in 2.1s  (16 steps had partial telemetry due to attend-kernel crashes)
+
+=== Summary over 432 (step × layer) samples ===
+  loose bound            mean=0.2892  p50=0.2795  p95=0.4832  p99=0.4943  max=0.4960
+  tight bound            mean=0.1764  p50=0.1855  p95=0.3240  p99=0.3303  max=0.3360
+  tight / loose ratio    mean=0.6364  p50=0.6008  p95=0.8621  p99=0.8803  max=0.8806
+
+Invariant tight ≤ loose: 432/432 samples pass
+
+=== Disagreement rate (loose picks FP16 but tight would allow INT4) ===
+  tolerance    loose→FP16   tight→FP16   flipped→INT4   flip%   
+  0.050        432          406          26             6.02   %
+  0.100        399          369          30             6.94   %
+  0.250        268          32           236            54.63  %
+  0.500        0            0            0              0.00   %
+  1.000        0            0            0              0.00   %
+
+Wrote /workspace/DotCache/benchmarks/results/overnight_20260423/value_error_sweep_ctx16384.json
+
+=== 2026-04-22T20:12:03Z :: 2: value-error sweep at ctx=32768 → /workspace/DotCache/benchmarks/results/overnight_20260423/value_error_sweep_ctx32768.log ===
+441 (step, layer) records collected in 2.0s  (16 steps had partial telemetry due to attend-kernel crashes)
+
+=== Summary over 441 (step × layer) samples ===
+  loose bound            mean=0.2703  p50=0.2684  p95=0.4104  p99=0.4969  max=0.4992
+  tight bound            mean=0.1577  p50=0.1546  p95=0.2339  p99=0.2392  max=0.2421
+  tight / loose ratio    mean=0.6087  p50=0.5590  p95=0.8645  p99=0.8741  max=0.8742
+
+Invariant tight ≤ loose: 441/441 samples pass
+
+=== Disagreement rate (loose picks FP16 but tight would allow INT4) ===
+  tolerance    loose→FP16   tight→FP16   flipped→INT4   flip%   
+  0.050        426          393          33             7.48   %
+  0.100        396          377          19             4.31   %
+  0.250        266          0            266            60.32  %
+  0.500        0            0            0              0.00   %
+  1.000        0            0            0              0.00   %
+
+Wrote /workspace/DotCache/benchmarks/results/overnight_20260423/value_error_sweep_ctx32768.json
+
+=== 2026-04-22T20:13:38Z :: 3: PG-19 ppl at ctx=4096 (20 chunks, tau_cov=0.995) ===
+  Certified [5/20]: chunk_ppl=6.89, suffix_ppl=7.06, running_ppl=6.84, skip=0.415 (overall 0.412)
+  Certified [10/20]: chunk_ppl=6.20, suffix_ppl=6.13, running_ppl=6.92, skip=0.422 (overall 0.416)
+  Certified [15/20]: chunk_ppl=18.08, suffix_ppl=16.08, running_ppl=7.98, skip=0.389 (overall 0.414)
+  Certified [20/20]: chunk_ppl=18.88, suffix_ppl=16.75, running_ppl=9.95, skip=0.369 (overall 0.406)
+Certified: ppl=9.95 (81880 tokens, 3998.2s)
+  bits/token (full): 3.3147 (95% CI [3.0217, 3.6281])
+  bits/token (certified suffix only): 3.2480 (95% CI [2.9701, 3.5450])
+
+==================================================
+Summary
+==================================================
+Context: 4096 tokens, 20 chunks
+Dense perplexity:     9.9416
+Certified perplexity: 9.9501
+Ratio (cert/dense):   1.000851
+Delta:                +0.0085
+Skip rate:            0.4056 (3272837138/8068792320 blocks)
+Concentration thr:    0.0
+
+JSON -> /workspace/DotCache/benchmarks/results/overnight_20260423/pg19_ctx4096.json
+
+=== 2026-04-22T21:20:58Z :: 3: PG-19 ppl at ctx=8192 (20 chunks, tau_cov=0.995) ===
+  Certified [5/20]: chunk_ppl=6.45, suffix_ppl=5.38, running_ppl=6.65, skip=0.551 (overall 0.553)
+  Certified [10/20]: chunk_ppl=17.98, suffix_ppl=17.10, running_ppl=10.06, skip=0.515 (overall 0.541)
+
+=== 2026-04-22T22:50:58Z :: 3: PG-19 ppl at ctx=16384 (20 chunks, tau_cov=0.995) ===
+  Certified [5/20]: chunk_ppl=17.40, suffix_ppl=16.36, running_ppl=9.73, skip=0.727 (overall 0.735)
+
+=== 2026-04-23T00:20:59Z :: 4: RULER at ctx=4096 (20 samples × 7 subtasks, calibrated cert) ===
+  [271/280] dense     fwe                4K s=15 -> 1.00
+  [272/280] certified fwe                4K s=15 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [273/280] dense     fwe                4K s=16 -> 1.00
+  [274/280] certified fwe                4K s=16 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [275/280] dense     fwe                4K s=17 -> 0.67
+  [276/280] certified fwe                4K s=17 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [277/280] dense     fwe                4K s=18 -> 0.67
+  [278/280] certified fwe                4K s=18 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [279/280] dense     fwe                4K s=19 -> 1.00
+  [280/280] certified fwe                4K s=19 -> 1.00
+
+============================================================
+RULER subset results (18.7 min)
+============================================================
+task_ctx                  dense     cert        Δ   crit
+cwe_4K                    1.000    1.000   +0.000      0
+fwe_4K                    0.817    0.833   +0.017      0
+niah_multikey_4K          1.000    1.000   +0.000      0
+niah_multiquery_4K        1.000    1.000   +0.000      0
+niah_multivalue_4K        1.000    1.000   +0.000      0
+niah_single_4K            1.000    1.000   +0.000      0
+vt_4K                     0.938    0.887   -0.050      3
+
+Overall: dense=0.965 cert=0.960 Δ=-0.005 critical=3/140
+
+JSON -> /workspace/DotCache/benchmarks/results/overnight_20260423/ruler_ctx4096.json
+
+=== 2026-04-23T00:40:39Z :: 4: RULER at ctx=8192 (20 samples × 7 subtasks, calibrated cert) ===
+  [271/280] dense     fwe                8K s=15 -> 0.67
+  [272/280] certified fwe                8K s=15 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [273/280] dense     fwe                8K s=16 -> 0.67
+  [274/280] certified fwe                8K s=16 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [275/280] dense     fwe                8K s=17 -> 1.00
+  [276/280] certified fwe                8K s=17 -> 1.00
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [277/280] dense     fwe                8K s=18 -> 0.67
+  [278/280] certified fwe                8K s=18 -> 0.67
+Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [279/280] dense     fwe                8K s=19 -> 0.67
+  [280/280] certified fwe                8K s=19 -> 0.67
+
+============================================================
+RULER subset results (21.1 min)
+============================================================
+task_ctx                  dense     cert        Δ   crit
+cwe_8K                    0.905    0.975   +0.070      0
+fwe_8K                    0.650    0.650   +0.000      0
+niah_multikey_8K          1.000    1.000   +0.000      0
+niah_multiquery_8K        0.975    0.975   +0.000      0
+niah_multivalue_8K        1.000    1.000   +0.000      0
+niah_single_8K            1.000    1.000   +0.000      0
+vt_8K                     0.925    0.900   -0.025      2
+
+Overall: dense=0.922 cert=0.929 Δ=+0.006 critical=2/140
+
+JSON -> /workspace/DotCache/benchmarks/results/overnight_20260423/ruler_ctx8192.json
+
+=== 2026-04-23T01:02:43Z :: 4a: aggregate_ruler on the overnight JSONs ===
+# Missing configs (not yet complete): ['eps0_4k', 'eps0_8k']
+
+
+## Per-subtask mean score (dir=ruler_agg_input)
+
+subtask         | ε=0 no-skip 4K dense | cert | Δ | crit | calibrated 4K dense | cert  | Δ      | crit | ε=0 no-skip 8K dense | cert | Δ | crit | calibrated 8K dense | cert  | Δ      | crit
+----------------+----------------------+------+---+------+---------------------+-------+--------+------+----------------------+------+---+------+---------------------+-------+--------+-----
+niah_single     | -                    | -    | - | -    | 1.000               | 1.000 | +0.000 | 0    | -                    | -    | - | -    | 1.000               | 1.000 | +0.000 | 0   
+niah_multikey   | -                    | -    | - | -    | 1.000               | 1.000 | +0.000 | 0    | -                    | -    | - | -    | 1.000               | 1.000 | +0.000 | 0   
+niah_multivalue | -                    | -    | - | -    | 1.000               | 1.000 | +0.000 | 0    | -                    | -    | - | -    | 1.000               | 1.000 | +0.000 | 0   
+niah_multiquery | -                    | -    | - | -    | 1.000               | 1.000 | +0.000 | 0    | -                    | -    | - | -    | 0.975               | 0.975 | +0.000 | 0   
+vt              | -                    | -    | - | -    | 0.938               | 0.887 | -0.050 | 3    | -                    | -    | - | -    | 0.925               | 0.900 | -0.025 | 2   
+cwe             | -                    | -    | - | -    | 1.000               | 1.000 | +0.000 | 0    | -                    | -    | - | -    | 0.905               | 0.975 | +0.070 | 0   
+fwe             | -                    | -    | - | -    | 0.817               | 0.833 | +0.017 | 0    | -                    | -    | - | -    | 0.650               | 0.650 | +0.000 | 0   
+
+## 95% CIs — calibrated 4K (n per subtask)
+
+subtask         | n  | dense% | dense CI      | cert% | cert CI       | Δ (c-d) | Δ CI          | b(d>c) | c(c>d)
+----------------+----+--------+---------------+-------+---------------+---------+---------------+--------+-------
+niah_single     | 20 | 100.0  | [83.9, 100.0] | 100.0 | [83.9, 100.0] | +0.0    | [+0.0, +0.0]  | 0      | 0     
+niah_multikey   | 20 | 100.0  | [83.9, 100.0] | 100.0 | [83.9, 100.0] | +0.0    | [+0.0, +0.0]  | 0      | 0     
+niah_multivalue | 20 | 100.0  | [83.9, 100.0] | 100.0 | [83.9, 100.0] | +0.0    | [+0.0, +0.0]  | 0      | 0     
+niah_multiquery | 20 | 100.0  | [83.9, 100.0] | 100.0 | [83.9, 100.0] | +0.0    | [+0.0, +0.0]  | 0      | 0     
+vt              | 20 | 85.0   | [64.0, 94.8]  | 75.0  | [53.1, 88.8]  | -10.0   | [-29.1, +9.1] | 3      | 1     
+cwe             | 20 | 100.0  | [83.9, 100.0] | 100.0 | [83.9, 100.0] | +0.0    | [+0.0, +0.0]  | 0      | 0     
+fwe             | 20 | 45.0   | [25.8, 65.8]  | 50.0  | [29.9, 70.1]  | +5.0    | [-4.6, +14.6] | 0      | 1     
+
+## 95% CIs — calibrated 8K (n per subtask)
+
+subtask         | n  | dense% | dense CI      | cert% | cert CI       | Δ (c-d) | Δ CI          | b(d>c) | c(c>d)
+----------------+----+--------+---------------+-------+---------------+---------+---------------+--------+-------
+niah_single     | 20 | 100.0  | [83.9, 100.0] | 100.0 | [83.9, 100.0] | +0.0    | [+0.0, +0.0]  | 0      | 0     
+niah_multikey   | 20 | 100.0  | [83.9, 100.0] | 100.0 | [83.9, 100.0] | +0.0    | [+0.0, +0.0]  | 0      | 0     
+niah_multivalue | 20 | 100.0  | [83.9, 100.0] | 100.0 | [83.9, 100.0] | +0.0    | [+0.0, +0.0]  | 0      | 0     
+niah_multiquery | 20 | 95.0   | [76.4, 99.1]  | 95.0  | [76.4, 99.1]  | +0.0    | [+0.0, +0.0]  | 0      | 0     
+vt              | 20 | 75.0   | [53.1, 88.8]  | 65.0  | [43.3, 81.9]  | -10.0   | [-23.1, +3.1] | 2      | 0     
+cwe             | 20 | 90.0   | [69.9, 97.2]  | 95.0  | [76.4, 99.1]  | +5.0    | [-4.6, +14.6] | 0      | 1     
+fwe             | 20 | 20.0   | [8.1, 41.6]   | 20.0  | [8.1, 41.6]   | +0.0    | [+0.0, +0.0]  | 0      | 0     
+
+## Overall (all subtasks pooled, with paired 95% CI)
+
+config        | dense_mean | cert_mean | Δ_mean | crit  | Δ pass% (c-d) | paired 95% CI  | n  
+--------------+------------+-----------+--------+-------+---------------+----------------+----
+eps0_4k       | -          | -         | -      | -     | -             | -              | -  
+calibrated_4k | 0.965      | 0.960     | -0.005 | 3/140 | -0.71         | [-3.84, +2.41] | 140
+eps0_8k       | -          | -         | -      | -     | -             | -              | -  
+calibrated_8k | 0.922      | 0.929     | +0.006 | 2/140 | -0.71         | [-3.14, +1.71] | 140
+
+CSV -> /workspace/DotCache/benchmarks/results/overnight_20260423/ruler_summary.csv
+
+=== 2026-04-23T01:02:43Z :: writing SUMMARY.md ===
+
+=== 2026-04-23T01:02:43Z :: overnight suite done ===
+Results in /workspace/DotCache/benchmarks/results/overnight_20260423
+Summary: /workspace/DotCache/benchmarks/results/overnight_20260423/SUMMARY.md

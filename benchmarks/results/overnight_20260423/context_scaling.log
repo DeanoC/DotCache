@@ -1,0 +1,101 @@
+Loading NousResearch/Meta-Llama-3.1-8B (INT8 weights)...
+Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights:   1%|          | 2/291 [00:00<00:25, 11.42it/s]Loading weights:   1%|▏         | 4/291 [00:00<00:19, 14.59it/s]Loading weights:   2%|▏         | 6/291 [00:00<00:19, 14.86it/s]Loading weights:   4%|▍         | 13/291 [00:00<00:10, 26.22it/s]Loading weights:   5%|▌         | 16/291 [00:00<00:11, 25.00it/s]Loading weights:   8%|▊         | 22/291 [00:00<00:09, 27.25it/s]Loading weights:   9%|▊         | 25/291 [00:01<00:10, 25.39it/s]Loading weights:  11%|█         | 31/291 [00:01<00:09, 28.19it/s]Loading weights:  12%|█▏        | 34/291 [00:01<00:10, 25.65it/s]Loading weights:  14%|█▎        | 40/291 [00:01<00:09, 26.96it/s]Loading weights:  15%|█▍        | 43/291 [00:01<00:09, 25.98it/s]Loading weights:  17%|█▋        | 49/291 [00:01<00:08, 28.87it/s]Loading weights:  18%|█▊        | 52/291 [00:02<00:08, 27.52it/s]Loading weights:  20%|█▉        | 58/291 [00:02<00:07, 30.03it/s]Loading weights:  21%|██        | 61/291 [00:02<00:08, 28.42it/s]Loading weights:  23%|██▎       | 67/291 [00:02<00:07, 30.72it/s]Loading weights:  24%|██▍       | 70/291 [00:02<00:07, 28.91it/s]Loading weights:  26%|██▌       | 76/291 [00:02<00:07, 28.36it/s]Loading weights:  27%|██▋       | 79/291 [00:02<00:07, 27.07it/s]Loading weights:  28%|██▊       | 82/291 [00:03<00:07, 26.63it/s]Loading weights:  30%|██▉       | 86/291 [00:03<00:07, 27.73it/s]Loading weights:  31%|███       | 90/291 [00:03<00:06, 30.38it/s]Loading weights:  32%|███▏      | 94/291 [00:03<00:07, 27.73it/s]Loading weights:  33%|███▎      | 97/291 [00:03<00:07, 26.43it/s]Loading weights:  35%|███▌      | 103/291 [00:03<00:06, 29.39it/s]Loading weights:  36%|███▋      | 106/291 [00:03<00:06, 27.38it/s]Loading weights:  38%|███▊      | 112/291 [00:04<00:05, 30.31it/s]Loading weights:  40%|███▉      | 115/291 [00:04<00:06, 28.38it/s]Loading weights:  42%|████▏     | 121/291 [00:04<00:05, 31.18it/s]Loading weights:  43%|████▎     | 125/291 [00:04<00:05, 31.36it/s]Loading weights:  45%|████▍     | 130/291 [00:04<00:05, 30.05it/s]Loading weights:  46%|████▌     | 133/291 [00:04<00:05, 28.55it/s]Loading weights:  47%|████▋     | 137/291 [00:04<00:05, 27.10it/s]Loading weights:  48%|████▊     | 140/291 [00:05<00:05, 25.98it/s]Loading weights:  50%|████▉     | 145/291 [00:05<00:05, 27.01it/s]Loading weights:  51%|█████     | 149/291 [00:05<00:05, 28.35it/s]Loading weights:  53%|█████▎    | 153/291 [00:05<00:04, 30.33it/s]Loading weights:  54%|█████▍    | 157/291 [00:05<00:04, 30.74it/s]Loading weights:  55%|█████▌    | 161/291 [00:05<00:04, 30.65it/s]Loading weights:  57%|█████▋    | 165/291 [00:05<00:03, 32.05it/s]Loading weights:  58%|█████▊    | 169/291 [00:06<00:04, 26.45it/s]Loading weights:  59%|█████▉    | 172/291 [00:06<00:04, 26.62it/s]Loading weights:  60%|██████    | 176/291 [00:06<00:04, 24.77it/s]Loading weights:  62%|██████▏   | 181/291 [00:06<00:03, 29.36it/s]Loading weights:  64%|██████▎   | 185/291 [00:06<00:04, 26.12it/s]Loading weights:  65%|██████▍   | 189/291 [00:06<00:03, 28.29it/s]Loading weights:  66%|██████▋   | 193/291 [00:06<00:03, 29.63it/s]Loading weights:  68%|██████▊   | 197/291 [00:07<00:03, 29.68it/s]Loading weights:  69%|██████▉   | 201/291 [00:07<00:02, 31.45it/s]Loading weights:  70%|███████   | 205/291 [00:07<00:03, 26.74it/s]Loading weights:  72%|███████▏  | 209/291 [00:07<00:02, 29.65it/s]Loading weights:  73%|███████▎  | 213/291 [00:07<00:03, 25.70it/s]Loading weights:  76%|███████▌  | 220/291 [00:07<00:02, 31.42it/s]Loading weights:  77%|███████▋  | 224/291 [00:07<00:02, 30.84it/s]Loading weights:  78%|███████▊  | 228/291 [00:08<00:01, 32.62it/s]Loading weights:  80%|███████▉  | 232/291 [00:08<00:02, 27.24it/s]Loading weights:  81%|████████  | 235/291 [00:08<00:02, 27.40it/s]Loading weights:  82%|████████▏ | 238/291 [00:08<00:01, 27.97it/s]Loading weights:  83%|████████▎ | 241/291 [00:08<00:01, 26.60it/s]Loading weights:  85%|████████▍ | 247/291 [00:08<00:01, 29.94it/s]Loading weights:  86%|████████▋ | 251/291 [00:08<00:01, 30.55it/s]Loading weights:  88%|████████▊ | 256/291 [00:09<00:01, 29.66it/s]Loading weights:  89%|████████▉ | 259/291 [00:09<00:01, 27.38it/s]Loading weights:  91%|█████████ | 265/291 [00:09<00:00, 31.35it/s]Loading weights:  92%|█████████▏| 269/291 [00:09<00:00, 31.12it/s]Loading weights:  94%|█████████▍| 274/291 [00:09<00:00, 30.53it/s]Loading weights:  96%|█████████▌| 278/291 [00:09<00:00, 30.86it/s]Loading weights:  97%|█████████▋| 283/291 [00:10<00:00, 27.50it/s]Loading weights:  98%|█████████▊| 286/291 [00:10<00:00, 26.67it/s]Loading weights:  99%|█████████▉| 289/291 [00:10<00:00, 26.05it/s]Loading weights: 100%|██████████| 291/291 [00:10<00:00, 28.27it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Model VRAM: 9.09 GB (INT8)
+
+============================================================
+  8K context, 32 decode steps (INT8 model)
+============================================================
+  Prompt: 8192 tokens
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  Prefill: 785 ms, peak 12.34 GB
+  Tiered: 2077 MB VRAM, 570 MB CPU (952 ms)
+  After free: 11.75 GB
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  Dense:     36.4 ms/step, peak 10.19 GB
+  Certified: 60.9 ms/step, peak 11.88 GB
+  Speedup:   -67.3%
+  Skip rate: 51.2%
+  VRAM saved: -1.69 GB
+
+============================================================
+  16K context, 32 decode steps (INT8 model)
+============================================================
+  Prompt: 16384 tokens
+  Prefill: 1312 ms, peak 15.58 GB
+  Tiered: 4023 MB VRAM, 1107 MB CPU (1503 ms)
+  After free: 14.23 GB
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  Dense:     37.9 ms/step, peak 11.28 GB
+  Certified: 79.3 ms/step, peak 14.50 GB
+  Speedup:   -109.0%
+  Skip rate: 71.4%
+  VRAM saved: -3.22 GB
+
+============================================================
+  32K context, 32 decode steps (INT8 model)
+============================================================
+  Prompt: 32768 tokens
+  Prefill: 2997 ms, peak 22.06 GB
+  Tiered: 7917 MB VRAM, 2181 MB CPU (2485 ms)
+  After free: 19.19 GB
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  Dense:     42.6 ms/step, peak 13.46 GB
+  Certified: 119.3 ms/step, peak 19.73 GB
+  Speedup:   -180.3%
+  Skip rate: 80.2%
+  VRAM saved: -6.27 GB
+
+============================================================
+  48K context, 32 decode steps (INT8 model)
+============================================================
+  Prompt: 35457 tokens
+  Prefill: 6618 ms, peak 15.56 GB (chunked)
+  Tiered: 8556 MB VRAM, 2357 MB CPU (1536 ms)
+  After free: 20.01 GB
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+/workspace/DotCache/.venv/lib/python3.12/site-packages/bitsandbytes/autograd/_functions.py:123: UserWarning: MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization
+  warnings.warn(f"MatMul8bitLt: inputs will be cast from {A.dtype} to float16 during quantization")
+  Dense:     52.2 ms/step, peak 13.82 GB
+  Certified: 128.4 ms/step, peak 20.60 GB
+  Speedup:   -145.9%
+  Skip rate: 80.6%
+  VRAM saved: -6.78 GB
+
+============================================================
+  64K context, 32 decode steps (INT8 model)
+============================================================
+  Prompt: 35457 tokens
+  Prefill: 6838 ms, peak 15.56 GB (chunked)
+  Tiered: 8556 MB VRAM, 2357 MB CPU (1431 ms)
+  After free: 20.01 GB
+  Dense:     42.8 ms/step, peak 13.82 GB
+  Certified: 128.0 ms/step, peak 20.60 GB
+  Speedup:   -198.6%
+  Skip rate: 80.6%
+  VRAM saved: -6.78 GB
+
+============================================================
+CONTEXT SCALING (INT8 model, chunked prefill)
+============================================================
+  Ctx  Dense ms  Cert ms  Ratio   Skip  Dense GB  Cert GB  Saved
+   8K     36.4    60.9   1.7x 51.2%    10.19   11.88 -1.69
+  16K     37.9    79.3   2.1x 71.4%    11.28   14.50 -3.22
+  32K     42.6   119.3   2.8x 80.2%    13.46   19.73 -6.27
+  48K     52.2   128.4   2.5x 80.6%    13.82   20.60 -6.78
+  64K     42.8   128.0   3.0x 80.6%    13.82   20.60 -6.78
+
+JSON -> benchmarks/results/certified_64k_int8model.json
