@@ -190,6 +190,18 @@ for row in collect_cap_sweep():
 print()
 print("### 1c. Context-scaling summary (tail of log)")
 print()
+print("> ⚠️ **REJECTED — measured the wrong algorithm.** This sweep ran")
+print("> \`bench_certified_64k.py\` *before* the Paper-1 fix. That harness")
+print("> called \`adapter.load_certified_cache(...)\` without forwarding")
+print("> \`tau_cov\`, so \`CertifiedAttentionState.tau_cov\` defaulted to \`None\`")
+print("> and the kernel dispatch (\`certified_attention.py:960-1083\`) fell")
+print("> through to the legacy SDPA-with-skip branch — Paper-2 block-")
+print("> skipping semantics, not Paper-1 hybrid attend-all. The 80% \"skip")
+print("> rate\" here is real block dropping, and the broken \`cert_text\`")
+print("> samples in \`certified_64k_int8model.json\` confirm the Paper-2 §9")
+print("> non-monotonicity failure mode. The bench is patched on this")
+print("> branch; rerun pending.")
+print()
 log = OUT / "context_scaling.log"
 if log.exists():
     lines = log.read_text().splitlines()

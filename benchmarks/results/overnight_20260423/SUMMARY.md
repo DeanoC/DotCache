@@ -20,6 +20,18 @@
 
 ### 1c. Context-scaling summary (tail of log)
 
+> ⚠️ **REJECTED — measured the wrong algorithm.** This sweep ran
+> `bench_certified_64k.py` *before* the Paper-1 fix. That harness
+> called `adapter.load_certified_cache(...)` without forwarding
+> `tau_cov`, so `CertifiedAttentionState.tau_cov` defaulted to `None`
+> and the kernel dispatch (`certified_attention.py:960-1083`) fell
+> through to the legacy SDPA-with-skip branch — Paper-2 block-
+> skipping semantics, not Paper-1 hybrid attend-all. The 80% "skip
+> rate" here is real block dropping, and the broken `cert_text`
+> samples in `certified_64k_int8model.json` (e.g. 32K's `\"layer  \`
+> layer  \`layer  ...\"`) confirm the Paper-2 §9 non-monotonicity
+> failure mode. The bench is patched on this branch; rerun pending.
+
 ```
   Dense:     42.6 ms/step, peak 13.46 GB
   Certified: 119.3 ms/step, peak 19.73 GB

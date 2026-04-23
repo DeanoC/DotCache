@@ -870,6 +870,23 @@ class LlamaDotCacheModelAdapter:
         default_epsilon: float = 1e-4,
         block_size: int = 16,
         use_int4_values: bool = False,
+        # Paper-1 cert config. Defaults left as None so existing callers
+        # that don't pass anything keep their (Paper-2) behaviour, but the
+        # paper benches MUST pass these explicitly to get the hybrid path.
+        # See certified_attention.py:960-1083 for the dispatch.
+        top_k_fp16_keys: int | None = None,
+        tau_cov: float | None = None,
+        k_min: int | None = None,
+        k_max: int | None = None,
+        ranking_fallback: bool | None = None,
+        ranking_r: int | None = None,
+        ranking_fallback_mode: str | None = None,
+        score_consistency_check: bool | None = None,
+        eps_guard: float | None = None,
+        exploration_rate: float | None = None,
+        rung1_threshold: float | None = None,
+        rung1_multiplier: float | None = None,
+        per_kv_group_topk: bool | None = None,
     ) -> None:
         """Build tiered caches from prefill KV and prepare for certified decode.
 
@@ -881,6 +898,11 @@ class LlamaDotCacheModelAdapter:
             default_epsilon: fallback epsilon for uncalibrated layers
             block_size: tokens per block for INT8 quantisation
             use_int4_values: if True, use INT4 per-group values (45% less VRAM)
+            top_k_fp16_keys, tau_cov, k_min, k_max, ranking_*, score_consistency_check,
+            eps_guard, exploration_rate, rung1_*, per_kv_group_topk: forwarded to
+                CertifiedAttentionState. Pass tau_cov=0.995 (etc.) to enable the
+                Paper-1 hybrid attend-all path; leaving them at the dataclass
+                defaults selects the legacy Paper-2 SDPA-with-skip path.
         """
         _ensure_certified_imports()
         layer_ids = list(range(self.model.config.num_hidden_layers))
@@ -909,11 +931,33 @@ class LlamaDotCacheModelAdapter:
         else:
             resolved_epsilons = {}
 
+        # Forward only the kwargs the caller supplied; everything else falls
+        # back to the CertifiedAttentionState dataclass default.
+        forwarded: dict[str, Any] = {}
+        for key, value in (
+            ("top_k_fp16_keys", top_k_fp16_keys),
+            ("tau_cov", tau_cov),
+            ("k_min", k_min),
+            ("k_max", k_max),
+            ("ranking_fallback", ranking_fallback),
+            ("ranking_r", ranking_r),
+            ("ranking_fallback_mode", ranking_fallback_mode),
+            ("score_consistency_check", score_consistency_check),
+            ("eps_guard", eps_guard),
+            ("exploration_rate", exploration_rate),
+            ("rung1_threshold", rung1_threshold),
+            ("rung1_multiplier", rung1_multiplier),
+            ("per_kv_group_topk", per_kv_group_topk),
+        ):
+            if value is not None:
+                forwarded[key] = value
+
         self.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
             layer_epsilons=resolved_epsilons,
             default_epsilon=default_epsilon,
             block_size=block_size,
+            **forwarded,
         )
 
     def set_capture(self, enabled: bool) -> None:

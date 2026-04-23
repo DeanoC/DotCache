@@ -29,6 +29,25 @@ for _lid in range(6, 29):
 for _lid in range(29, 32):
     LAYER_EPS[_lid] = 1e-5
 
+# Paper-1 hybrid attend-all config — see bench_certified_64k.py for the
+# load-bearing reason. Without these the kernel falls through to legacy
+# SDPA-with-skip (Paper-2 block-skipping) and the cert/dense ratio is
+# inflated relative to the actual paper algorithm.
+PAPER1_CERT_CONFIG = dict(
+    top_k_fp16_keys=4,
+    tau_cov=0.995,
+    k_min=2,
+    k_max=128,
+    ranking_fallback=True,
+    ranking_r=1,
+    ranking_fallback_mode="full",
+    score_consistency_check=True,
+    eps_guard=0.01,
+    exploration_rate=0.02,
+    rung1_threshold=0.02,
+    rung1_multiplier=2.0,
+)
+
 
 def run_32k_benchmark(model, adapter, tokenizer, prompt_text, ctx_len, gen_steps):
     """Run certified vs dense at a given context length."""
@@ -49,8 +68,13 @@ def run_32k_benchmark(model, adapter, tokenizer, prompt_text, ctx_len, gen_steps
     peak_prefill = torch.cuda.max_memory_allocated()
     print(f"  Prefill: {prefill_ms:.0f} ms, peak {peak_prefill/1e9:.2f} GB")
 
-    # Build tiered caches
-    adapter.load_certified_cache(past_kv, layer_epsilons=LAYER_EPS, default_epsilon=1e-4)
+    # Build tiered caches with the Paper-1 hybrid attend-all config.
+    adapter.load_certified_cache(
+        past_kv,
+        layer_epsilons=LAYER_EPS,
+        default_epsilon=1e-4,
+        **PAPER1_CERT_CONFIG,
+    )
     tiered_vram = sum(c.vram_bytes() for c in adapter.certified_state.tiered_caches.values())
     tiered_cpu = sum(c.cpu_bytes() for c in adapter.certified_state.tiered_caches.values())
     print(f"  Tiered: {tiered_vram/1e6:.0f} MB VRAM, {tiered_cpu/1e6:.0f} MB CPU")
