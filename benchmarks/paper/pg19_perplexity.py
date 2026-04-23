@@ -309,6 +309,17 @@ def compute_certified_perplexity(
         # Paper-1 attends every block; this is NOT a count of dropped blocks.
         chunk_int8_tail = 0
         chunk_blocks = 0
+        # Paper §3.3 certificate telemetry — per-step series over the
+        # certified suffix. Populated from aggregate_step_stats' rollup
+        # when adaptive K* is active; left empty otherwise.
+        chunk_tail_mass_step_mean: list[float] = []
+        chunk_tail_mass_step_max: list[float] = []
+        chunk_k_star_step_mean: list[float] = []
+        chunk_tau_cov_actual_step: list[float] = []
+        chunk_rung1_heads_step: list[int] = []
+        chunk_rung2_fired_step: list[bool] = []
+        chunk_rung3_fired_step: list[bool] = []
+        chunk_rung4_fired_step: list[bool] = []
 
         for t in range(eval_len - 1):
             token_id = input_ids[:, prefix_len + t]
@@ -334,6 +345,18 @@ def compute_certified_perplexity(
             chunk_int8_tail += step.get(
                 "int8_tail_blocks", step.get("skipped_blocks", 0)
             )
+            # Certificate telemetry — only present when adaptive K* is on.
+            if "tail_mass_step_mean" in step:
+                chunk_tail_mass_step_mean.append(float(step["tail_mass_step_mean"]))
+                chunk_tail_mass_step_max.append(float(step["tail_mass_step_max"]))
+            if "k_star_mean" in step:
+                chunk_k_star_step_mean.append(float(step["k_star_mean"]))
+            if "tau_cov_actual_step_mean" in step:
+                chunk_tau_cov_actual_step.append(float(step["tau_cov_actual_step_mean"]))
+            chunk_rung1_heads_step.append(int(step.get("rung1_fired_layers", 0)))
+            chunk_rung2_fired_step.append(bool(step.get("rung2_fired", False)))
+            chunk_rung3_fired_step.append(bool(step.get("rung3_fired", False)))
+            chunk_rung4_fired_step.append(bool(step.get("rung4_fired", False)))
             adapter.certified_state.clear_step_stats()
             total_steps += 1
 
@@ -366,6 +389,18 @@ def compute_certified_perplexity(
             "total_blocks": int(chunk_blocks),
             # Legacy alias for old readers.
             "skipped_blocks": int(chunk_int8_tail),
+            # Paper §3.3 certificate telemetry — per-step series over the
+            # certified suffix. Empty when adaptive K* is disabled.
+            "telemetry": {
+                "tail_mass_step_mean": chunk_tail_mass_step_mean,
+                "tail_mass_step_max": chunk_tail_mass_step_max,
+                "k_star_step_mean": chunk_k_star_step_mean,
+                "tau_cov_actual_step": chunk_tau_cov_actual_step,
+                "rung1_fired_layers_step": chunk_rung1_heads_step,
+                "rung2_fired_step": chunk_rung2_fired_step,
+                "rung3_fired_step": chunk_rung3_fired_step,
+                "rung4_fired_step": chunk_rung4_fired_step,
+            },
         })
 
         chunk_ppl = math.exp(chunk_nll / chunk_tokens)

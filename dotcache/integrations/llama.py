@@ -257,6 +257,41 @@ class CertifiedAttentionState:
         if k_star_means:
             agg["k_star_mean"] = float(sum(k_star_means) / len(k_star_means))
             agg["k_star_max"] = int(max(s.get("k_star_max", 0) for s in entries))
+        # Paper §3.3 certificate telemetry: tail mass (E_key proxy — residual
+        # INT8-estimated attention mass outside adaptive top-K*) and achieved
+        # τ-coverage. Emitted only when adaptive K* is active. The reviewer's
+        # Fig-3 ask is a histogram over these per-step values, so we expose
+        # both the per-layer list (_per_layer) for fine-grained analysis and
+        # the layer-aggregated scalars (_mean, _max) for compact logging.
+        tail_mass_means = [
+            s.get("tail_mass_int8_est_mean") for s in entries
+            if s.get("tail_mass_int8_est_mean") is not None
+        ]
+        if tail_mass_means:
+            agg["tail_mass_step_mean"] = float(sum(tail_mass_means) / len(tail_mass_means))
+            agg["tail_mass_step_max"] = float(max(
+                s.get("tail_mass_int8_est_max", 0.0) for s in entries
+                if s.get("tail_mass_int8_est_max") is not None
+            ))
+            agg["tail_mass_per_layer_mean"] = [
+                float(s.get("tail_mass_int8_est_mean", 0.0)) for s in entries
+                if s.get("tail_mass_int8_est_mean") is not None
+            ]
+        tau_cov_actuals = [
+            s.get("tau_cov_actual_mean") for s in entries
+            if s.get("tau_cov_actual_mean") is not None
+        ]
+        if tau_cov_actuals:
+            agg["tau_cov_actual_step_mean"] = float(sum(tau_cov_actuals) / len(tau_cov_actuals))
+        # E_val tight bound — only computed in the INT4-values path (see
+        # certified_attention.py:1118). FP16-value runs (the paper's
+        # default via create_tiered_cache_from_model) leave this absent.
+        e_val_maxes = [s.get("e_val_max") for s in entries if s.get("e_val_max") is not None]
+        if e_val_maxes:
+            agg["e_val_step_max"] = float(max(e_val_maxes))
+            agg["e_val_step_mean"] = float(sum(
+                s.get("e_val_mean", 0.0) for s in entries if s.get("e_val_mean") is not None
+            ) / max(len(e_val_maxes), 1))
         return agg
 
 
