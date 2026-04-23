@@ -119,18 +119,19 @@ tail -50 "$OUT_DIR/ruler_summary.log" || true
 # ── Final summary ─────────────────────────────────────────────────
 banner "writing SUMMARY.md"
 "$PY" - <<PY > "$OUT_DIR/SUMMARY.md" 2>&1 || true
+import json
 import re
 from pathlib import Path
 
 OUT = Path("$OUT_DIR")
 
-def tail_match(path, pattern, limit=200):
+def tail_match(path, pattern, limit=200, flags=0):
     """Return first regex match in the last \`limit\` lines of \`path\`, or None."""
     if not Path(path).exists():
         return None
     lines = Path(path).read_text().splitlines()
     blob = "\n".join(lines[-limit:])
-    m = re.search(pattern, blob)
+    m = re.search(pattern, blob, flags)
     return m.groupdict() if m else None
 
 def collect_cap_sweep():
@@ -147,12 +148,27 @@ def collect_cap_sweep():
     return rows
 
 def collect_value_error(ctx):
-    r = tail_match(
+    # Prefer the JSON output; fall back to the multi-line log if the
+    # JSON is missing. The bench writes loose/tight/ratio on separate
+    # lines, so the regex must span newlines (re.DOTALL).
+    j = OUT / f"value_error_sweep_ctx{ctx}.json"
+    if j.exists():
+        try:
+            data = json.loads(j.read_text())
+            s = data["summary"]
+            return {
+                "l": f"{s['loose_mean']:.4f}",
+                "t": f"{s['tight_mean']:.4f}",
+                "ratio": f"{s['ratio_mean']:.4f}",
+            }
+        except (KeyError, json.JSONDecodeError):
+            pass
+    return tail_match(
         OUT / f"value_error_sweep_ctx{ctx}.log",
         r"loose bound\s+mean=(?P<l>[\d.]+).*?tight bound\s+mean=(?P<t>[\d.]+).*?tight / loose ratio\s+mean=(?P<ratio>[\d.]+)",
         limit=60,
+        flags=re.DOTALL,
     )
-    return r
 
 print("# Overnight 2026-04-23 — summary")
 print()

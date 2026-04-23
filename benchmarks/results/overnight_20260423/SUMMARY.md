@@ -63,8 +63,8 @@ JSON -> benchmarks/results/certified_64k_int8model.json
 
 | context | loose mean | tight mean | tight/loose |
 |---|---:|---:|---:|
-| 16384 | — | — | (run failed) |
-| 32768 | — | — | (run failed) |
+| 16384 | 0.2892 | 0.1764 | 0.6364 |
+| 32768 | 0.2703 | 0.1577 | 0.6087 |
 
 ## Quality stage
 
