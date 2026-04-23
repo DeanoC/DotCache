@@ -105,7 +105,11 @@ def validate_profile(
                 )
 
             if stats:
-                skip_counts[bucket_idx, lid] += stats.get("skipped_blocks", 0)
+                # Paper-1 attends every block; "tail" = blocks served from
+                # INT8 keys instead of FP16 (outside adaptive top-K*).
+                skip_counts[bucket_idx, lid] += stats.get(
+                    "int8_tail_blocks", stats.get("skipped_blocks", 0)
+                )
                 block_counts[bucket_idx, lid] += stats.get("total_blocks", 0)
 
             del out_oracle, out_cert
@@ -134,11 +138,14 @@ def validate_profile(
         bucket_cos = worst_cos[bi]
         total_blocks = block_counts[bi].sum()
         total_skipped = skip_counts[bi].sum()
+        rate = float(total_skipped / max(total_blocks, 1))
         per_bucket[ctx] = {
             "cos_min": float(bucket_cos.min()),
             "cos_mean": float(bucket_cos.mean()),
             "cos_p5": float(np.percentile(bucket_cos, 5)),
-            "skip_rate": float(total_skipped / max(total_blocks, 1)),
+            "int8_tail_rate": rate,
+            # Legacy alias.
+            "skip_rate": rate,
         }
 
     passed = len(violations) == 0

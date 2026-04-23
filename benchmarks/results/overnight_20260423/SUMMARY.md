@@ -1,5 +1,12 @@
 # Overnight 2026-04-23 — summary
 
+> **Vocabulary note (Paper 1):** the certified path attends *every*
+> block. Top-K* blocks use FP16 keys; the tail uses INT8 keys. The
+> metric formerly logged as `skip_rate` is the **INT8-tail rate** —
+> the fraction of blocks served from the cheap INT8-key path, not a
+> drop rate. Logs from runs predating commit b7ec3165 still print the
+> word "skip"; read it as "int8_tail".
+
 ## Perf stage
 
 ### 1b. 64K cap sweep (per-KV-group)

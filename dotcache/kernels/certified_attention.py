@@ -904,6 +904,13 @@ def certified_attention_layer(
                 )
             stats = {
                 "total_blocks": total_blocks,
+                # Paper-1 vocabulary: every block is attended; the split is
+                # FP16-key (top-K*) vs INT8-key (tail). The legacy
+                # skipped_blocks/skip_rate/attended_blocks keys are kept as
+                # aliases so older readers don't break.
+                "fp16_topk_blocks": total_blocks,
+                "int8_tail_blocks": 0,
+                "int8_tail_rate": 0.0,
                 "skipped_blocks": 0,
                 "skip_rate": 0.0,
                 "attended_blocks": total_blocks,
@@ -1196,12 +1203,21 @@ def certified_attention_layer(
     # Stats
     if collect_stats:
         total_blocks = num_q_heads * cache.num_blocks
-        skipped = skip_mask.sum().item()
+        # In the Paper-1 hybrid path (use_paper_hybrid=True above) every block
+        # is attended. skip_mask here marks the blocks NOT in the adaptive
+        # top-K* set, i.e. the ones attended with INT8 keys (cheap path)
+        # rather than FP16 keys. We expose that under the int8_tail_* names
+        # and keep skipped_blocks/skip_rate/attended_blocks as legacy aliases
+        # so older readers (calibration, archived bench outputs) don't break.
+        int8_tail = skip_mask.sum().item()
         stats = {
             "total_blocks": total_blocks,
-            "skipped_blocks": int(skipped),
-            "skip_rate": float(skipped) / float(total_blocks),
-            "attended_blocks": total_blocks - int(skipped),
+            "int8_tail_blocks": int(int8_tail),
+            "int8_tail_rate": float(int8_tail) / float(total_blocks),
+            "fp16_topk_blocks": total_blocks - int(int8_tail),
+            "skipped_blocks": int(int8_tail),
+            "skip_rate": float(int8_tail) / float(total_blocks),
+            "attended_blocks": total_blocks - int(int8_tail),
             "v_format": v_format,
         }
         # Page-in telemetry (paper §3.4 runtime cost accounting).
@@ -1398,7 +1414,9 @@ def benchmark_certified_vs_full(
         "full_attention_us": t_full,
         "certified_attention_us": t_cert,
         "speedup": (t_full - t_cert) / t_full,
-        "skip_rate": stats["skip_rate"],
+        "int8_tail_rate": stats["int8_tail_rate"],
+        # Legacy alias (Paper-2 vocabulary) — see decode_step stats comment.
+        "skip_rate": stats["int8_tail_rate"],
         "cosine_min": cos.min().item(),
         "cosine_mean": cos.mean().item(),
         "vram_mb": cache.vram_bytes() / 1e6,

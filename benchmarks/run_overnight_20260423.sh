@@ -172,6 +172,13 @@ def collect_value_error(ctx):
 
 print("# Overnight 2026-04-23 — summary")
 print()
+print("> **Vocabulary note (Paper 1):** the certified path attends *every*")
+print("> block. Top-K* blocks use FP16 keys; the tail uses INT8 keys. The")
+print("> metric formerly logged as `skip_rate` is the **INT8-tail rate** —")
+print("> the fraction of blocks served from the cheap INT8-key path, not a")
+print("> drop rate. Logs from runs predating commit b7ec3165 still print the")
+print("> word \"skip\"; read it as \"int8_tail\".")
+print()
 print("## Perf stage")
 print()
 print("### 1b. 64K cap sweep (per-KV-group)")

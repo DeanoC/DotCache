@@ -168,16 +168,30 @@ class CertifiedAttentionState:
         run the legacy aggregate at the end of a cell)."""
         entries = self.step_stats if since <= 0 else self.step_stats[since:]
         if not entries:
-            return {"skip_rate": 0.0, "total_blocks": 0, "skipped_blocks": 0}
+            return {
+                "int8_tail_rate": 0.0,
+                "total_blocks": 0,
+                "int8_tail_blocks": 0,
+                # Legacy aliases (Paper-2 vocabulary).
+                "skip_rate": 0.0,
+                "skipped_blocks": 0,
+            }
         total = sum(s["total_blocks"] for s in entries)
-        skipped = sum(s["skipped_blocks"] for s in entries)
+        # Read the new key when available, fall back to the legacy key so
+        # snapshots of step_stats taken before the rename still aggregate.
+        int8_tail = sum(s.get("int8_tail_blocks", s.get("skipped_blocks", 0)) for s in entries)
+        per_layer_int8_tail = {
+            s["layer"]: s.get("int8_tail_rate", s.get("skip_rate", 0.0)) for s in entries
+        }
         agg = {
-            "skip_rate": skipped / total if total > 0 else 0.0,
+            "int8_tail_rate": int8_tail / total if total > 0 else 0.0,
             "total_blocks": total,
-            "skipped_blocks": skipped,
-            "per_layer_skip_rate": {
-                s["layer"]: s["skip_rate"] for s in entries
-            },
+            "int8_tail_blocks": int8_tail,
+            "per_layer_int8_tail_rate": per_layer_int8_tail,
+            # Legacy aliases.
+            "skip_rate": int8_tail / total if total > 0 else 0.0,
+            "skipped_blocks": int8_tail,
+            "per_layer_skip_rate": per_layer_int8_tail,
         }
         # Ranking-consistency fallback aggregates (Rung 3). Only populated when
         # ranking_fallback is enabled; absent stats default to zero so dense /

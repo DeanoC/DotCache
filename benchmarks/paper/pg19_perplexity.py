@@ -219,7 +219,9 @@ def compute_certified_perplexity(
 
     total_nll = 0.0
     total_tokens = 0
-    total_skipped = 0
+    # Counts blocks attended on the cheap INT8-key path (not in adaptive
+    # top-K*). Paper-1 attends every block; not a count of dropped blocks.
+    total_int8_tail = 0
     total_blocks = 0
     total_steps = 0
     per_chunk: list[dict] = []
@@ -303,7 +305,9 @@ def compute_certified_perplexity(
         # Phase 3: Teacher-forced certified decode
         cache_position = torch.tensor([prefix_len], dtype=torch.long, device=device)
         suffix_nll = 0.0
-        chunk_skipped = 0
+        # Counts blocks attended on the cheap path (INT8 keys, outside top-K*).
+        # Paper-1 attends every block; this is NOT a count of dropped blocks.
+        chunk_int8_tail = 0
         chunk_blocks = 0
 
         for t in range(eval_len - 1):
@@ -324,10 +328,12 @@ def compute_certified_perplexity(
             suffix_nll += nll.item()
             cache_position = cache_position + 1
 
-            # Drain per-step skip stats (aggregated across layers)
+            # Drain per-step int8-tail stats (aggregated across layers)
             step = adapter.certified_state.aggregate_step_stats()
             chunk_blocks += step["total_blocks"]
-            chunk_skipped += step["skipped_blocks"]
+            chunk_int8_tail += step.get(
+                "int8_tail_blocks", step.get("skipped_blocks", 0)
+            )
             adapter.certified_state.clear_step_stats()
             total_steps += 1
 
@@ -340,7 +346,7 @@ def compute_certified_perplexity(
         total_nll += chunk_nll
         total_tokens += chunk_tokens
 
-        total_skipped += chunk_skipped
+        total_int8_tail += chunk_int8_tail
         total_blocks += chunk_blocks
 
         # Keep prefix_nll / suffix_nll separately — reviewers may want to
@@ -356,35 +362,41 @@ def compute_certified_perplexity(
             "suffix_tokens": int(eval_len - 1),
             "nll": float(chunk_nll),
             "tokens": int(chunk_tokens),
-            "skipped_blocks": int(chunk_skipped),
+            "int8_tail_blocks": int(chunk_int8_tail),
             "total_blocks": int(chunk_blocks),
+            # Legacy alias for old readers.
+            "skipped_blocks": int(chunk_int8_tail),
         })
 
         chunk_ppl = math.exp(chunk_nll / chunk_tokens)
         suffix_ppl = math.exp(suffix_nll / max(eval_len - 1, 1))
-        chunk_skip_rate = chunk_skipped / chunk_blocks if chunk_blocks else 0.0
+        chunk_int8_tail_rate = chunk_int8_tail / chunk_blocks if chunk_blocks else 0.0
         if (i + 1) % 5 == 0 or i == len(chunks) - 1:
             ppl_so_far = math.exp(total_nll / total_tokens)
-            overall_skip = total_skipped / total_blocks if total_blocks else 0.0
+            overall_int8_tail = total_int8_tail / total_blocks if total_blocks else 0.0
             print(f"  Certified [{i+1}/{len(chunks)}]: chunk_ppl={chunk_ppl:.2f}, "
                   f"suffix_ppl={suffix_ppl:.2f}, running_ppl={ppl_so_far:.2f}, "
-                  f"skip={chunk_skip_rate:.3f} (overall {overall_skip:.3f})")
+                  f"int8_tail={chunk_int8_tail_rate:.3f} (overall {overall_int8_tail:.3f})")
 
         del tiered_caches
         gc.collect()
         torch.cuda.empty_cache()
 
     ppl = math.exp(total_nll / total_tokens)
-    skip_rate = total_skipped / total_blocks if total_blocks else 0.0
+    int8_tail_rate = total_int8_tail / total_blocks if total_blocks else 0.0
     return {
         "perplexity": ppl,
         "total_nll": total_nll,
         "total_tokens": total_tokens,
-        "skip_rate": skip_rate,
-        "skipped_blocks": total_skipped,
+        "int8_tail_rate": int8_tail_rate,
+        "int8_tail_blocks": total_int8_tail,
         "total_blocks": total_blocks,
         "decode_steps": total_steps,
         "per_chunk": per_chunk,
+        # Legacy aliases (Paper-2 vocabulary) — kept so older readers /
+        # report scripts and existing JSONs interoperate.
+        "skip_rate": int8_tail_rate,
+        "skipped_blocks": total_int8_tail,
     }
 
 
@@ -554,8 +566,17 @@ def main():
         print(f"Certified perplexity: {cert_result['perplexity']:.4f}")
         print(f"Ratio (cert/dense):   {ratio:.6f}")
         print(f"Delta:                {delta:+.4f}")
-        print(f"Skip rate:            {cert_result.get('skip_rate', 0.0):.4f} "
-              f"({cert_result.get('skipped_blocks', 0)}/{cert_result.get('total_blocks', 0)} blocks)")
+        # Paper-1 attends every block; this is the fraction served from the
+        # cheap INT8-key tail (not in adaptive top-K*). NOT a drop rate.
+        int8_tail_rate = cert_result.get(
+            "int8_tail_rate", cert_result.get("skip_rate", 0.0)
+        )
+        int8_tail_blocks = cert_result.get(
+            "int8_tail_blocks", cert_result.get("skipped_blocks", 0)
+        )
+        print(f"INT8-tail rate:       {int8_tail_rate:.4f} "
+              f"({int8_tail_blocks}/{cert_result.get('total_blocks', 0)} blocks "
+              f"served from cheap INT8-key path; every block attended)")
         print(f"Concentration thr:    {args.concentration_threshold}")
 
     # Save results

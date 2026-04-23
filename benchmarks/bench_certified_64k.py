@@ -125,7 +125,10 @@ def run_benchmark(model, adapter, tokenizer, ctx_len, gen_steps=32):
     current_input = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
     cache_position = cache_position + 1
     stats = adapter.certified_state.aggregate_step_stats()
-    skip_rate = stats["skip_rate"]
+    # Paper-1 attends every block; this is the fraction served from the
+    # cheap INT8-key tail (not in adaptive top-K*). Read the new key with
+    # a fallback to the legacy alias for older state objects.
+    int8_tail_rate = stats.get("int8_tail_rate", stats.get("skip_rate", 0.0))
 
     # Timed decode
     adapter.certified_state.collect_stats = False
@@ -196,7 +199,10 @@ def run_benchmark(model, adapter, tokenizer, ctx_len, gen_steps=32):
         "cert_ms_per_step": cert_time / gen_steps * 1000,
         "cert_peak_gb": cert_peak / 1e9,
         "speedup": speedup,
-        "skip_rate": skip_rate,
+        "int8_tail_rate": int8_tail_rate,
+        # Legacy alias (Paper-2 vocabulary). Every block is attended; this
+        # is the fraction served from INT8 keys.
+        "skip_rate": int8_tail_rate,
         "tiered_vram_mb": tiered_vram / 1e6,
         "tiered_cpu_mb": tiered_cpu / 1e6,
         "vram_saved_gb": (dense_peak - cert_peak) / 1e9,
@@ -207,7 +213,8 @@ def run_benchmark(model, adapter, tokenizer, ctx_len, gen_steps=32):
     print(f"  Dense:     {r['dense_ms_per_step']:.1f} ms/step, peak {r['dense_peak_gb']:.2f} GB")
     print(f"  Certified: {r['cert_ms_per_step']:.1f} ms/step, peak {r['cert_peak_gb']:.2f} GB")
     print(f"  Speedup:   {r['speedup']:+.1%}")
-    print(f"  Skip rate: {r['skip_rate']:.1%}")
+    print(f"  INT8-tail rate: {r['int8_tail_rate']:.1%} "
+          f"(fraction served from cheap INT8-key path; every block attended)")
     print(f"  VRAM saved: {r['vram_saved_gb']:.2f} GB")
     return r
 
@@ -257,14 +264,14 @@ def main():
     print(f"\n{'='*60}")
     print(f"CONTEXT SCALING (INT8 model, chunked prefill)")
     print(f"{'='*60}")
-    print(f"{'Ctx':>5} {'Dense ms':>9} {'Cert ms':>8} {'Ratio':>6} {'Skip':>6} {'Dense GB':>9} {'Cert GB':>8} {'Saved':>6}")
+    print(f"{'Ctx':>5} {'Dense ms':>9} {'Cert ms':>8} {'Ratio':>6} {'INT8-tail':>10} {'Dense GB':>9} {'Cert GB':>8} {'Saved':>6}")
     for r in results:
         if "error" in r:
             print(f"  {r['context']:>3} {'OOM':>9}")
         else:
             ratio = r['cert_ms_per_step'] / r['dense_ms_per_step']
             print(f"  {r['context']:>3} {r['dense_ms_per_step']:>8.1f} {r['cert_ms_per_step']:>7.1f} "
-                  f"{ratio:>5.1f}x {r['skip_rate']:>5.1%} "
+                  f"{ratio:>5.1f}x {r['int8_tail_rate']:>9.1%} "
                   f"{r['dense_peak_gb']:>8.2f} {r['cert_peak_gb']:>7.2f} {r['vram_saved_gb']:>5.2f}")
 
     out_path = Path("benchmarks/results/certified_64k_int8model.json")
