@@ -45,6 +45,7 @@ CERT_FLAGS: dict[str, str] = {
     "exploration_rate": "0.02",
     "rung1_threshold": "0.02",
     "rung1_multiplier": "2.0",
+    "fp16_value_cache_blocks": "64",
 }
 
 
@@ -75,6 +76,7 @@ def _common_cert_args() -> list[str]:
         "--exploration-rate", CERT_FLAGS["exploration_rate"],
         "--rung1-threshold", CERT_FLAGS["rung1_threshold"],
         "--rung1-multiplier", CERT_FLAGS["rung1_multiplier"],
+        "--fp16-value-cache-blocks", CERT_FLAGS["fp16_value_cache_blocks"],
     ]
 
 
@@ -292,6 +294,7 @@ def run_cell(cell: dict[str, Any], *, smoke: bool, dry_run: bool) -> dict[str, A
                 **CERT_FLAGS,
                 "group_size": "16",
                 "ranking_fallback_mode": "full",
+                "fp16_value_cache_blocks": CERT_FLAGS["fp16_value_cache_blocks"],
             },
         },
     }

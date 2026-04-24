@@ -702,6 +702,11 @@ def certified_attention_layer(
     fp16_cache_misses_step = 0
     fp16_cache_evictions_step = 0
     fp16_cache_needed_blocks = 0
+    fp16_value_cache_hits_step = 0
+    fp16_value_cache_misses_step = 0
+    fp16_value_cache_evictions_step = 0
+    fp16_value_cache_needed_blocks = 0
+    fp16_value_cache_overflow_step = 0
 
     # Phase 1: INT8 scoring only on fully quantized blocks
     if n_qblocks > 0:
@@ -1019,6 +1024,11 @@ def certified_attention_layer(
                     cache.values_fp16[:, :cache.num_tokens, :].numel()
                     * cache.values_fp16.element_size()
                 )
+            elif cache.values_fp16_gpu is not None:
+                vram_fp16_value_cache_bytes = (
+                    cache.values_fp16_gpu.numel()
+                    * cache.values_fp16_gpu.element_size()
+                )
             stats = {
                 "total_blocks": total_blocks,
                 "skipped_blocks": 0,
@@ -1214,10 +1224,49 @@ def certified_attention_layer(
                 device=q_all.device,
             )
             value_fp16_mask[:, :n_qblocks] = value_unsafe_mask.to(torch.int32)
-            if cache.values_fp16_gpu is not None:
+            unsafe_block_list = [int(b) for b in unsafe_block_ids.tolist()]
+            use_one_step_value_pagein = False
+            if (
+                cache.values_fp16_gpu is not None
+                and cache.fp16_value_cache_capacity is None
+            ):
                 values_fp16_scratch = cache.values_fp16_gpu[:, :nt_hybrid, :]
                 value_block_slots[unsafe_block_ids] = unsafe_block_ids.to(torch.int32)
+            elif (
+                cache.values_fp16_gpu is not None
+                and cache.fp16_value_cache_capacity is not None
+                and n_value_slots <= int(cache.fp16_value_cache_capacity)
+                and int(cache.fp16_value_cache_capacity) > 0
+            ):
+                with _PhaseTimer(phase_timings, "h2d_pagein"):
+                    block_to_slot, v_hits, v_misses, v_bytes, v_evict = (
+                        cache.ensure_fp16_values_resident(unsafe_block_list)
+                )
+                if block_to_slot is None:
+                    fp16_value_cache_overflow_step = 1
+                    use_one_step_value_pagein = True
+                else:
+                    values_fp16_scratch = cache.values_fp16_gpu
+                    slot_tensor = torch.tensor(
+                        [block_to_slot[int(b)] for b in unsafe_block_list],
+                        dtype=torch.int32,
+                        device=q_all.device,
+                    )
+                    value_block_slots[unsafe_block_ids] = slot_tensor
+                    h2d_value_bytes += v_bytes
+                    h2d_value_blocks += v_misses
+                    fp16_value_cache_hits_step += v_hits
+                    fp16_value_cache_misses_step += v_misses
+                    fp16_value_cache_evictions_step += v_evict
+                    fp16_value_cache_needed_blocks += len(unsafe_block_list)
             else:
+                fp16_value_cache_overflow_step = int(
+                    cache.fp16_value_cache_capacity is not None
+                    and n_value_slots > int(cache.fp16_value_cache_capacity)
+                )
+                use_one_step_value_pagein = True
+
+            if use_one_step_value_pagein:
                 value_block_slots[unsafe_block_ids] = torch.arange(
                     n_value_slots,
                     dtype=torch.int32,
@@ -1235,7 +1284,6 @@ def certified_attention_layer(
                     dtype=value_dtype,
                     device=q_all.device,
                 )
-                unsafe_block_list = [int(b) for b in unsafe_block_ids.tolist()]
                 with _PhaseTimer(phase_timings, "h2d_pagein"):
                     for slot, bid in enumerate(unsafe_block_list):
                         start = bid * bs
@@ -1554,6 +1602,19 @@ def certified_attention_layer(
             stats["fp16_cache_hit_rate_step"] = (
                 float(fp16_cache_hits_step) / total_access if total_access else 0.0
             )
+        if cache.fp16_value_cache_capacity is not None:
+            stats["fp16_value_cache_capacity_blocks"] = int(cache.fp16_value_cache_capacity)
+            stats["fp16_value_cache_resident_blocks"] = int(len(cache._fp16_value_resident))
+            stats["fp16_value_cache_hits_step"] = int(fp16_value_cache_hits_step)
+            stats["fp16_value_cache_misses_step"] = int(fp16_value_cache_misses_step)
+            stats["fp16_value_cache_evictions_step"] = int(fp16_value_cache_evictions_step)
+            stats["fp16_value_cache_needed_blocks_step"] = int(fp16_value_cache_needed_blocks)
+            stats["fp16_value_cache_overflow_step"] = int(fp16_value_cache_overflow_step)
+            total_value_access = fp16_value_cache_hits_step + fp16_value_cache_misses_step
+            stats["fp16_value_cache_hit_rate_step"] = (
+                float(fp16_value_cache_hits_step) / total_value_access
+                if total_value_access else 0.0
+            )
         # VRAM-resident FP16 cache sizes (semantic bytes — kv_heads × nt × dim × 2).
         vram_fp16_key_cache_bytes = 0
         if cache.keys_fp16_gpu is not None:
@@ -1567,6 +1628,11 @@ def certified_attention_layer(
             vram_fp16_value_cache_bytes = (
                 cache.values_fp16[:, :cache.num_tokens, :].numel()
                 * cache.values_fp16.element_size()
+            )
+        elif cache.values_fp16_gpu is not None:
+            vram_fp16_value_cache_bytes = (
+                cache.values_fp16_gpu.numel()
+                * cache.values_fp16_gpu.element_size()
             )
         stats["vram_fp16_value_cache_bytes"] = int(vram_fp16_value_cache_bytes)
         # Per-layer per-step rung-fired flags. Harness ORs across layers to

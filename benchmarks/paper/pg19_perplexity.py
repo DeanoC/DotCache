@@ -263,6 +263,20 @@ def _reduce_step_aggs(step_aggs: list[dict]) -> dict:
     summary["h2d_total_bytes_total"] = _sum("h2d_total_bytes")
     summary["value_fallback_blocks_total"] = _sum("value_fallback_blocks")
     summary["value_fallback_head_blocks_total"] = _sum("value_fallback_head_blocks")
+    summary["vram_fp16_key_cache_bytes_max"] = _max("vram_fp16_key_cache_bytes") or 0
+    summary["vram_fp16_value_cache_bytes_max"] = _max("vram_fp16_value_cache_bytes") or 0
+    summary["fp16_value_cache_hits_total"] = _sum("fp16_value_cache_hits_step")
+    summary["fp16_value_cache_misses_total"] = _sum("fp16_value_cache_misses_step")
+    summary["fp16_value_cache_evictions_total"] = _sum("fp16_value_cache_evictions_step")
+    summary["fp16_value_cache_overflow_steps"] = _sum("fp16_value_cache_overflow_step")
+    value_accesses = (
+        summary["fp16_value_cache_hits_total"]
+        + summary["fp16_value_cache_misses_total"]
+    )
+    summary["fp16_value_cache_hit_rate"] = (
+        summary["fp16_value_cache_hits_total"] / value_accesses
+        if value_accesses else 0.0
+    )
     return summary
 
 
@@ -291,7 +305,13 @@ def _layer_entries_to_step_aggs(entries: list[dict], num_layers: int) -> list[di
                     "h2d_key_bytes", "h2d_value_bytes", "h2d_total_bytes",
                     "h2d_key_blocks", "h2d_value_blocks",
                     "boundary_check_triggered_heads",
-                    "value_fallback_blocks", "value_fallback_head_blocks"):
+                    "value_fallback_blocks", "value_fallback_head_blocks",
+                    "fp16_value_cache_hits_step", "fp16_value_cache_misses_step",
+                    "fp16_value_cache_evictions_step",
+                    "fp16_value_cache_needed_blocks_step",
+                    "fp16_value_cache_overflow_step",
+                    "vram_fp16_key_cache_bytes",
+                    "vram_fp16_value_cache_bytes"):
             if any(key in s for s in group):
                 out_key = (
                     "score_consistency_violation_heads_total"
@@ -353,6 +373,8 @@ def compute_certified_perplexity(
     device: str = "cuda",
     use_int4_values: bool = False,
     group_size: int = 16,
+    fp16_key_cache_blocks: int | None = None,
+    fp16_value_cache_blocks: int | None = None,
     # Paper-alignment features (T4/T7/Rung1/T9/T10).
     tau_cov: float | None = None,
     k_min: int = 2,
@@ -442,17 +464,29 @@ def compute_certified_perplexity(
         cache_t0 = time.perf_counter()
         _ensure_certified_imports()
         layer_ids = list(range(model.config.num_hidden_layers))
-        _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
-        _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
+        _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
+        _env_value_cap = os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS")
+        _key_cap = (
+            fp16_key_cache_blocks
+            if fp16_key_cache_blocks is not None
+            else None if _env_key_cap is None or _env_key_cap == "" else int(_env_key_cap)
+        )
+        _value_cap = (
+            fp16_value_cache_blocks
+            if fp16_value_cache_blocks is not None
+            else None if _env_value_cap is None or _env_value_cap == "" else int(_env_value_cap)
+        )
         if use_int4_values:
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_kv, layer_ids, group_size=group_size,
                 max_new_tokens=eval_len + 16,
+                fp16_key_cache_capacity=_key_cap,
+                fp16_value_cache_capacity=_value_cap,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(
                 past_kv, layer_ids, max_new_tokens=eval_len + 16,
-                fp16_key_cache_capacity=_cap,
+                fp16_key_cache_capacity=_key_cap,
             )
         print(
             f"  Certified [{i+1}/{len(chunks)}] cache_build_ms={(time.perf_counter() - cache_t0) * 1000.0:.1f}",
@@ -788,6 +822,8 @@ def main():
             v_tolerance=args.v_tolerance,
             use_int4_values=args.use_int4_values,
             group_size=args.group_size,
+            fp16_key_cache_blocks=args.fp16_key_cache_blocks,
+            fp16_value_cache_blocks=args.fp16_value_cache_blocks,
             tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
             k_min=args.k_min,
             k_max=args.k_max,

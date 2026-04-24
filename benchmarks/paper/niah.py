@@ -106,6 +106,8 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
     top_k_fp16_keys: int = 4,
     use_int4_values: bool = False,
     group_size: int = 16,
+    fp16_key_cache_blocks: int | None = None,
+    fp16_value_cache_blocks: int | None = None,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -167,17 +169,29 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         # full-mirror behaviour.
         _ensure_certified_imports()
         layer_ids = list(range(model.config.num_hidden_layers))
-        _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
-        _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
+        _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
+        _env_value_cap = os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS")
+        _key_cap = (
+            fp16_key_cache_blocks
+            if fp16_key_cache_blocks is not None
+            else None if _env_key_cap is None or _env_key_cap == "" else int(_env_key_cap)
+        )
+        _value_cap = (
+            fp16_value_cache_blocks
+            if fp16_value_cache_blocks is not None
+            else None if _env_value_cap is None or _env_value_cap == "" else int(_env_value_cap)
+        )
         if use_int4_values:
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_kv, layer_ids, group_size=group_size,
                 max_new_tokens=max_new_tokens + 8,
+                fp16_key_cache_capacity=_key_cap,
+                fp16_value_cache_capacity=_value_cap,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(
                 past_kv, layer_ids, max_new_tokens=max_new_tokens + 8,
-                fp16_key_cache_capacity=_cap,
+                fp16_key_cache_capacity=_key_cap,
             )
         del past_kv
         gc.collect()
@@ -281,6 +295,10 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         "tail_mass_int8_est_step_mean", "tail_mass_int8_est_step_max",
         "k_star_mean", "k_star_max",
         "h2d_key_bytes", "h2d_value_bytes", "h2d_total_bytes",
+        "vram_fp16_key_cache_bytes", "vram_fp16_value_cache_bytes",
+        "fp16_value_cache_hits_step", "fp16_value_cache_misses_step",
+        "fp16_value_cache_evictions_step", "fp16_value_cache_needed_blocks_step",
+        "fp16_value_cache_overflow_step",
     ):
         if key in cell_agg:
             result[key] = cell_agg[key]
@@ -298,6 +316,8 @@ def run_niah_sweep(
     top_k_fp16_keys: int = 4,
     use_int4_values: bool = False,
     group_size: int = 16,
+    fp16_key_cache_blocks: int | None = None,
+    fp16_value_cache_blocks: int | None = None,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -332,6 +352,8 @@ def run_niah_sweep(
                         v_tolerance=v_tolerance,
                         use_int4_values=use_int4_values,
                         group_size=group_size,
+                        fp16_key_cache_blocks=fp16_key_cache_blocks,
+                        fp16_value_cache_blocks=fp16_value_cache_blocks,
                         ranking_fallback=ranking_fallback,
                         ranking_r=ranking_r,
                         ranking_fallback_mode=ranking_fallback_mode,
@@ -509,6 +531,8 @@ def main():
         v_tolerance=args.v_tolerance,
         use_int4_values=args.use_int4_values,
         group_size=args.group_size,
+        fp16_key_cache_blocks=args.fp16_key_cache_blocks,
+        fp16_value_cache_blocks=args.fp16_value_cache_blocks,
         ranking_fallback=args.ranking_fallback,
         ranking_r=args.ranking_r,
         ranking_fallback_mode=args.ranking_fallback_mode,

@@ -63,6 +63,8 @@ def cache_config_dict(args: argparse.Namespace) -> dict[str, Any]:
         "ranking_fallback": bool(getattr(args, "ranking_fallback", False)),
         "ranking_r": int(getattr(args, "ranking_r", 1)),
         "ranking_fallback_mode": getattr(args, "ranking_fallback_mode", "full"),
+        "fp16_key_cache_blocks": getattr(args, "fp16_key_cache_blocks", None),
+        "fp16_value_cache_blocks": getattr(args, "fp16_value_cache_blocks", None),
         "eps_guard": float(getattr(args, "eps_guard", 0.01)),
         "exploration_rate": float(getattr(args, "exploration_rate", 0.0)),
         "rung1_threshold": float(getattr(args, "rung1_threshold", 0.02)),
@@ -95,6 +97,16 @@ def add_paper_cache_args(parser: argparse.ArgumentParser) -> None:
         "--group-size", type=int, default=16,
         help="INT4 value group size (paper §7: 16). Ignored unless "
              "--use-int4-values is set.",
+    )
+    parser.add_argument(
+        "--fp16-key-cache-blocks", type=int, default=None,
+        help="Bounded GPU FP16 key scratch capacity in blocks. Omit for the "
+             "legacy full mirror; use 0 for no retained cache.",
+    )
+    parser.add_argument(
+        "--fp16-value-cache-blocks", type=int, default=None,
+        help="Bounded GPU FP16 value fallback scratch capacity in blocks. Omit "
+             "for the legacy full mirror; use 0 for one-step page-in only.",
     )
 
 

@@ -233,6 +233,22 @@ class CertifiedAttentionState:
             agg["vram_fp16_value_cache_bytes"] = int(sum(
                 s.get("vram_fp16_value_cache_bytes", 0) for s in entries
             ))
+        if any("fp16_value_cache_hits_step" in s for s in entries):
+            agg["fp16_value_cache_hits_step"] = int(sum(
+                s.get("fp16_value_cache_hits_step", 0) for s in entries
+            ))
+            agg["fp16_value_cache_misses_step"] = int(sum(
+                s.get("fp16_value_cache_misses_step", 0) for s in entries
+            ))
+            agg["fp16_value_cache_evictions_step"] = int(sum(
+                s.get("fp16_value_cache_evictions_step", 0) for s in entries
+            ))
+            agg["fp16_value_cache_needed_blocks_step"] = int(sum(
+                s.get("fp16_value_cache_needed_blocks_step", 0) for s in entries
+            ))
+            agg["fp16_value_cache_overflow_step"] = int(sum(
+                s.get("fp16_value_cache_overflow_step", 0) for s in entries
+            ))
         # Per-rung step flag: True if any layer triggered the rung this step.
         for rung_k in ("rung1_fired", "rung2_fired", "rung3_fired", "rung4_fired"):
             if any(rung_k in s for s in entries):

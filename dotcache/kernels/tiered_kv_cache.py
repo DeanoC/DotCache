@@ -80,7 +80,16 @@ class TieredKeyCacheLayer:
     # Optional VRAM mirror/cache for Rung-2 FP16 values. In the INT4 paper
     # path this is fallback-only: values_fp16 remains None, so the fast path
     # still consumes INT4 values unless Rung-2 explicitly selects a block.
-    values_fp16_gpu: torch.Tensor | None = None  # [kv_heads, N, d_v] float16, cuda
+    # Full-mirror mode shape: [kv_heads, N, d_v].
+    # Bounded-cache mode shape: [kv_heads, fp16_value_cache_capacity * B, d_v].
+    values_fp16_gpu: torch.Tensor | None = None
+    fp16_value_cache_capacity: int | None = None  # None = full mirror; int = bounded cache (# blocks)
+    _fp16_value_resident: "OrderedDict[int, int]" = field(default_factory=OrderedDict)
+    _fp16_value_free_slots: list[int] = field(default_factory=list)
+    _fp16_value_cache_hits: int = 0
+    _fp16_value_cache_misses: int = 0
+    _fp16_value_cache_h2d_bytes: int = 0
+    _fp16_value_cache_evictions: int = 0
 
     # VRAM-side FP16 key buffer. Two modes:
     #   - Full mirror (keys_fp16_gpu non-None, fp16_key_cache_capacity is None):
@@ -271,6 +280,8 @@ class TieredKeyCacheLayer:
         group_size: int = 16,  # paper §7
         max_pagein_blocks: int = 64,
         max_new_tokens: int = 512,
+        fp16_key_cache_capacity: int | None = None,
+        fp16_value_cache_capacity: int | None = None,
     ) -> "TieredKeyCacheLayer":
         """Create tiered cache with INT4 per-group values.
 
@@ -289,6 +300,7 @@ class TieredKeyCacheLayer:
         base = cls.from_fp16_cache(
             keys_fp16, values_fp16, block_size, max_pagein_blocks,
             max_new_tokens=max_new_tokens,
+            fp16_key_cache_capacity=fp16_key_cache_capacity,
         )
 
         # Quantise prefill values to INT4 per-group
@@ -346,12 +358,26 @@ class TieredKeyCacheLayer:
         values_fp16_cpu_buf[:, :N, :] = base.values_fp16[:, :N, :].cpu()
         base.values_fp16_cpu = values_fp16_cpu_buf
 
-        # Keep a fallback-only FP16 value mirror in VRAM. This is not the
-        # normal value path (`values_fp16` is cleared below); the mixed-value
-        # kernel reads it only for Rung-2 promoted blocks. It eliminates the
-        # repeated CPU-to-GPU page-in that made certificate-correct runs too
-        # slow on a single large GPU.
-        base.values_fp16_gpu = base.values_fp16
+        if fp16_value_cache_capacity is None:
+            # Legacy/full-scratch mode: keep a fallback-only FP16 value mirror
+            # in VRAM. This is not the normal value path (`values_fp16` is
+            # cleared below); the mixed-value kernel reads it only for Rung-2
+            # promoted blocks.
+            base.values_fp16_gpu = base.values_fp16
+        else:
+            # Paper sweep mode: bounded compact VRAM scratch for Rung-2 FP16
+            # values. Blocks are paged from pinned Tier-2 CPU RAM on demand
+            # and retained with LRU replacement.
+            cap = max(int(fp16_value_cache_capacity), 0)
+            base.values_fp16_gpu = torch.empty(
+                kv_heads,
+                cap * block_size,
+                d_v,
+                dtype=base.values_fp16.dtype,
+                device=device,
+            )
+            base.fp16_value_cache_capacity = cap
+            base._fp16_value_free_slots = list(range(cap))
 
         # Clear the normal FP16 value path; INT4 replaces it for Phase 2.
         base.values_fp16 = None
@@ -461,7 +487,14 @@ class TieredKeyCacheLayer:
         """
         pos = self.num_tokens
         device = self.keys_int8.device
-        kv_dtype = self.values_fp16.dtype if self.values_fp16 is not None else torch.float16
+        if self.values_fp16 is not None:
+            kv_dtype = self.values_fp16.dtype
+        elif self.values_fp16_cpu is not None:
+            kv_dtype = self.values_fp16_cpu.dtype
+        else:
+            kv_dtype = torch.float16
+        block_idx = pos // self.block_size
+        pos_in_block = pos % self.block_size
 
         new_k = key_fp16.to(dtype=kv_dtype).squeeze(1)  # [kv_heads, head_dim]
         new_v = value_fp16.to(dtype=kv_dtype).squeeze(1)
@@ -470,7 +503,6 @@ class TieredKeyCacheLayer:
         # the existing block annotation so partial-block appends correctly
         # accumulate. Required by §4.5 E_key telemetry.
         if self.values_norm_max_per_block is not None:
-            block_idx = pos // self.block_size
             new_v_norm_per_head = new_v.to(device=device, dtype=torch.float32).norm(dim=-1)  # [kv_heads]
             self.values_norm_max_per_block[:, block_idx] = torch.maximum(
                 self.values_norm_max_per_block[:, block_idx],
@@ -497,7 +529,6 @@ class TieredKeyCacheLayer:
         if self.values_int4_packed is not None:
             from dotcache.kernels.int4_group_quantise import quantise_int4_grouped
             new_v_per_head = new_v.to(device=device)  # [kv_heads, d_v]
-            block_idx = pos // self.block_size
             r = quantise_int4_grouped(
                 new_v_per_head,
                 group_size=self.values_int4_group_size,
@@ -530,8 +561,16 @@ class TieredKeyCacheLayer:
 
         if self.values_fp16_cpu is not None:
             self.values_fp16_cpu[:, pos, :].copy_(new_v, non_blocking=True)
-        if self.values_fp16_gpu is not None:
+        if self.values_fp16_gpu is not None and self.fp16_value_cache_capacity is None:
             self.values_fp16_gpu[:, pos, :] = new_v.to(device=device, dtype=kv_dtype)
+        elif (
+            self.values_fp16_gpu is not None
+            and self.fp16_value_cache_capacity is not None
+            and block_idx in self._fp16_value_resident
+        ):
+            slot = self._fp16_value_resident[block_idx]
+            dst = slot * self.block_size + pos_in_block
+            self.values_fp16_gpu[:, dst, :] = new_v.to(device=device, dtype=kv_dtype)
 
         # Write exact key→float32 into dequant buffer (for hybrid attend path)
         new_k_f32 = new_k.to(device=device, dtype=torch.float32)
@@ -545,9 +584,6 @@ class TieredKeyCacheLayer:
         # Update counts — ceiling division so num_blocks includes partial trailing block
         self.num_tokens = pos + 1
         self.num_blocks = (self.num_tokens + self.block_size - 1) // self.block_size
-
-        block_idx = pos // self.block_size
-        pos_in_block = pos % self.block_size
 
         # Check if this token completes a block
         if pos_in_block == self.block_size - 1:
@@ -802,6 +838,78 @@ class TieredKeyCacheLayer:
         self._fp16_key_cache_evictions += evictions
         return (hits, misses, h2d_bytes, evictions)
 
+    def ensure_fp16_values_resident(
+        self,
+        block_ids,  # iterable of int block indices needing FP16 value data
+    ) -> tuple[dict[int, int] | None, int, int, int, int]:
+        """Bring value blocks into the bounded compact FP16 VRAM cache.
+
+        Returns (block_to_slot, hits, misses, h2d_bytes, evictions). When the
+        cache is disabled/full-mirror mode this returns a block->block mapping.
+        When the bounded cache cannot hold the whole simultaneous working set,
+        block_to_slot is None; callers must use the one-step compact page-in
+        path for correctness.
+        """
+        if self.values_fp16_gpu is None:
+            return (None, 0, 0, 0, 0)
+
+        bs = self.block_size
+
+        seen: set[int] = set()
+        ordered_ids: list[int] = []
+        for b in block_ids:
+            bi = int(b)
+            if bi in seen:
+                continue
+            seen.add(bi)
+            ordered_ids.append(bi)
+
+        if self.fp16_value_cache_capacity is None:
+            return ({bid: bid for bid in ordered_ids}, 0, 0, 0, 0)
+
+        capacity = int(self.fp16_value_cache_capacity)
+        if capacity <= 0 or len(ordered_ids) > capacity:
+            return (None, 0, 0, 0, 0)
+
+        el = self.values_fp16_gpu.element_size()
+        device = self.values_fp16_gpu.device
+        hits = 0
+        misses = 0
+        h2d_bytes = 0
+        evictions = 0
+
+        for bid in ordered_ids:
+            if bid in self._fp16_value_resident:
+                hits += 1
+                self._fp16_value_resident.move_to_end(bid, last=True)
+                continue
+
+            if self._fp16_value_free_slots:
+                slot = self._fp16_value_free_slots.pop(0)
+            else:
+                _, slot = self._fp16_value_resident.popitem(last=False)
+                evictions += 1
+
+            start = bid * bs
+            end = min(start + bs, self.num_tokens)
+            if end > start and self.values_fp16_cpu is not None:
+                dst_start = slot * bs
+                dst_end = dst_start + (end - start)
+                src = self.values_fp16_cpu[:, start:end, :]
+                self.values_fp16_gpu[:, dst_start:dst_end, :] = src.to(
+                    device=device,
+                    non_blocking=True,
+                )
+                h2d_bytes += self.kv_heads * (end - start) * self.d_v * el
+            misses += 1
+            self._fp16_value_resident[bid] = slot
+
+        self._fp16_value_cache_hits += hits
+        self._fp16_value_cache_misses += misses
+        self._fp16_value_cache_h2d_bytes += h2d_bytes
+        self._fp16_value_cache_evictions += evictions
+        return (dict(self._fp16_value_resident), hits, misses, h2d_bytes, evictions)
+
     def page_in_blocks(
         self,
         kv_head_idx: int,
@@ -848,6 +956,8 @@ def create_tiered_cache_int4v_from_model(
     block_size: int = 16,
     group_size: int = 16,  # paper §7
     max_new_tokens: int = 512,
+    fp16_key_cache_capacity: int | None = None,
+    fp16_value_cache_capacity: int | None = None,
 ) -> dict[int, TieredKeyCacheLayer]:
     """Create tiered caches with INT4 per-group values from HF past_key_values.
 
@@ -882,6 +992,8 @@ def create_tiered_cache_int4v_from_model(
             keys_aligned, values_aligned,
             block_size=block_size, group_size=group_size,
             max_new_tokens=max_new_tokens + (seq_len - aligned_len),
+            fp16_key_cache_capacity=fp16_key_cache_capacity,
+            fp16_value_cache_capacity=fp16_value_cache_capacity,
         )
         # num_tokens tracks what the INT4 packed tensor actually covers;
         # the trailing (seq_len - aligned_len) tokens weren't quantised and

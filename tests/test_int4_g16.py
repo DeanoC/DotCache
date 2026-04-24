@@ -81,6 +81,48 @@ class TestInt4G16:
         assert cache.values_fp16_gpu is not None
         assert cache.values_fp16_gpu.shape == (kv_heads, capacity, d_v)
 
+    def test_bounded_fp16_value_cache_pages_blocks(self):
+        from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
+
+        kv_heads, n_blocks, bs, head_dim, d_v = 2, 4, 16, 32, 64
+        N = n_blocks * bs
+        torch.manual_seed(20260425)
+        keys = torch.randn(kv_heads, N, head_dim, dtype=torch.float16, device="cuda")
+        values = torch.randn(kv_heads, N, d_v, dtype=torch.float16, device="cuda")
+
+        cache = TieredKeyCacheLayer.from_fp16_cache_int4v(
+            keys,
+            values,
+            block_size=bs,
+            group_size=16,
+            max_new_tokens=0,
+            fp16_value_cache_capacity=2,
+        )
+
+        assert cache.values_fp16 is None
+        assert cache.fp16_value_cache_capacity == 2
+        assert cache.values_fp16_gpu.shape == (kv_heads, 2 * bs, d_v)
+
+        slots, hits, misses, h2d_bytes, evictions = cache.ensure_fp16_values_resident([1, 3])
+        assert slots is not None
+        assert hits == 0
+        assert misses == 2
+        assert evictions == 0
+        assert h2d_bytes == kv_heads * 2 * bs * d_v * cache.values_fp16_gpu.element_size()
+        for bid, slot in slots.items():
+            if bid in (1, 3):
+                start = bid * bs
+                dst = slot * bs
+                torch.testing.assert_close(
+                    cache.values_fp16_gpu[:, dst:dst + bs, :],
+                    values[:, start:start + bs, :],
+                )
+
+        _, hits, misses, _, evictions = cache.ensure_fp16_values_resident([3, 2])
+        assert hits == 1
+        assert misses == 1
+        assert evictions == 1
+
     def test_eta_b_is_relative_reconstruction_error(self):
         """Paper v_tol=0.05 is dimensionless; scaling V by a constant should
         scale absolute error but leave η_b approximately unchanged."""

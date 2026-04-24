@@ -370,6 +370,8 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
                        device: str = "cuda",
                        use_int4_values: bool = False,
                        group_size: int = 16,
+                       fp16_key_cache_blocks: int | None = None,
+                       fp16_value_cache_blocks: int | None = None,
                        # Paper-alignment features (T4/T7/Rung1/T9/T10).
                        tau_cov: float | None = None,
                        k_min: int = 2,
@@ -402,17 +404,29 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
 
     _ensure_certified_imports()
     layer_ids = list(range(model.config.num_hidden_layers))
-    _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
-    _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
+    _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
+    _env_value_cap = os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS")
+    _key_cap = (
+        fp16_key_cache_blocks
+        if fp16_key_cache_blocks is not None
+        else None if _env_key_cap is None or _env_key_cap == "" else int(_env_key_cap)
+    )
+    _value_cap = (
+        fp16_value_cache_blocks
+        if fp16_value_cache_blocks is not None
+        else None if _env_value_cap is None or _env_value_cap == "" else int(_env_value_cap)
+    )
     if use_int4_values:
         tiered_caches = create_tiered_cache_int4v_from_model(
             past_kv, layer_ids, group_size=group_size,
             max_new_tokens=max_new + 8,
+            fp16_key_cache_capacity=_key_cap,
+            fp16_value_cache_capacity=_value_cap,
         )
     else:
         tiered_caches = create_tiered_cache_from_model(
             past_kv, layer_ids, max_new_tokens=max_new + 8,
-            fp16_key_cache_capacity=_cap,
+            fp16_key_cache_capacity=_key_cap,
         )
     del past_kv
     gc.collect()
@@ -487,6 +501,8 @@ def run_ruler(
     seed_base: int = 20260416, device: str = "cuda",
     use_int4_values: bool = False,
     group_size: int = 16,
+    fp16_key_cache_blocks: int | None = None,
+    fp16_value_cache_blocks: int | None = None,
     # Paper-alignment features.
     tau_cov: float | None = None,
     k_min: int = 2,
@@ -531,6 +547,8 @@ def run_ruler(
                     v_tolerance=v_tolerance,
                     use_int4_values=use_int4_values,
                     group_size=group_size,
+                    fp16_key_cache_blocks=fp16_key_cache_blocks,
+                    fp16_value_cache_blocks=fp16_value_cache_blocks,
                     top_k_fp16_keys=top_k_fp16_keys,
                     device=device,
                     tau_cov=tau_cov, k_min=k_min, k_max=k_max,
@@ -663,6 +681,8 @@ def main():
         v_tolerance=args.v_tolerance,
         use_int4_values=args.use_int4_values,
         group_size=args.group_size,
+        fp16_key_cache_blocks=args.fp16_key_cache_blocks,
+        fp16_value_cache_blocks=args.fp16_value_cache_blocks,
         top_k_fp16_keys=args.top_k_fp16,
         seed_base=args.seed,
         tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
