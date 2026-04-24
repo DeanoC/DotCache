@@ -1,0 +1,93 @@
+
+=== 2026-04-23T12:23:19Z :: post-PG-19 chain start ===
+
+=== 2026-04-23T12:23:19Z :: Stage 1/3 — PG-19 32K rerun ===
+
+=== 2026-04-23T12:23:19Z :: PG-19 ctx=32768 rerun start (20 chunks, 12h budget) ===
+
+=== 2026-04-23T22:23:53Z :: PG-19 ctx=32768 exit=0 ===
+  Certified [5/20]: chunk_ppl=10.78, suffix_ppl=10.96, running_ppl=11.04, int8_tail=0.858 (overall 0.858)
+  Certified [10/20]: chunk_ppl=7.02, suffix_ppl=6.92, running_ppl=10.34, int8_tail=0.858 (overall 0.858)
+  Certified [15/20]: chunk_ppl=9.32, suffix_ppl=9.06, running_ppl=9.88, int8_tail=0.867 (overall 0.859)
+  Certified [20/20]: chunk_ppl=9.14, suffix_ppl=8.78, running_ppl=9.57, int8_tail=0.854 (overall 0.859)
+Certified: ppl=9.57 (655320 tokens, 35892.1s)
+  bits/token (full): 3.2584 (95% CI [3.0913, 3.4349])
+  bits/token (certified suffix only): 3.2214 (95% CI [3.0532, 3.3952])
+
+==================================================
+Summary
+==================================================
+Context: 32768 tokens, 20 chunks
+Dense perplexity:     9.5712
+Certified perplexity: 9.5695
+Ratio (cert/dense):   0.999825
+Delta:                -0.0017
+INT8-tail rate:       0.8593 (442996045454/515521904640 blocks served from cheap INT8-key path; every block attended)
+Concentration thr:    0.0
+
+JSON -> /workspace/DotCache/benchmarks/results/pg19_rerun_20260423/pg19_ctx32768.json
+
+=== 2026-04-23T22:23:53Z :: PG-19 32K rerun done (exit=0) ===
+Results in /workspace/DotCache/benchmarks/results/pg19_rerun_20260423
+
+=== 2026-04-23T22:23:53Z :: Stage 1 exit=0 ===
+
+=== 2026-04-23T22:23:53Z :: Stage 2/3 — short E_key pass (8K + 16K) ===
+
+=== 2026-04-23T22:23:53Z :: E_key short pass start ===
+
+=== 2026-04-23T22:23:53Z :: ctx=8192 (5 chunks, instrumented) ===
+
+=== 2026-04-23T22:54:44Z :: ctx=8192 exit=0 ===
+  bits/token (full): 2.7342 (95% CI [2.6984, 2.7690])
+  bits/token (certified suffix only): 2.6829 (95% CI [2.5422, 2.8053])
+
+==================================================
+Summary
+==================================================
+Context: 8192 tokens, 5 chunks
+Dense perplexity:     6.6483
+Certified perplexity: 6.6540
+Ratio (cert/dense):   1.000844
+Delta:                +0.0056
+INT8-tail rate:       0.5529 (4457280858/8060928000 blocks served from cheap INT8-key path; every block attended)
+Concentration thr:    0.0
+
+JSON -> /workspace/DotCache/benchmarks/results/pg19_ekey_short_20260423/pg19_ctx8192_ekey.json
+
+=== 2026-04-23T22:54:44Z :: ctx=16384 (5 chunks, instrumented) ===
+
+=== 2026-04-23T23:55:18Z :: ctx=16384 exit=0 ===
+  bits/token (full): 3.2821 (95% CI [2.7218, 3.8425])
+  bits/token (certified suffix only): 3.2721 (95% CI [2.7307, 3.8135])
+
+==================================================
+Summary
+==================================================
+Context: 16384 tokens, 5 chunks
+Dense perplexity:     9.7247
+Certified perplexity: 9.7277
+Ratio (cert/dense):   1.000311
+Delta:                +0.0030
+INT8-tail rate:       0.7351 (23689746668/32227983360 blocks served from cheap INT8-key path; every block attended)
+Concentration thr:    0.0
+
+JSON -> /workspace/DotCache/benchmarks/results/pg19_ekey_short_20260423/pg19_ctx16384_ekey.json
+
+=== 2026-04-23T23:55:18Z :: E_key short pass done ===
+Results in /workspace/DotCache/benchmarks/results/pg19_ekey_short_20260423
+
+=== 2026-04-23T23:55:18Z :: Stage 2 exit=0 ===
+
+=== 2026-04-23T23:55:18Z :: Stage 3/3 — PG-19 128K smoke + 5-chunk full ===
+
+=== 2026-04-23T23:55:18Z :: PG-19 ctx=131072 SMOKE (1 chunk, 3h budget) ===
+
+=== 2026-04-24T02:55:21Z :: PG-19 ctx=131072 SMOKE exit=124 ===
+
+=== 2026-04-24T02:55:21Z :: SMOKE FAILED — aborting full 128K run ===
+smoke log: /workspace/DotCache/benchmarks/results/pg19_rerun_20260423/pg19_ctx131072_smoke.log
+
+=== 2026-04-24T02:55:21Z :: Stage 3 exit=124 ===
+
+=== 2026-04-24T02:55:21Z :: post-PG-19 chain done (32k=0, short=0, 128k=124) ===
