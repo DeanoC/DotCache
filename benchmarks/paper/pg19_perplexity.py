@@ -320,6 +320,15 @@ def compute_certified_perplexity(
         chunk_rung2_fired_step: list[bool] = []
         chunk_rung3_fired_step: list[bool] = []
         chunk_rung4_fired_step: list[bool] = []
+        # Observed-vs-bound key-score telemetry (reviewer Item 3). Recorded
+        # over the top-K blocks fp16_block_scores covers (not the full tail
+        # — the bound applies to all blocks but the re-score is top-K only).
+        chunk_score_residual_max_step: list[float] = []
+        chunk_score_residual_mean_step: list[float] = []
+        chunk_score_residual_ratio_max_step: list[float] = []
+        chunk_score_residual_ratio_mean_step: list[float] = []
+        chunk_delta_bound_max_step: list[float] = []
+        chunk_delta_bound_mean_step: list[float] = []
 
         for t in range(eval_len - 1):
             token_id = input_ids[:, prefix_len + t]
@@ -357,6 +366,15 @@ def compute_certified_perplexity(
             chunk_rung2_fired_step.append(bool(step.get("rung2_fired", False)))
             chunk_rung3_fired_step.append(bool(step.get("rung3_fired", False)))
             chunk_rung4_fired_step.append(bool(step.get("rung4_fired", False)))
+            # Observed-vs-bound key-score telemetry — only present when
+            # fp16_block_scores was materialised (ranking_fallback on).
+            if "score_residual_step_max" in step:
+                chunk_score_residual_max_step.append(float(step["score_residual_step_max"]))
+                chunk_score_residual_mean_step.append(float(step["score_residual_step_mean"]))
+                chunk_score_residual_ratio_max_step.append(float(step["score_residual_ratio_step_max"]))
+                chunk_score_residual_ratio_mean_step.append(float(step["score_residual_ratio_step_mean"]))
+                chunk_delta_bound_max_step.append(float(step["delta_bound_step_max"]))
+                chunk_delta_bound_mean_step.append(float(step["delta_bound_step_mean"]))
             adapter.certified_state.clear_step_stats()
             total_steps += 1
 
@@ -400,6 +418,14 @@ def compute_certified_perplexity(
                 "rung2_fired_step": chunk_rung2_fired_step,
                 "rung3_fired_step": chunk_rung3_fired_step,
                 "rung4_fired_step": chunk_rung4_fired_step,
+                # Observed-vs-bound key-score residual (reviewer Item 3).
+                # Empty on runs without ranking_fallback.
+                "score_residual_max_step": chunk_score_residual_max_step,
+                "score_residual_mean_step": chunk_score_residual_mean_step,
+                "score_residual_ratio_max_step": chunk_score_residual_ratio_max_step,
+                "score_residual_ratio_mean_step": chunk_score_residual_ratio_mean_step,
+                "delta_bound_max_step": chunk_delta_bound_max_step,
+                "delta_bound_mean_step": chunk_delta_bound_mean_step,
             },
         })
 

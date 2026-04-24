@@ -830,6 +830,27 @@ def certified_attention_layer(
             fp16_block_scores = compute_fp16_block_scores(
                 cache, q_all, top_block_indices, n_qblocks, gqa_group, q_scale,
             )
+        # Empirical per-block score residual |FP16 − INT8| paired with the
+        # analytical per-head delta bound — exposed for the certificate
+        # figure (reviewer Item 3). Measured over the top-K blocks where
+        # attention mass concentrates. delta_per_head is also used by
+        # score_consistency_check below; hoisted here so both ratio and
+        # violation count can reuse it (one compute_delta_bound call).
+        score_residual = (fp16_block_scores - top_int8_scores).abs()  # [H, K]
+        score_residual_max_value = float(score_residual.max().item())
+        score_residual_mean_value = float(score_residual.mean().item())
+        delta_per_head = compute_delta_bound(
+            q_all, cache.keys_scale[:, :n_qblocks, :], gqa_group, q_scale,
+        )
+        delta_bound_mean = float(delta_per_head.mean().item())
+        delta_bound_max_value = float(delta_per_head.max().item())
+        # Tightness ratio: observed / bound, per block. 0.0 = bound far from
+        # tight; 1.0 = bound saturated; >1.0 would be a Theorem-2 violation
+        # (separately caught by the score_consistency_check canary).
+        delta_per_block = delta_per_head.unsqueeze(1).clamp(min=1e-12)  # [H, 1]
+        score_residual_ratio = score_residual / delta_per_block
+        score_residual_ratio_max_value = float(score_residual_ratio.max().item())
+        score_residual_ratio_mean_value = float(score_residual_ratio.mean().item())
         if ranking_fallback:
             # Single pair of argsorts covers r=1, r=3, and r=ranking_r — no
             # need to call detect_ranking_disagreement three times (each call
@@ -854,10 +875,8 @@ def certified_attention_layer(
             # by Δ + eps_guard. Any violation means Theorem 2 was empirically
             # broken on this step — a canary for stale metadata / cache
             # corruption, expected 0-count on well-behaved runs.
-            delta_per_head = compute_delta_bound(
-                q_all, cache.keys_scale[:, :n_qblocks, :], gqa_group, q_scale,
-            )
-            delta_bound_mean = float(delta_per_head.mean().item())
+            # delta_per_head is already computed above (hoisted alongside
+            # the residual telemetry); reuse it here instead of recomputing.
             score_consistency_violation_mask = score_consistency_violations(
                 top_int8_scores, fp16_block_scores, delta_per_head, eps_guard,
             )
@@ -917,6 +936,14 @@ def certified_attention_layer(
                 "v_format": "fp16",
                 "score_consistency_violation_heads": score_consistency_violation_heads,
                 "delta_bound_mean": float(delta_bound_mean),
+                "delta_bound_max": delta_bound_max_value,
+                # Residual telemetry also populated on Rung-4 steps (where
+                # the bound was empirically violated, ratio_max ≥ 1.0).
+                "score_residual_max": score_residual_max_value,
+                "score_residual_mean": score_residual_mean_value,
+                "score_residual_ratio_max": score_residual_ratio_max_value,
+                "score_residual_ratio_mean": score_residual_ratio_mean_value,
+                "score_residual_top_k": int(ranking_k),
                 "eps_guard": float(eps_guard),
                 "h2d_key_bytes": int(h2d_key_bytes),
                 "h2d_key_blocks": int(h2d_key_blocks),
@@ -1299,11 +1326,22 @@ def certified_attention_layer(
             # certified bound; purely for monitoring.
             stats["exploration_rate"] = float(exploration_rate)
             stats["exploration_blocks"] = int(explored_blocks_count)
+        # Paper §6 observed-vs-bound telemetry (reviewer Item 3). Emitted
+        # whenever fp16_block_scores was materialised (i.e. ranking_fallback
+        # or score_consistency_check); the residual quantities measure how
+        # tight the per-block key-score delta bound is in practice.
+        if need_fp16_scores:
+            stats["score_residual_max"] = score_residual_max_value
+            stats["score_residual_mean"] = score_residual_mean_value
+            stats["score_residual_ratio_max"] = score_residual_ratio_max_value
+            stats["score_residual_ratio_mean"] = score_residual_ratio_mean_value
+            stats["delta_bound_mean"] = float(delta_bound_mean)
+            stats["delta_bound_max"] = delta_bound_max_value
+            stats["score_residual_top_k"] = int(ranking_k)
         # Score-consistency violation counters (paper §6). Always emitted
         # when the feature is enabled so runs can confirm the 0-count baseline.
         if score_consistency_check:
             stats["score_consistency_violation_heads"] = int(score_consistency_violation_heads)
-            stats["delta_bound_mean"] = float(delta_bound_mean)
             stats["eps_guard"] = float(eps_guard)
             # Rung-4 escalation telemetry. Reaching this stats block means
             # Rung-4 did NOT fire on this step (otherwise we returned early);

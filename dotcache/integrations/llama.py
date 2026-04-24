@@ -292,6 +292,38 @@ class CertifiedAttentionState:
             agg["e_val_step_mean"] = float(sum(
                 s.get("e_val_mean", 0.0) for s in entries if s.get("e_val_mean") is not None
             ) / max(len(e_val_maxes), 1))
+        # Observed-vs-bound key-score telemetry (reviewer Item 3). Present
+        # whenever ranking_fallback or score_consistency_check materialised
+        # fp16_block_scores — the certified paper config enables the former,
+        # so this is always populated on the paper benches. The residual
+        # fields are measured over the ranking_k top blocks where attention
+        # concentrates (see certified_attention.py:833 for the ratio docs).
+        score_residual_maxes = [
+            s.get("score_residual_max") for s in entries
+            if s.get("score_residual_max") is not None
+        ]
+        if score_residual_maxes:
+            agg["score_residual_step_max"] = float(max(score_residual_maxes))
+            agg["score_residual_step_mean"] = float(sum(
+                s.get("score_residual_mean", 0.0) for s in entries
+                if s.get("score_residual_mean") is not None
+            ) / max(len(score_residual_maxes), 1))
+            agg["score_residual_ratio_step_max"] = float(max(
+                s.get("score_residual_ratio_max", 0.0) for s in entries
+                if s.get("score_residual_ratio_max") is not None
+            ))
+            agg["score_residual_ratio_step_mean"] = float(sum(
+                s.get("score_residual_ratio_mean", 0.0) for s in entries
+                if s.get("score_residual_ratio_mean") is not None
+            ) / max(len(score_residual_maxes), 1))
+            agg["delta_bound_step_max"] = float(max(
+                s.get("delta_bound_max", 0.0) for s in entries
+                if s.get("delta_bound_max") is not None
+            ))
+            agg["delta_bound_step_mean"] = float(sum(
+                s.get("delta_bound_mean", 0.0) for s in entries
+                if s.get("delta_bound_mean") is not None
+            ) / max(len(score_residual_maxes), 1))
         return agg
 
 
