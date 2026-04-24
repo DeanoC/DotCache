@@ -25,6 +25,7 @@ from dotcache.kernels.selective_attend_triton import (
     selective_attend_multihead_int8k_int4v,
     selective_attend_multihead_hybrid,
     selective_attend_multihead_hybrid_int4v,
+    selective_attend_multihead_hybrid_mixedv,
     selective_attend_multihead_hybrid_split_k,
 )
 
@@ -1057,6 +1058,9 @@ def certified_attention_layer(
     # The Triton kernels compute in F32 which diverges from the BF16 SDPA used
     # in dense mode.  Using SDPA here ensures identical numerical behaviour.
     v_format = "fp16"
+    e_val_head_before_rung2: torch.Tensor | None = None
+    value_fallback_block_count = 0
+    value_fallback_head_block_count = 0
 
     # Paper §3.3 hybrid attend — Algorithm 1 Phase 2. When adaptive K* is
     # active and the cache has FP16 values in VRAM, route to the mask-gated
@@ -1075,6 +1079,10 @@ def certified_attention_layer(
     )
     if use_paper_hybrid_int4:
         e_val_head: torch.Tensor | None = None
+        e_val_head_before_rung2: torch.Tensor | None = None
+        value_unsafe_mask: torch.Tensor | None = None
+        value_fallback_block_count = 0
+        value_fallback_head_block_count = 0
         if value_error_mode not in ("loose", "tight"):
             raise ValueError(
                 f"value_error_mode must be 'loose' or 'tight', got {value_error_mode!r}"
@@ -1126,19 +1134,42 @@ def certified_attention_layer(
             mass_frac = compute_block_mass_fraction(
                 m_b[:, :n_qblocks], S_b[:, :n_qblocks],
             )
-            int4_value_mask = torch.ones_like(mass_frac, dtype=torch.bool)
+            # η_b is stored as relative value reconstruction error, matching
+            # the paper §7 v_tol=0.05 operating point.
+            eta_blocks = cache.values_int4_errors[:, :n_qblocks]
+            kv_idx = torch.arange(num_q_heads, device=mass_frac.device) // gqa_group
+            kv_idx = kv_idx.clamp(max=eta_blocks.shape[0] - 1)
+            eta_per_qhead = eta_blocks[kv_idx]
+            per_block_e_val = mass_frac * eta_per_qhead
+            if value_error_mode == "tight":
+                # Promote the largest value-error contributors until the
+                # achieved per-head E_val is within the paper budget. A
+                # simple per-block threshold can fire while leaving the
+                # reported total bound above v_tol; the certificate needs the
+                # post-promotion total, not just individual blocks, under
+                # control.
+                e_pre = per_block_e_val.sum(dim=1)
+                excess = (e_pre - v_tolerance).clamp(min=0.0)
+                sorted_vals, sorted_idx = torch.sort(per_block_e_val, dim=1, descending=True)
+                cumsum_before = torch.cumsum(sorted_vals, dim=1) - sorted_vals
+                promote_sorted = (excess[:, None] > 0.0) & (cumsum_before < excess[:, None])
+                value_unsafe_mask = torch.zeros_like(promote_sorted)
+                value_unsafe_mask.scatter_(1, sorted_idx, promote_sorted)
+            else:
+                value_unsafe_mask = eta_per_qhead > v_tolerance
+            int4_value_mask = ~value_unsafe_mask
+            e_val_head_before_rung2 = per_block_e_val.sum(dim=1)
             e_val_head = compute_value_error_bound_for_mask(
                 mass_frac=mass_frac,
                 int4_value_mask=int4_value_mask,
-                eta_per_block=cache.values_int4_errors[:, :n_qblocks],
+                eta_per_block=eta_blocks,
                 gqa_group=gqa_group,
             )
             rho = mass_frac.sum(dim=1)
-            eta_int4 = cache.values_int4_errors[:, :n_qblocks].max().item()
-            if value_error_mode == "tight":
-                v_format = decide_v_format_tight(e_val_head, v_tolerance)
-            else:
-                v_format = decide_v_format(rho, eta_int4, v_tolerance)
+            eta_int4 = eta_blocks.max().item()
+            value_fallback_head_block_count = int(value_unsafe_mask.sum().item())
+            value_fallback_block_count = int(value_unsafe_mask.any(dim=0).sum().item())
+            v_format = "mixed" if value_fallback_head_block_count else "int4"
 
         if v_format == "int4":
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
@@ -1161,31 +1192,77 @@ def certified_attention_layer(
                 )
         else:
             rung2_fired = True
-            if cache.values_fp16_cpu is not None:
-                with _PhaseTimer(phase_timings, "h2d_pagein"):
-                    values_fp16 = cache.values_fp16_cpu[:, :nt_hybrid, :].to(
-                        device=cache.keys_int8.device, non_blocking=True,
-                    )
-                nt_v = cache.num_tokens
-                kv_v, _, dv_v = cache.values_fp16_cpu.shape
-                h2d_value_bytes += kv_v * nt_v * dv_v * cache.values_fp16_cpu.element_size()
-                h2d_value_blocks += (nt_v + bs - 1) // bs
-            elif cache.values_fp16 is not None:
-                values_fp16 = cache.values_fp16[:, :nt_hybrid, :]
-            else:
+            assert value_unsafe_mask is not None
+            unsafe_block_ids = value_unsafe_mask.any(dim=0).nonzero().flatten()
+            if cache.values_fp16_cpu is None and cache.values_fp16 is None:
                 raise ValueError("INT4 unsafe and no FP16 fallback available")
+            n_value_slots = int(unsafe_block_ids.numel())
+            value_block_slots = torch.full(
+                (n_active_blocks_hybrid,),
+                -1,
+                dtype=torch.int32,
+                device=q_all.device,
+            )
+            value_block_slots[unsafe_block_ids] = torch.arange(
+                n_value_slots,
+                dtype=torch.int32,
+                device=q_all.device,
+            )
+            value_fp16_mask = torch.zeros(
+                num_q_heads,
+                n_active_blocks_hybrid,
+                dtype=torch.int32,
+                device=q_all.device,
+            )
+            value_fp16_mask[:, :n_qblocks] = value_unsafe_mask.to(torch.int32)
+            value_dtype = (
+                cache.values_fp16_cpu.dtype
+                if cache.values_fp16_cpu is not None
+                else cache.values_fp16.dtype
+            )
+            values_fp16_scratch = torch.empty(
+                cache.kv_heads,
+                max(n_value_slots, 1) * bs,
+                cache.d_v,
+                dtype=value_dtype,
+                device=q_all.device,
+            )
+            unsafe_block_list = [int(b) for b in unsafe_block_ids.tolist()]
+            with _PhaseTimer(phase_timings, "h2d_pagein"):
+                for slot, bid in enumerate(unsafe_block_list):
+                    start = bid * bs
+                    end = min(start + bs, cache.num_tokens)
+                    dst_start = slot * bs
+                    dst_end = dst_start + (end - start)
+                    if cache.values_fp16_cpu is not None:
+                        src = cache.values_fp16_cpu[:, start:end, :]
+                        values_fp16_scratch[:, dst_start:dst_end, :] = src.to(
+                            device=q_all.device,
+                            non_blocking=True,
+                        )
+                        kv_v, _, dv_v = cache.values_fp16_cpu.shape
+                        h2d_value_bytes += kv_v * (end - start) * dv_v * cache.values_fp16_cpu.element_size()
+                    else:
+                        values_fp16_scratch[:, dst_start:dst_end, :] = cache.values_fp16[:, start:end, :]
+                    h2d_value_blocks += 1
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
-                output = selective_attend_multihead_hybrid_split_k(
+                output = selective_attend_multihead_hybrid_mixedv(
                     keys_int8=cache.keys_int8[:, :nt_hybrid, :],
                     keys_scale=keys_scale_active,
                     keys_zero_points=cache.keys_zero_points[:, :n_active_blocks_hybrid, :],
                     keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :],
                     topk_mask=hybrid_topk,
-                    values_fp16=values_fp16,
+                    values_int4_packed=cache.values_int4_packed[:, :nt_hybrid, :],
+                    values_int4_scales=cache.values_int4_scales[:, :nt_hybrid, :],
+                    values_int4_zeros=cache.values_int4_zeros[:, :nt_hybrid, :],
+                    values_fp16_scratch=values_fp16_scratch,
+                    value_fp16_mask=value_fp16_mask,
+                    value_block_slots=value_block_slots,
                     q_all=q_all,
                     skip_mask_i32=no_skip,
                     gqa_group=gqa_group,
                     block_size=bs,
+                    group_size=cache.values_int4_group_size,
                     q_scale=q_scale,
                     last_block_valid=last_block_valid,
                 )
@@ -1509,6 +1586,12 @@ def certified_attention_layer(
                 stats["e_val_max"] = float(e_val_head.max().item())
                 stats["e_val_mean"] = float(e_val_head.mean().item())
                 stats["value_error_mode"] = value_error_mode
+                if e_val_head_before_rung2 is not None:
+                    stats["e_val_pre_rung2_max"] = float(e_val_head_before_rung2.max().item())
+                    stats["e_val_pre_rung2_mean"] = float(e_val_head_before_rung2.mean().item())
+            if value_fallback_head_block_count:
+                stats["value_fallback_blocks"] = int(value_fallback_block_count)
+                stats["value_fallback_head_blocks"] = int(value_fallback_head_block_count)
         # Adaptive K* telemetry (paper §3.3). Present only when enabled.
         if k_star is not None:
             stats["k_star_mean"] = float(k_star.float().mean().item())

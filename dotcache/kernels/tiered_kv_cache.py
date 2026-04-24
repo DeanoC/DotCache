@@ -65,7 +65,9 @@ class TieredKeyCacheLayer:
     values_int4_packed: torch.Tensor | None = None   # [kv_heads, N, d_v//2] uint8, cuda
     values_int4_scales: torch.Tensor | None = None   # [kv_heads, N, num_groups] float16, cuda
     values_int4_zeros: torch.Tensor | None = None    # [kv_heads, N, num_groups] float16, cuda
-    values_int4_errors: torch.Tensor | None = None   # [kv_heads, num_blocks] float32, cuda
+    values_int4_errors: torch.Tensor | None = None   # [kv_heads, num_blocks] mean relative L2 error, cuda
+    values_int4_error_sums: torch.Tensor | None = None  # [kv_heads, num_blocks] running sums for append
+    values_int4_error_counts: torch.Tensor | None = None  # [kv_heads, num_blocks] running counts for append
     values_int4_group_size: int = 16  # paper §7
     # Per-block max value-vector ℓ₂ norm: ν_b = max_{t∈b} ‖V_t‖₂ (paper §2.3
     # last paragraph). The Theorem-1 key-error bound uses V_max = max_b ν_b.
@@ -314,11 +316,21 @@ class TieredKeyCacheLayer:
             kv_heads, num_total_blocks, dtype=torch.float32, device=device,
         )
         int4_errors_buf[:, :N // block_size] = int4_result["error_bounds"].contiguous()
+        int4_error_sums_buf = torch.zeros(
+            kv_heads, num_total_blocks, dtype=torch.float32, device=device,
+        )
+        int4_error_sums_buf[:, :N // block_size] = int4_result["error_sums"].contiguous()
+        int4_error_counts_buf = torch.zeros(
+            kv_heads, num_total_blocks, dtype=torch.int32, device=device,
+        )
+        int4_error_counts_buf[:, :N // block_size] = block_size
 
         base.values_int4_packed = int4_packed_buf
         base.values_int4_scales = int4_scales_buf
         base.values_int4_zeros = int4_zeros_buf
         base.values_int4_errors = int4_errors_buf
+        base.values_int4_error_sums = int4_error_sums_buf
+        base.values_int4_error_counts = int4_error_counts_buf
         base.values_int4_group_size = group_size
 
         # Pre-allocate CPU pinned FP16 buffer at capacity so append_token can
@@ -466,8 +478,9 @@ class TieredKeyCacheLayer:
         # The kernel reads N from keys_int8.shape[1], so values_int4_* must
         # grow in lockstep with keys (paper §3.1 / §7).
         # We also update the per-block error annotation η_b incrementally:
-        # η_b = max ℓ₂ reconstruction error across the block's tokens
-        # (paper §2.3 / Theorem 1). Without this, decide_v_format_tight
+        # η_b = mean relative ℓ₂ reconstruction error across the block's
+        # tokens. This is the dimensionless paper §7 value-tolerance scale
+        # (~0.05 at g=16). Without this, decide_v_format_tight
         # silently under-estimates per-block error for blocks containing
         # appended tokens, biasing the Rung-2 decision toward INT4.
         if self.values_int4_packed is not None:
@@ -481,12 +494,20 @@ class TieredKeyCacheLayer:
             self.values_int4_packed[:, pos:pos+1, :] = r["data_packed"].unsqueeze(1)
             self.values_int4_scales[:, pos:pos+1, :] = r["scales"].unsqueeze(1)
             self.values_int4_zeros[:, pos:pos+1, :] = r["zeros"].unsqueeze(1)
-            # Update η_b incrementally on device — keep max over block tokens.
+            # Update η_b incrementally on device — keep mean over block tokens.
             err = r["per_token_error"].to(dtype=self.values_int4_errors.dtype)
-            self.values_int4_errors[:, block_idx] = torch.maximum(
-                self.values_int4_errors[:, block_idx],
-                err,
-            )
+            if self.values_int4_error_sums is not None and self.values_int4_error_counts is not None:
+                self.values_int4_error_sums[:, block_idx] += err
+                self.values_int4_error_counts[:, block_idx] += 1
+                counts = self.values_int4_error_counts[:, block_idx].to(dtype=self.values_int4_errors.dtype)
+                self.values_int4_errors[:, block_idx] = (
+                    self.values_int4_error_sums[:, block_idx] / counts.clamp(min=1)
+                )
+            else:
+                self.values_int4_errors[:, block_idx] = torch.maximum(
+                    self.values_int4_errors[:, block_idx],
+                    err,
+                )
 
         # Mirror exact K/V into pinned Tier-2 buffers without constructing
         # temporary CPU tensors in the decode hot path.
@@ -648,6 +669,10 @@ class TieredKeyCacheLayer:
             total += self.values_int4_scales.nelement() * 2   # float16
             total += self.values_int4_zeros.nelement() * 2    # float16
             total += self.values_int4_errors.nelement() * 4   # float32
+            if self.values_int4_error_sums is not None:
+                total += self.values_int4_error_sums.nelement() * 4
+            if self.values_int4_error_counts is not None:
+                total += self.values_int4_error_counts.nelement() * 4
         return total
 
     def cpu_bytes(self) -> int:

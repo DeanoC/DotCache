@@ -78,11 +78,32 @@ class TestInt4G16:
         assert cache.values_int4_scales.dtype == torch.float16
         assert cache.values_int4_zeros.dtype == torch.float16
 
+    def test_eta_b_is_relative_reconstruction_error(self):
+        """Paper v_tol=0.05 is dimensionless; scaling V by a constant should
+        scale absolute error but leave η_b approximately unchanged."""
+        from dotcache.kernels.int4_group_quantise import quantise_int4_grouped_block
+
+        kv_heads, n_blocks, bs, d_v = 1, 2, 16, 32
+        N = n_blocks * bs
+        torch.manual_seed(20260424)
+        values = torch.randn(kv_heads, N, d_v, dtype=torch.float16, device="cuda")
+
+        small = quantise_int4_grouped_block(values, block_size=bs, group_size=16)
+        large = quantise_int4_grouped_block(values * 17.0, block_size=bs, group_size=16)
+
+        torch.testing.assert_close(
+            small["error_bounds"],
+            large["error_bounds"],
+            atol=2e-3,
+            rtol=2e-2,
+        )
+        assert large["abs_error_bounds"].max() > small["abs_error_bounds"].max() * 10
+
     def test_int4_per_block_error_updates_on_partial_block_append(self):
         """η_b annotation must grow as tokens are appended into a partial block.
 
         Group quant is per-token (no need to wait for the block), but the
-        per-block reconstruction error η_b is the *max* over the block's
+        per-block reconstruction error η_b is maintained over the block's
         tokens. Without an incremental update on append_token, blocks with
         decode-appended tokens keep their initialised η_b (= 0), which makes
         decide_v_format_tight under-estimate the per-block bound and bias
@@ -117,13 +138,18 @@ class TestInt4G16:
             "append_token is not propagating to values_int4_errors"
         )
 
-        # Append a second token with smaller error — η_b must stay at the max.
+        # Append a second token and verify the running count/sum path updates.
         smooth = torch.randn(kv_heads, 1, d_v, dtype=torch.float16, device="cuda")
         cache.append_token(k_pad, smooth)
         eta_after_two = cache.values_int4_errors[0, next_block_idx].item()
-        assert eta_after_two >= eta_after_one, (
-            f"η_b must be max-monotonic across appends; "
-            f"saw {eta_after_one:.3e} → {eta_after_two:.3e}"
+        assert cache.values_int4_error_counts[0, next_block_idx].item() == 2
+        expected_mean = (
+            cache.values_int4_error_sums[0, next_block_idx]
+            / cache.values_int4_error_counts[0, next_block_idx].float()
+        ).item()
+        assert abs(eta_after_two - expected_mean) < 1e-6, (
+            f"η_b must track the running block mean; "
+            f"saw {eta_after_two:.6e}, expected {expected_mean:.6e}"
         )
 
     def test_int4_cache_supports_decode_append(self):

@@ -662,25 +662,30 @@ class DotCacheLlamaAttention(nn.Module):
         if cache is None:
             raise ValueError(f"No tiered cache for layer {self.layer_idx}")
 
+        t_qkv0 = time.perf_counter()
         # Project Q, K, V with RoPE (need K/V for append)
         (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
+        t_qkv1 = time.perf_counter()
         # query_states: [1, num_q_heads, 1, head_dim]
         # Keep query in model's native dtype (BF16) — SDPA attend matches dense precision
         q_all = query_states[0, :, 0, :]  # [num_q, head_dim]
 
         # Append new K/V to tiered cache (grows context for future steps)
         # Preserve model's native dtype (BF16) — don't force FP16
+        t_append0 = time.perf_counter()
         if cert_state.append_kv:
             cache.append_token(
                 key_states[0],    # [kv_heads, 1, head_dim]
                 value_states[0],  # [kv_heads, 1, d_v]
             )
+        t_append1 = time.perf_counter()
 
         # Certified attention: Phase 1 (INT8 score+certify) + Phase 2 (selective attend)
         gqa_group = self.config.num_attention_heads // self.config.num_key_value_heads
         q_scale = float(self.base_attention.scaling)
 
         collect = cert_state.collect_stats
+        t_decode0 = time.perf_counter()
         context_states, stats = certified_attention_layer(
             cache, q_all, gqa_group, q_scale,
             collect_stats=collect,
@@ -701,6 +706,7 @@ class DotCacheLlamaAttention(nn.Module):
             per_kv_group_topk=cert_state.per_kv_group_topk,
             value_error_mode=cert_state.value_error_mode,
         )
+        t_decode1 = time.perf_counter()
 
         # Accumulate stats (only if collection enabled)
         if collect and stats:
@@ -708,7 +714,16 @@ class DotCacheLlamaAttention(nn.Module):
 
         # Output projection
         context_tensor = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
+        t_out0 = time.perf_counter()
         projected_output = self.base_attention.o_proj(context_tensor.reshape(1, 1, -1).contiguous())
+        t_out1 = time.perf_counter()
+        self.adapter.record_layer_runtime(
+            self.layer_idx,
+            qkv_projection_ms=(t_qkv1 - t_qkv0) * 1000.0,
+            append_ms=(t_append1 - t_append0) * 1000.0,
+            decode_ms=(t_decode1 - t_decode0) * 1000.0,
+            output_projection_ms=(t_out1 - t_out0) * 1000.0,
+        )
 
         return projected_output, None
 
@@ -1040,8 +1055,10 @@ class LlamaDotCacheModelAdapter:
             self.qkv_projection_ms_total += qkv_projection_ms
         if append_ms > 0.0:
             profile.append_ms_total += append_ms
+            self.append_runtime_ms_total += append_ms
         if decode_ms > 0.0:
             profile.decode_ms_total += decode_ms
+            self.decode_runtime_ms_total += decode_ms
         if output_projection_ms > 0.0:
             profile.output_projection_ms_total += output_projection_ms
             self.output_projection_ms_total += output_projection_ms

@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -466,11 +467,17 @@ def main():
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
+    warnings.filterwarnings(
+        "ignore",
+        message=r"MatMul8bitLt: inputs will be cast from .* during quantization",
+        category=UserWarning,
+    )
     print(f"Loading {args.model} (INT8)...")
     tokenizer = AutoTokenizer.from_pretrained(args.model, token=token)
     quant_config = BitsAndBytesConfig(load_in_8bit=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, quantization_config=quant_config, device_map="auto", token=token,
+        args.model, quantization_config=quant_config, device_map="auto",
+        dtype=torch.float16, token=token,
     )
     model.eval()
     print(f"Model: {torch.cuda.memory_allocated()/1e9:.2f} GB")

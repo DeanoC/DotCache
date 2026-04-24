@@ -34,8 +34,10 @@ def quantise_int4_grouped(
             'scales': [num_tokens, num_groups] float16
             'zeros': [num_tokens, num_groups] float16
             'group_size': int
-            'per_token_error': [num_tokens] float32 tensor
-            'error_bound': 0-dim float32 tensor (max per-token ℓ₂ error)
+            'per_token_error': [num_tokens] float32 tensor, relative ℓ₂ error
+            'per_token_abs_error': [num_tokens] float32 tensor, absolute ℓ₂ error
+            'error_bound': 0-dim float32 tensor (mean per-token relative ℓ₂ error)
+            'abs_error_bound': 0-dim float32 tensor (max per-token absolute ℓ₂ error)
     """
     num_tokens, head_dim = values.shape
     num_groups = head_dim // group_size
@@ -61,10 +63,18 @@ def quantise_int4_grouped(
     quantised_flat = quantised.reshape(num_tokens, head_dim)
     packed = (quantised_flat[:, 0::2] & 0x0F) | ((quantised_flat[:, 1::2] & 0x0F) << 4)
 
-    # Compute actual error bound
+    # Compute actual error annotations. The paper operating point reports
+    # INT4 value distortion as relative reconstruction error (~5% at g=16),
+    # so η_b is dimensionless: ||V - Vhat||_2 / ||V||_2. Keeping absolute
+    # error separately avoids losing diagnostics.
     dequant = quantised.float() * scales.unsqueeze(-1) + zeros.unsqueeze(-1)
-    per_token_error = (grouped - dequant).reshape(num_tokens, head_dim).norm(dim=-1)
-    error_bound = per_token_error.max()
+    flat_source = grouped.reshape(num_tokens, head_dim)
+    flat_dequant = dequant.reshape(num_tokens, head_dim)
+    per_token_abs_error = (flat_source - flat_dequant).norm(dim=-1)
+    value_norm = flat_source.norm(dim=-1).clamp(min=1e-6)
+    per_token_error = per_token_abs_error / value_norm
+    error_bound = per_token_error.mean()
+    abs_error_bound = per_token_abs_error.max()
 
     return {
         "data_packed": packed,
@@ -72,7 +82,9 @@ def quantise_int4_grouped(
         "zeros": zeros.half(),
         "group_size": group_size,
         "per_token_error": per_token_error,
+        "per_token_abs_error": per_token_abs_error,
         "error_bound": error_bound,
+        "abs_error_bound": abs_error_bound,
     }
 
 
@@ -120,26 +132,20 @@ def quantise_int4_grouped_block(
     kv_heads, N, head_dim = values.shape
     num_blocks = N // block_size
 
-    all_packed = torch.empty(kv_heads, N, head_dim // 2, dtype=torch.uint8, device=values.device)
-    all_scales = torch.empty(kv_heads, N, head_dim // group_size, dtype=torch.float16, device=values.device)
-    all_zeros = torch.empty(kv_heads, N, head_dim // group_size, dtype=torch.float16, device=values.device)
-    all_errors = torch.empty(kv_heads, num_blocks, dtype=torch.float32, device=values.device)
-
-    for h in range(kv_heads):
-        for b in range(num_blocks):
-            start = b * block_size
-            end = start + block_size
-            block_vals = values[h, start:end, :]
-            result = quantise_int4_grouped(block_vals, group_size)
-            all_packed[h, start:end] = result["data_packed"]
-            all_scales[h, start:end] = result["scales"]
-            all_zeros[h, start:end] = result["zeros"]
-            all_errors[h, b] = result["error_bound"]
-
+    flat_values = values.reshape(kv_heads * N, head_dim)
+    result = quantise_int4_grouped(flat_values, group_size)
+    per_token_error = result["per_token_error"].reshape(kv_heads, N)
+    per_token_abs_error = result["per_token_abs_error"].reshape(kv_heads, N)
+    block_errors = per_token_error.reshape(kv_heads, num_blocks, block_size)
+    error_bounds = block_errors.mean(dim=2)
+    error_sums = block_errors.sum(dim=2)
+    abs_error_bounds = per_token_abs_error.reshape(kv_heads, num_blocks, block_size).amax(dim=2)
     return {
-        "data_packed": all_packed,
-        "scales": all_scales,
-        "zeros": all_zeros,
-        "error_bounds": all_errors,
+        "data_packed": result["data_packed"].reshape(kv_heads, N, head_dim // 2),
+        "scales": result["scales"].reshape(kv_heads, N, head_dim // group_size),
+        "zeros": result["zeros"].reshape(kv_heads, N, head_dim // group_size),
+        "error_bounds": error_bounds,
+        "error_sums": error_sums,
+        "abs_error_bounds": abs_error_bounds,
         "group_size": group_size,
     }

@@ -16,6 +16,7 @@ import math
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -250,6 +251,8 @@ def _reduce_step_aggs(step_aggs: list[dict]) -> dict:
         ("tail_mass_int8_est_step_max", "max"),
         ("k_star_mean", "mean"),
         ("k_star_max", "max"),
+        ("e_val_pre_rung2_step_max", "max"),
+        ("e_val_step_max", "max"),
     ]:
         val = _mean(key) if reducer_name == "mean" else _max(key)
         if val is not None:
@@ -258,6 +261,8 @@ def _reduce_step_aggs(step_aggs: list[dict]) -> dict:
     summary["h2d_key_bytes_total"] = _sum("h2d_key_bytes")
     summary["h2d_value_bytes_total"] = _sum("h2d_value_bytes")
     summary["h2d_total_bytes_total"] = _sum("h2d_total_bytes")
+    summary["value_fallback_blocks_total"] = _sum("value_fallback_blocks")
+    summary["value_fallback_head_blocks_total"] = _sum("value_fallback_head_blocks")
     return summary
 
 
@@ -285,7 +290,8 @@ def _layer_entries_to_step_aggs(entries: list[dict], num_layers: int) -> list[di
                     "ranking_fallback_triggered", "score_consistency_violation_heads",
                     "h2d_key_bytes", "h2d_value_bytes", "h2d_total_bytes",
                     "h2d_key_blocks", "h2d_value_blocks",
-                    "boundary_check_triggered_heads"):
+                    "boundary_check_triggered_heads",
+                    "value_fallback_blocks", "value_fallback_head_blocks"):
             if any(key in s for s in group):
                 out_key = (
                     "score_consistency_violation_heads_total"
@@ -319,7 +325,7 @@ def _layer_entries_to_step_aggs(entries: list[dict], num_layers: int) -> list[di
                 )
                 agg[out_key] = float(sum(vals) / len(vals))
         for key in ("k_star_max", "tail_mass_int8_est_max", "e_key_step_max",
-                    "v_max_layer"):
+                    "v_max_layer", "e_val_pre_rung2_max", "e_val_max"):
             vals = [s.get(key) for s in group if s.get(key) is not None]
             if vals:
                 out_key = (
@@ -327,6 +333,10 @@ def _layer_entries_to_step_aggs(entries: list[dict], num_layers: int) -> list[di
                     if key == "tail_mass_int8_est_max"
                     else "v_max_global"
                     if key == "v_max_layer"
+                    else "e_val_pre_rung2_step_max"
+                    if key == "e_val_pre_rung2_max"
+                    else "e_val_step_max"
+                    if key == "e_val_max"
                     else key
                 )
                 agg[out_key] = float(max(vals))
@@ -398,12 +408,18 @@ def compute_certified_perplexity(
         input_ids = chunk.unsqueeze(0).to(device)
 
         # Phase 1: Dense prefill for prefix
+        setup_t0 = time.perf_counter()
         adapter.set_mode("dense")
         with torch.inference_mode():
             prefix_out = model(input_ids=input_ids[:, :prefix_len], use_cache=True)
         past_kv = prefix_out.past_key_values
+        print(
+            f"  Certified [{i+1}/{len(chunks)}] prefill_ms={(time.perf_counter() - setup_t0) * 1000.0:.1f}",
+            flush=True,
+        )
 
         # Compute prefix NLL in chunks (same technique as dense path)
+        nll_t0 = time.perf_counter()
         prefix_logits = prefix_out.logits[:, :-1, :]
         prefix_targets = input_ids[:, 1:prefix_len]
         prefix_nll = 0.0
@@ -417,8 +433,13 @@ def compute_certified_perplexity(
             ).item()
             del pl
         del prefix_out, prefix_logits
+        print(
+            f"  Certified [{i+1}/{len(chunks)}] prefix_nll_ms={(time.perf_counter() - nll_t0) * 1000.0:.1f}",
+            flush=True,
+        )
 
         # Phase 2: Build tiered cache with enough room for eval tokens
+        cache_t0 = time.perf_counter()
         _ensure_certified_imports()
         layer_ids = list(range(model.config.num_hidden_layers))
         _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
@@ -433,9 +454,17 @@ def compute_certified_perplexity(
                 past_kv, layer_ids, max_new_tokens=eval_len + 16,
                 fp16_key_cache_capacity=_cap,
             )
+        print(
+            f"  Certified [{i+1}/{len(chunks)}] cache_build_ms={(time.perf_counter() - cache_t0) * 1000.0:.1f}",
+            flush=True,
+        )
         del past_kv
         gc.collect()
         torch.cuda.empty_cache()
+        print(
+            f"  Certified [{i+1}/{len(chunks)}] cache_cleanup_ms={(time.perf_counter() - cache_t0) * 1000.0:.1f}",
+            flush=True,
+        )
 
         top_k = top_k_override if top_k_override is not None else 4
 
@@ -457,7 +486,10 @@ def compute_certified_perplexity(
             rung1_threshold=rung1_threshold,
             rung1_multiplier=rung1_multiplier,
         )
+        if os.environ.get("DOTCACHE_PHASE_TIMING") == "1":
+            adapter.certified_state.phase_timings = {}
         adapter.set_mode("certified")
+        adapter.reset_runtime_metrics()
 
         # Phase 3: Teacher-forced certified decode
         cache_position = torch.tensor([prefix_len], dtype=torch.long, device=device)
@@ -471,6 +503,8 @@ def compute_certified_perplexity(
         # e_key_step_mean, boundary_check_fired_layers, …) are actually
         # visible in the output JSON for diagnosis.
         chunk_step_aggs: list[dict] = []
+        chunk_cert_t0 = time.perf_counter()
+        progress_stats_cursor = 0
 
         for t in range(eval_len - 1):
             token_id = input_ids[:, prefix_len + t]
@@ -499,8 +533,68 @@ def compute_certified_perplexity(
                 chunk_step_aggs.append(step)
                 adapter.certified_state.clear_step_stats()
             total_steps += 1
+            if (t + 1) % 128 == 0:
+                elapsed = time.perf_counter() - chunk_cert_t0
+                prof = adapter.runtime_profile_summary(
+                    model_forward_ms_total=elapsed * 1000.0,
+                )
+                calls = max(
+                    sum(layer.get("call_count", 0) for layer in prof.get("per_layer", [])),
+                    1,
+                )
+                print(
+                    f"    certified progress chunk={i+1}/{len(chunks)} "
+                    f"tokens={t+1}/{eval_len-1} "
+                    f"tok/s={(t+1)/max(elapsed, 1e-9):.2f} "
+                    f"qkv_ms/layer={prof['qkv_projection_ms_total']/calls:.3f} "
+                    f"append_ms/layer={prof['append_runtime_ms_total']/calls:.3f} "
+                    f"attn_ms/layer={prof['decode_runtime_ms_total']/calls:.3f} "
+                    f"out_ms/layer={prof['output_projection_ms_total']/calls:.3f}",
+                    flush=True,
+                )
+                phase_timings = getattr(adapter.certified_state, "phase_timings", None)
+                if phase_timings:
+                    denom = max((t + 1) * len(layer_ids), 1)
+                    phase_msg = " ".join(
+                        f"{k[:-3]}_ms/layer={v / denom / 1000.0:.3f}"
+                        for k, v in sorted(phase_timings.items())
+                    )
+                    print(f"    certified phases {phase_msg}", flush=True)
+                progress_entries = adapter.certified_state.step_stats[progress_stats_cursor:]
+                progress_stats_cursor += len(progress_entries)
+                if progress_entries:
+                    rung2_layers = sum(bool(s.get("rung2_fired")) for s in progress_entries)
+                    int4_layers = sum(s.get("v_format") == "int4" for s in progress_entries)
+                    mixed_layers = sum(s.get("v_format") == "mixed" for s in progress_entries)
+                    fp16_layers = sum(s.get("v_format") == "fp16" for s in progress_entries)
+                    h2d_value_mb = sum(s.get("h2d_value_bytes", 0) for s in progress_entries) / 1e6
+                    fallback_blocks = sum(s.get("value_fallback_blocks", 0) for s in progress_entries)
+                    fallback_head_blocks = sum(s.get("value_fallback_head_blocks", 0) for s in progress_entries)
+                    e_pre_vals = [
+                        s.get("e_val_pre_rung2_max")
+                        for s in progress_entries
+                        if s.get("e_val_pre_rung2_max") is not None
+                    ]
+                    e_post_vals = [
+                        s.get("e_val_max")
+                        for s in progress_entries
+                        if s.get("e_val_max") is not None
+                    ]
+                    print(
+                        f"    certified value_fallback "
+                        f"layers(r2/int4/mixed/fp16)="
+                        f"{rung2_layers}/{int4_layers}/{mixed_layers}/{fp16_layers} "
+                        f"blocks={fallback_blocks} head_blocks={fallback_head_blocks} "
+                        f"h2d_value_mb={h2d_value_mb:.2f} "
+                        f"e_val_pre_max={(max(e_pre_vals) if e_pre_vals else 0.0):.4f} "
+                        f"e_val_post_max={(max(e_post_vals) if e_post_vals else 0.0):.4f}",
+                        flush=True,
+                    )
 
         suffix_nll = float(suffix_nll_tensor.item())
+        chunk_runtime_profile = adapter.runtime_profile_summary(
+            model_forward_ms_total=(time.perf_counter() - chunk_cert_t0) * 1000.0,
+        )
         if telemetry_mode == "summary":
             layer_entries = adapter.certified_state.clear_step_stats()
             chunk_step_aggs = _layer_entries_to_step_aggs(layer_entries, len(layer_ids))
@@ -538,6 +632,7 @@ def compute_certified_perplexity(
             "skipped_blocks": int(chunk_skipped),
             "total_blocks": int(chunk_blocks),
             "telemetry": chunk_telemetry,
+            "runtime_profile": chunk_runtime_profile,
         })
         # Accumulate for overall summary (all chunks reduced together).
         all_step_aggs_accumulator.extend(chunk_step_aggs)
@@ -630,11 +725,17 @@ def main():
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
+    warnings.filterwarnings(
+        "ignore",
+        message=r"MatMul8bitLt: inputs will be cast from .* during quantization",
+        category=UserWarning,
+    )
     print(f"Loading {args.model} (INT8)...")
     tokenizer = AutoTokenizer.from_pretrained(args.model, token=token)
     quant_config = BitsAndBytesConfig(load_in_8bit=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, quantization_config=quant_config, device_map="auto", token=token,
+        args.model, quantization_config=quant_config, device_map="auto",
+        dtype=torch.float16, token=token,
     )
     model.eval()
     print(f"Model: {torch.cuda.memory_allocated()/1e9:.2f} GB")

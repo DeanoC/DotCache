@@ -35,6 +35,7 @@ import re
 import string
 import sys
 import time
+import warnings
 from collections import Counter
 from pathlib import Path
 
@@ -550,11 +551,17 @@ def main():
             raise SystemExit(f"Unknown subtask: {st} (valid: {SUBTASKS})")
 
     token = os.environ.get("HF_TOKEN") or None
+    warnings.filterwarnings(
+        "ignore",
+        message=r"MatMul8bitLt: inputs will be cast from .* during quantization",
+        category=UserWarning,
+    )
     print(f"Loading {args.model} (INT8)...")
     tokenizer = AutoTokenizer.from_pretrained(args.model, token=token)
     quant_config = BitsAndBytesConfig(load_in_8bit=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, quantization_config=quant_config, device_map="auto", token=token,
+        args.model, quantization_config=quant_config, device_map="auto",
+        dtype=torch.float16, token=token,
     )
     model.eval()
     print(f"Model: {torch.cuda.memory_allocated()/1e9:.2f} GB")
