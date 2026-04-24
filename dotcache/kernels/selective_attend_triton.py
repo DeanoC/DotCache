@@ -439,6 +439,203 @@ def selective_attend_multihead_int8k_int4v(
     return output
 
 
+@triton.jit
+def _multihead_selective_attend_hybrid_int4v_kernel(
+    # INT8 keys (paper §2.3 asymmetric)
+    K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous
+    K_scale_ptr,     # [num_kv_heads, num_blocks, head_dim] float32
+    K_zp_ptr,        # [num_kv_heads, num_blocks, head_dim] float32
+    # FP16 keys for promoted blocks
+    K_fp16_ptr,      # [num_kv_heads * N, head_dim] float16
+    TopK_mask_ptr,   # [num_q_heads, num_blocks] int32, 1 = use FP16 key
+    # INT4 packed values + per-group scales/zeros
+    V_packed_ptr,    # [num_kv_heads * N, d_v // 2] uint8 contiguous
+    V_scales_ptr,    # [num_kv_heads * N, num_groups] float16 contiguous
+    V_zeros_ptr,     # [num_kv_heads * N, num_groups] float16 contiguous
+    # Query + skip
+    Q_ptr,           # [num_q_heads, head_dim] float32
+    Skip_ptr,        # [num_q_heads, num_blocks] int32
+    Out_ptr,         # [num_q_heads, d_v] float32
+    # Layout
+    N: tl.constexpr,
+    stride_k: tl.constexpr,
+    d_v: tl.constexpr,
+    d_v_half: tl.constexpr,
+    num_groups: tl.constexpr,
+    group_size: tl.constexpr,
+    num_blocks: tl.constexpr,
+    block_size: tl.constexpr,
+    head_dim: tl.constexpr,
+    q_scale: tl.constexpr,
+    num_q_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr,
+    gqa_group: tl.constexpr,
+    last_block_valid: tl.constexpr,
+    TILE_D: tl.constexpr,
+    TILE_V: tl.constexpr,
+):
+    """Hybrid FP16/INT8 keys + INT4 values.
+
+    This is the paper Phase-2 path: promoted blocks read FP16 keys, tail
+    blocks read INT8 keys, and INT4 values are consumed directly.
+    """
+    qh = tl.program_id(0)
+    valid = qh < num_q_heads
+    if valid:
+        kvh = qh // gqa_group
+        kv_base = kvh * N
+
+        t_offs = tl.arange(0, block_size)
+        d_offs = tl.arange(0, TILE_D)
+        v_offs = tl.arange(0, TILE_V)
+        v_mask = v_offs < d_v
+
+        m = tl.full((), float("-inf"), dtype=tl.float64)
+        l = tl.full((), 0.0, dtype=tl.float64)
+        acc = tl.zeros((TILE_V,), dtype=tl.float64)
+
+        for bid in range(num_blocks):
+            skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
+            if skip_val == 0:
+                base_tok = kv_base + bid * block_size
+                use_fp16 = tl.load(TopK_mask_ptr + qh * num_blocks + bid)
+
+                scale_base = (kvh * num_blocks + bid) * head_dim
+                int8_row_ptrs = K_int8_ptr + (base_tok + t_offs) * stride_k
+                fp16_row_ptrs = K_fp16_ptr + (base_tok + t_offs) * stride_k
+                scores = tl.zeros((block_size,), dtype=tl.float32)
+
+                for d_start in range(0, head_dim, TILE_D):
+                    d_off = d_start + d_offs
+                    dm = d_off < head_dim
+                    q_tile = tl.load(Q_ptr + qh * head_dim + d_off, mask=dm, other=0.0).to(tl.float32)
+                    ch_scale = tl.load(K_scale_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
+                    ch_zp = tl.load(K_zp_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
+
+                    k_int8 = tl.load(int8_row_ptrs[:, None] + d_off[None, :], mask=dm[None, :], other=0)
+                    k_tile = k_int8.to(tl.float32) * ch_scale[None, :] + ch_zp[None, :]
+                    k_fp16 = tl.load(
+                        fp16_row_ptrs[:, None] + d_off[None, :],
+                        mask=(dm[None, :] & (use_fp16 == 1)),
+                        other=0,
+                    ).to(tl.float32)
+                    k_tile = tl.where(use_fp16 == 1, k_fp16, k_tile)
+                    scores += tl.sum(k_tile * q_tile[None, :], axis=1)
+                scores = scores * q_scale
+
+                if bid == num_blocks - 1:
+                    valid_tok = t_offs < last_block_valid
+                    scores = tl.where(valid_tok, scores, float("-inf"))
+
+                block_max = tl.max(scores)
+                new_m = tl.maximum(m, block_max.to(tl.float64))
+                alpha = tl.exp(m - new_m)
+                acc = acc * alpha
+                l = l * alpha
+                weights = tl.exp(scores - new_m.to(tl.float32))
+                l += tl.sum(weights).to(tl.float64)
+
+                for v_start in range(0, d_v, TILE_V):
+                    v_off = v_start + v_offs
+                    vm_local = v_off < d_v
+                    packed_idx = v_off // 2
+                    is_high = v_off % 2
+
+                    v_packed_ptrs = V_packed_ptr + (base_tok + t_offs[:, None]) * d_v_half + packed_idx[None, :]
+                    packed_bytes = tl.load(v_packed_ptrs, mask=vm_local[None, :], other=0)
+                    low_nibble = packed_bytes & 0x0F
+                    high_nibble = (packed_bytes >> 4) & 0x0F
+                    unpacked = tl.where(is_high[None, :] == 1, high_nibble, low_nibble)
+                    v_int4 = unpacked.to(tl.float32)
+
+                    group_idx = v_off // group_size
+                    scale_ptrs = V_scales_ptr + (base_tok + t_offs[:, None]) * num_groups + group_idx[None, :]
+                    zero_ptrs = V_zeros_ptr + (base_tok + t_offs[:, None]) * num_groups + group_idx[None, :]
+                    v_scale = tl.load(scale_ptrs, mask=vm_local[None, :], other=0.0).to(tl.float32)
+                    v_zero = tl.load(zero_ptrs, mask=vm_local[None, :], other=0.0).to(tl.float32)
+                    v_tile = v_int4 * v_scale + v_zero
+
+                    w_v = tl.sum(weights[:, None] * v_tile, axis=0).to(tl.float64)
+                    if v_start > 0:
+                        acc = tl.where(vm_local, acc + w_v, acc)
+                    else:
+                        acc = acc + tl.where(vm_local, w_v, tl.zeros_like(w_v))
+
+                m = new_m
+
+        safe_l = tl.where(l > 0.0, l, 1.0)
+        output = (acc / safe_l).to(tl.float32)
+        tl.store(Out_ptr + qh * d_v + v_offs, output, mask=v_mask)
+
+
+def selective_attend_multihead_hybrid_int4v(
+    keys_int8: torch.Tensor,
+    keys_scale: torch.Tensor,
+    keys_zero_points: torch.Tensor,
+    keys_fp16: torch.Tensor,
+    topk_mask: torch.Tensor,
+    values_int4_packed: torch.Tensor,
+    values_int4_scales: torch.Tensor,
+    values_int4_zeros: torch.Tensor,
+    q_all: torch.Tensor,
+    skip_mask_i32: torch.Tensor,
+    gqa_group: int,
+    block_size: int = 16,
+    group_size: int = 16,
+    q_scale: float = 1.0,
+    last_block_valid: int | None = None,
+) -> torch.Tensor:
+    """Hybrid FP16/INT8 keys with INT4 values, matching paper Algorithm 1."""
+    num_kv_heads, N, head_dim = keys_int8.shape
+    d_v = values_int4_packed.shape[2] * 2
+    num_groups = d_v // group_size
+    num_q_heads = q_all.shape[0]
+    num_blocks = N // block_size
+    device = keys_int8.device
+
+    K_int8_flat = keys_int8.reshape(num_kv_heads * N, head_dim).contiguous()
+    K_fp16_flat = keys_fp16.reshape(num_kv_heads * N, head_dim).contiguous()
+    V_packed_flat = values_int4_packed.reshape(num_kv_heads * N, d_v // 2).contiguous()
+    V_scales_flat = values_int4_scales.reshape(num_kv_heads * N, num_groups).contiguous()
+    V_zeros_flat = values_int4_zeros.reshape(num_kv_heads * N, num_groups).contiguous()
+    output = torch.empty(num_q_heads, d_v, dtype=torch.float32, device=device)
+
+    TILE_D = triton.next_power_of_2(head_dim)
+    TILE_V = triton.next_power_of_2(d_v)
+    lbv = block_size if last_block_valid is None else int(last_block_valid)
+
+    _multihead_selective_attend_hybrid_int4v_kernel[(num_q_heads,)](
+        K_int8_flat,
+        keys_scale.contiguous(),
+        keys_zero_points.contiguous(),
+        K_fp16_flat,
+        topk_mask.contiguous(),
+        V_packed_flat,
+        V_scales_flat,
+        V_zeros_flat,
+        q_all.contiguous(),
+        skip_mask_i32.contiguous(),
+        output,
+        N=N,
+        stride_k=head_dim,
+        d_v=d_v,
+        d_v_half=d_v // 2,
+        num_groups=num_groups,
+        group_size=group_size,
+        num_blocks=num_blocks,
+        block_size=block_size,
+        head_dim=head_dim,
+        q_scale=q_scale,
+        num_q_heads=num_q_heads,
+        num_kv_heads=num_kv_heads,
+        gqa_group=gqa_group,
+        last_block_valid=lbv,
+        TILE_D=TILE_D,
+        TILE_V=TILE_V,
+    )
+    return output
+
+
 # ─── Hybrid INT8/FP16 keys variant (top-K FP16 fallback) ─────────────
 
 @triton.jit

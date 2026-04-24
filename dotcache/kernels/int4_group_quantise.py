@@ -34,7 +34,8 @@ def quantise_int4_grouped(
             'scales': [num_tokens, num_groups] float16
             'zeros': [num_tokens, num_groups] float16
             'group_size': int
-            'error_bound': float  (max per-token ℓ₂ error)
+            'per_token_error': [num_tokens] float32 tensor
+            'error_bound': 0-dim float32 tensor (max per-token ℓ₂ error)
     """
     num_tokens, head_dim = values.shape
     num_groups = head_dim // group_size
@@ -63,13 +64,14 @@ def quantise_int4_grouped(
     # Compute actual error bound
     dequant = quantised.float() * scales.unsqueeze(-1) + zeros.unsqueeze(-1)
     per_token_error = (grouped - dequant).reshape(num_tokens, head_dim).norm(dim=-1)
-    error_bound = per_token_error.max().item()
+    error_bound = per_token_error.max()
 
     return {
         "data_packed": packed,
         "scales": scales.half(),
         "zeros": zeros.half(),
         "group_size": group_size,
+        "per_token_error": per_token_error,
         "error_bound": error_bound,
     }
 

@@ -24,6 +24,7 @@ from dotcache.kernels.selective_attend_triton import (
     selective_attend_multihead_int8,
     selective_attend_multihead_int8k_int4v,
     selective_attend_multihead_hybrid,
+    selective_attend_multihead_hybrid_int4v,
     selective_attend_multihead_hybrid_split_k,
 )
 
@@ -119,6 +120,36 @@ def compute_tier2_residual_mass(
     if return_details:
         return rho, mass_frac, topk_idx
     return rho
+
+
+def compute_block_mass_fraction(
+    m_b: torch.Tensor,
+    S_b: torch.Tensor,
+) -> torch.Tensor:
+    """Normalised per-block attention mass from Phase-1 block stats."""
+    m_global = m_b.amax(dim=1, keepdim=True)
+    log_mass = torch.log(S_b.clamp(min=1e-30)) + m_b - m_global
+    mass = torch.exp(log_mass)
+    return mass / mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
+
+
+def compute_value_error_bound_for_mask(
+    mass_frac: torch.Tensor,
+    int4_value_mask: torch.Tensor,
+    eta_per_block: torch.Tensor,
+    gqa_group: int,
+) -> torch.Tensor:
+    """Σ_b mass[h,b]·η[kv(h),b] for blocks whose values use INT4."""
+    num_q_heads, num_blocks_mass = mass_frac.shape
+    num_kv_heads, num_blocks_eta = eta_per_block.shape
+    num_blocks = min(num_blocks_mass, num_blocks_eta)
+    mass_q = mass_frac[:, :num_blocks]
+    mask_q = int4_value_mask[:, :num_blocks]
+    eta_q = eta_per_block[:, :num_blocks]
+    kv_idx = torch.arange(num_q_heads, device=mass_frac.device) // gqa_group
+    kv_idx = kv_idx.clamp(max=num_kv_heads - 1)
+    eta_for_q = eta_q[kv_idx]
+    return (mass_q * mask_q.float() * eta_for_q).sum(dim=1)
 
 
 def compute_value_error_bound(
@@ -1034,11 +1065,131 @@ def certified_attention_layer(
     # prior default SDPA-with-skip path drops tail blocks to mask=-inf,
     # which is a different algorithm (block skipping) and breaks the
     # paper's error bound.
+    use_paper_hybrid_int4 = (
+        adaptive_topk_mask is not None
+        and cache.values_int4_packed is not None
+    )
     use_paper_hybrid = (
         adaptive_topk_mask is not None
         and cache.values_fp16 is not None
     )
-    if use_paper_hybrid:
+    if use_paper_hybrid_int4:
+        e_val_head: torch.Tensor | None = None
+        if value_error_mode not in ("loose", "tight"):
+            raise ValueError(
+                f"value_error_mode must be 'loose' or 'tight', got {value_error_mode!r}"
+            )
+
+        n_active_blocks_hybrid = n_qblocks
+        keys_scale_active = cache.keys_scale_active()
+        last_block_valid = bs
+        if cache.has_trailing_partial_block:
+            n_active_blocks_hybrid = n_qblocks + 1
+            cache.keys_scale[:, cache.trailing_block_idx, :].zero_()
+            cache.keys_zero_points[:, cache.trailing_block_idx, :].zero_()
+            keys_scale_active = cache.keys_scale[:, :n_active_blocks_hybrid, :]
+            last_block_valid = cache.num_tokens - n_qblocks * bs
+            assert 1 <= last_block_valid < bs, last_block_valid
+
+        hybrid_topk = adaptive_topk_mask[:, :n_active_blocks_hybrid].to(torch.int32).contiguous()
+        no_skip = torch.zeros(
+            num_q_heads, n_active_blocks_hybrid, dtype=torch.int32, device=q_all.device,
+        )
+        nt_hybrid = n_active_blocks_hybrid * bs
+
+        keys_fp16_gpu = cache.keys_fp16_gpu
+        if keys_fp16_gpu is None:
+            with _PhaseTimer(phase_timings, "h2d_pagein"):
+                keys_fp16_gpu = cache.keys_fp16_cpu.to(device=q_all.device, non_blocking=True)
+            kv_k, _, hd_k = cache.keys_fp16_cpu.shape
+            h2d_key_bytes += kv_k * nt_hybrid * hd_k * cache.keys_fp16_cpu.element_size()
+            h2d_key_blocks += n_active_blocks_hybrid
+        elif cache.fp16_key_cache_capacity is not None:
+            top_union = adaptive_topk_mask[:, :n_qblocks].any(dim=0)
+            union_block_ids = top_union.nonzero().flatten()
+            if union_block_ids.numel() > 0:
+                block_priority = m_b[:, :n_qblocks].amax(dim=0)[union_block_ids]
+                sort_order = torch.argsort(block_priority, descending=False)
+                needed_blocks = union_block_ids[sort_order].tolist()
+            else:
+                needed_blocks = []
+            with _PhaseTimer(phase_timings, "h2d_pagein"):
+                c_hits, c_misses, c_bytes, c_evict = cache.ensure_fp16_keys_resident(needed_blocks)
+            h2d_key_bytes += c_bytes
+            h2d_key_blocks += c_misses
+            fp16_cache_hits_step += c_hits
+            fp16_cache_misses_step += c_misses
+            fp16_cache_evictions_step += c_evict
+            fp16_cache_needed_blocks += len(needed_blocks)
+
+        with _PhaseTimer(phase_timings, "value_check"):
+            mass_frac = compute_block_mass_fraction(
+                m_b[:, :n_qblocks], S_b[:, :n_qblocks],
+            )
+            int4_value_mask = torch.ones_like(mass_frac, dtype=torch.bool)
+            e_val_head = compute_value_error_bound_for_mask(
+                mass_frac=mass_frac,
+                int4_value_mask=int4_value_mask,
+                eta_per_block=cache.values_int4_errors[:, :n_qblocks],
+                gqa_group=gqa_group,
+            )
+            rho = mass_frac.sum(dim=1)
+            eta_int4 = cache.values_int4_errors[:, :n_qblocks].max().item()
+            if value_error_mode == "tight":
+                v_format = decide_v_format_tight(e_val_head, v_tolerance)
+            else:
+                v_format = decide_v_format(rho, eta_int4, v_tolerance)
+
+        if v_format == "int4":
+            with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                output = selective_attend_multihead_hybrid_int4v(
+                    keys_int8=cache.keys_int8[:, :nt_hybrid, :],
+                    keys_scale=keys_scale_active,
+                    keys_zero_points=cache.keys_zero_points[:, :n_active_blocks_hybrid, :],
+                    keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :],
+                    topk_mask=hybrid_topk,
+                    values_int4_packed=cache.values_int4_packed[:, :nt_hybrid, :],
+                    values_int4_scales=cache.values_int4_scales[:, :nt_hybrid, :],
+                    values_int4_zeros=cache.values_int4_zeros[:, :nt_hybrid, :],
+                    q_all=q_all,
+                    skip_mask_i32=no_skip,
+                    gqa_group=gqa_group,
+                    block_size=bs,
+                    group_size=cache.values_int4_group_size,
+                    q_scale=q_scale,
+                    last_block_valid=last_block_valid,
+                )
+        else:
+            rung2_fired = True
+            if cache.values_fp16_cpu is not None:
+                with _PhaseTimer(phase_timings, "h2d_pagein"):
+                    values_fp16 = cache.values_fp16_cpu[:, :nt_hybrid, :].to(
+                        device=cache.keys_int8.device, non_blocking=True,
+                    )
+                nt_v = cache.num_tokens
+                kv_v, _, dv_v = cache.values_fp16_cpu.shape
+                h2d_value_bytes += kv_v * nt_v * dv_v * cache.values_fp16_cpu.element_size()
+                h2d_value_blocks += (nt_v + bs - 1) // bs
+            elif cache.values_fp16 is not None:
+                values_fp16 = cache.values_fp16[:, :nt_hybrid, :]
+            else:
+                raise ValueError("INT4 unsafe and no FP16 fallback available")
+            with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                output = selective_attend_multihead_hybrid_split_k(
+                    keys_int8=cache.keys_int8[:, :nt_hybrid, :],
+                    keys_scale=keys_scale_active,
+                    keys_zero_points=cache.keys_zero_points[:, :n_active_blocks_hybrid, :],
+                    keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :],
+                    topk_mask=hybrid_topk,
+                    values_fp16=values_fp16,
+                    q_all=q_all,
+                    skip_mask_i32=no_skip,
+                    gqa_group=gqa_group,
+                    block_size=bs,
+                    q_scale=q_scale,
+                    last_block_valid=last_block_valid,
+                )
+    elif use_paper_hybrid:
         # Iterate only fully-quantised blocks; the trailing partial block
         # (if any) has no INT8 data. We zero-out its scale before the call
         # so any speculative INT8 load is safe, then force topk_mask[trail]=1

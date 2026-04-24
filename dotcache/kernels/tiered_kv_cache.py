@@ -473,29 +473,31 @@ class TieredKeyCacheLayer:
         if self.values_int4_packed is not None:
             from dotcache.kernels.int4_group_quantise import quantise_int4_grouped
             new_v_per_head = new_v.to(device=device)  # [kv_heads, d_v]
-            kv_h = new_v_per_head.shape[0]
             block_idx = pos // self.block_size
-            for h in range(kv_h):
-                r = quantise_int4_grouped(
-                    new_v_per_head[h:h+1, :],  # [1, d_v]
-                    group_size=self.values_int4_group_size,
-                )
-                self.values_int4_packed[h, pos:pos+1, :] = r["data_packed"]
-                self.values_int4_scales[h, pos:pos+1, :] = r["scales"]
-                self.values_int4_zeros[h, pos:pos+1, :] = r["zeros"]
-                # Update η_b incrementally — keep the max over block tokens.
-                cur = float(self.values_int4_errors[h, block_idx].item())
-                self.values_int4_errors[h, block_idx] = max(cur, r["error_bound"])
+            r = quantise_int4_grouped(
+                new_v_per_head,
+                group_size=self.values_int4_group_size,
+            )
+            self.values_int4_packed[:, pos:pos+1, :] = r["data_packed"].unsqueeze(1)
+            self.values_int4_scales[:, pos:pos+1, :] = r["scales"].unsqueeze(1)
+            self.values_int4_zeros[:, pos:pos+1, :] = r["zeros"].unsqueeze(1)
+            # Update η_b incrementally on device — keep max over block tokens.
+            err = r["per_token_error"].to(dtype=self.values_int4_errors.dtype)
+            self.values_int4_errors[:, block_idx] = torch.maximum(
+                self.values_int4_errors[:, block_idx],
+                err,
+            )
 
-        # Write key into pre-allocated CPU buffer (preserves model dtype)
-        self.keys_fp16_cpu[:, pos, :] = new_k.cpu()
+        # Mirror exact K/V into pinned Tier-2 buffers without constructing
+        # temporary CPU tensors in the decode hot path.
+        self.keys_fp16_cpu[:, pos, :].copy_(new_k, non_blocking=True)
 
         # Mirror into GPU key buffer so decode-time attend avoids a CPU→GPU copy
         if self.keys_fp16_gpu is not None:
             self.keys_fp16_gpu[:, pos, :] = new_k.to(device=device, dtype=kv_dtype)
 
         if self.values_fp16_cpu is not None:
-            self.values_fp16_cpu[:, pos, :] = new_v.cpu()
+            self.values_fp16_cpu[:, pos, :].copy_(new_v, non_blocking=True)
 
         # Write exact key→float32 into dequant buffer (for hybrid attend path)
         new_k_f32 = new_k.to(device=device, dtype=torch.float32)

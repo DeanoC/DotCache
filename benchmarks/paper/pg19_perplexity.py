@@ -261,6 +261,79 @@ def _reduce_step_aggs(step_aggs: list[dict]) -> dict:
     return summary
 
 
+def _layer_entries_to_step_aggs(entries: list[dict], num_layers: int) -> list[dict]:
+    """Aggregate layer-level stat entries into per-token step summaries.
+
+    This preserves the output telemetry shape without calling
+    aggregate_step_stats() in the decode hot loop.
+    """
+    if not entries or num_layers <= 0:
+        return []
+    step_aggs: list[dict] = []
+    for start in range(0, len(entries), num_layers):
+        group = entries[start:start + num_layers]
+        if not group:
+            continue
+        total = sum(s.get("total_blocks", 0) for s in group)
+        skipped = sum(s.get("skipped_blocks", 0) for s in group)
+        agg: dict = {
+            "skip_rate": skipped / total if total else 0.0,
+            "total_blocks": total,
+            "skipped_blocks": skipped,
+        }
+        for key in ("ranking_heads_total", "ranking_disagree_r1", "ranking_disagree_r3",
+                    "ranking_fallback_triggered", "score_consistency_violation_heads",
+                    "h2d_key_bytes", "h2d_value_bytes", "h2d_total_bytes",
+                    "h2d_key_blocks", "h2d_value_blocks",
+                    "boundary_check_triggered_heads"):
+            if any(key in s for s in group):
+                out_key = (
+                    "score_consistency_violation_heads_total"
+                    if key == "score_consistency_violation_heads"
+                    else "boundary_check_triggered_heads_total"
+                    if key == "boundary_check_triggered_heads"
+                    else key
+                )
+                agg[out_key] = sum(s.get(key, 0) for s in group)
+        for rung_k in ("rung1_fired", "rung2_fired", "rung3_fired", "rung4_fired"):
+            if any(rung_k in s for s in group):
+                agg[rung_k] = any(bool(s.get(rung_k)) for s in group)
+                agg[rung_k.replace("fired", "fired_layers")] = sum(
+                    1 for s in group if bool(s.get(rung_k))
+                )
+        if any("boundary_check_fired" in s for s in group):
+            agg["boundary_check_fired"] = any(bool(s.get("boundary_check_fired")) for s in group)
+            agg["boundary_check_fired_layers"] = sum(
+                1 for s in group if bool(s.get("boundary_check_fired"))
+            )
+        for key in ("k_star_mean", "tail_mass_int8_est_mean", "delta_bound_mean",
+                    "e_key_step_mean"):
+            vals = [s.get(key) for s in group if s.get(key) is not None]
+            if vals:
+                out_key = (
+                    "tail_mass_int8_est_step_mean"
+                    if key == "tail_mass_int8_est_mean"
+                    else "delta_bound_step_mean"
+                    if key == "delta_bound_mean"
+                    else key
+                )
+                agg[out_key] = float(sum(vals) / len(vals))
+        for key in ("k_star_max", "tail_mass_int8_est_max", "e_key_step_max",
+                    "v_max_layer"):
+            vals = [s.get(key) for s in group if s.get(key) is not None]
+            if vals:
+                out_key = (
+                    "tail_mass_int8_est_step_max"
+                    if key == "tail_mass_int8_est_max"
+                    else "v_max_global"
+                    if key == "v_max_layer"
+                    else key
+                )
+                agg[out_key] = float(max(vals))
+        step_aggs.append(agg)
+    return step_aggs
+
+
 def compute_certified_perplexity(
     model, adapter, chunks: list[torch.Tensor],
     *,
@@ -284,6 +357,7 @@ def compute_certified_perplexity(
     rung1_multiplier: float = 2.0,
     telemetry_collector=None,
     book_indices: list[int] | None = None,
+    telemetry_mode: str = "summary",
 ) -> dict:
     """Compute perplexity using certified attention decode.
 
@@ -313,6 +387,8 @@ def compute_certified_perplexity(
     # the end. Captures the full aggregate dict per step so we can emit
     # the §8.6 hard-STOP triggers that were previously dropped.
     all_step_aggs_accumulator: list[dict] = []
+    if telemetry_mode not in {"debug", "summary", "off"}:
+        raise ValueError("telemetry_mode must be one of: debug, summary, off")
 
     for i, chunk in enumerate(chunks):
         seq_len = chunk.shape[0]
@@ -365,7 +441,7 @@ def compute_certified_perplexity(
 
         adapter.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
-            collect_stats=True,
+            collect_stats=(telemetry_mode != "off"),
             append_kv=True,
             top_k_fp16_keys=top_k,
             v_tolerance=v_tolerance,
@@ -385,7 +461,7 @@ def compute_certified_perplexity(
 
         # Phase 3: Teacher-forced certified decode
         cache_position = torch.tensor([prefix_len], dtype=torch.long, device=device)
-        suffix_nll = 0.0
+        suffix_nll_tensor = torch.zeros((), dtype=torch.float32, device=device)
         chunk_skipped = 0
         chunk_blocks = 0
         # Per-step aggregated telemetry — previously thrown away, now
@@ -411,17 +487,27 @@ def compute_certified_perplexity(
             logits = out.logits[:, -1, :].float()
             target = input_ids[:, prefix_len + t + 1]
             nll = F.cross_entropy(logits, target, reduction="sum")
-            suffix_nll += nll.item()
+            suffix_nll_tensor = suffix_nll_tensor + nll
             cache_position = cache_position + 1
 
-            # Drain per-step aggregated stats — keep the FULL dict, not just
-            # two fields. _reduce_step_aggs() below rolls them up.
-            step = adapter.certified_state.aggregate_step_stats()
-            chunk_blocks += step.get("total_blocks", 0)
-            chunk_skipped += step.get("skipped_blocks", 0)
-            chunk_step_aggs.append(step)
-            adapter.certified_state.clear_step_stats()
+            if telemetry_mode == "debug":
+                # Drain per-step aggregated stats — keep the FULL dict, not just
+                # two fields. _reduce_step_aggs() below rolls them up.
+                step = adapter.certified_state.aggregate_step_stats()
+                chunk_blocks += step.get("total_blocks", 0)
+                chunk_skipped += step.get("skipped_blocks", 0)
+                chunk_step_aggs.append(step)
+                adapter.certified_state.clear_step_stats()
             total_steps += 1
+
+        suffix_nll = float(suffix_nll_tensor.item())
+        if telemetry_mode == "summary":
+            layer_entries = adapter.certified_state.clear_step_stats()
+            chunk_step_aggs = _layer_entries_to_step_aggs(layer_entries, len(layer_ids))
+            chunk_blocks = sum(s.get("total_blocks", 0) for s in chunk_step_aggs)
+            chunk_skipped = sum(s.get("skipped_blocks", 0) for s in chunk_step_aggs)
+        elif telemetry_mode == "off":
+            chunk_step_aggs = []
 
         adapter.certified_state = None
         adapter.set_mode("dense")
@@ -534,6 +620,9 @@ def main():
                         help="Collect per-step page-in / rung / VRAM-cache telemetry (Test 3)")
     parser.add_argument("--telemetry-output", default=None,
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
+    parser.add_argument("--telemetry-mode", default="summary",
+                        choices=["debug", "summary", "off"],
+                        help="debug drains telemetry every token; summary drains once per chunk; off disables stats")
     import sys as _sys, os as _os
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from _provenance import add_paper_cache_args, cache_config_dict
@@ -611,6 +700,7 @@ def main():
             rung1_multiplier=args.rung1_multiplier,
             telemetry_collector=telemetry_collector,
             book_indices=book_indices,
+            telemetry_mode=args.telemetry_mode,
         )
         t_cert = time.perf_counter() - t0
         print(f"Certified: ppl={cert_result['perplexity']:.2f} "
