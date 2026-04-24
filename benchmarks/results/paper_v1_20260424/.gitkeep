@@ -1,0 +1,11 @@
+# paper_v1 results directory — first re-run of §8 cells under the
+# corrected paper-port stack (Steps 0–4 of port-to-paper-20260424).
+#
+# Cell JSONs land here. A run_manifest.json at the root will be generated
+# by benchmarks/_manifest.py at the start of each run.
+#
+# Naming convention: <NN>_<bench>_<ctx>_<config>[.<machine>].json
+# e.g. 01_pg19_4K_dense.json, 01_pg19_4K_certified.gpu0.json
+#
+# When two machines coexist, append a `.<machine_tag>` segment before
+# `.json` so cell basenames stay unique in the merged tree.
