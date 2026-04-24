@@ -267,6 +267,7 @@ def compute_certified_perplexity(
         if use_int4_values:
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_kv, layer_ids, group_size=group_size,
+                max_new_tokens=eval_len + 16,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(

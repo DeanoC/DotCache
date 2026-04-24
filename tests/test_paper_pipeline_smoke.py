@@ -85,6 +85,7 @@ def _run_paper_pipeline(*, v_tolerance: float, use_int4_values: bool,
     if use_int4_values:
         tiered = create_tiered_cache_int4v_from_model(
             past_kv, layer_ids, group_size=16,
+            max_new_tokens=decode_steps + 4,
         )
     else:
         tiered = create_tiered_cache_from_model(

@@ -924,6 +924,7 @@ class LlamaDotCacheModelAdapter:
         block_size: int = 16,
         use_int4_values: bool = False,
         group_size: int = 16,
+        max_new_tokens: int = 512,
     ) -> None:
         """Build tiered caches from prefill KV and prepare for certified decode.
 
@@ -940,6 +941,9 @@ class LlamaDotCacheModelAdapter:
             use_int4_values: if True, use INT4 per-group values (45% less VRAM)
             group_size: INT4 value group size (paper §7: 16). Ignored when
                 use_int4_values is False.
+            max_new_tokens: decode budget to reserve in the cache buffers so
+                append_token() can quantise additional tokens without
+                overflowing per-block annotation tensors.
         """
         _ensure_certified_imports()
         layer_ids = list(range(self.model.config.num_hidden_layers))
@@ -948,11 +952,12 @@ class LlamaDotCacheModelAdapter:
             from ..kernels.tiered_kv_cache import create_tiered_cache_int4v_from_model
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_key_values, layer_ids, block_size=block_size,
-                group_size=group_size,
+                group_size=group_size, max_new_tokens=max_new_tokens,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(
                 past_key_values, layer_ids, block_size=block_size,
+                max_new_tokens=max_new_tokens,
             )
 
         # Resolve layer epsilons

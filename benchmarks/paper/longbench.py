@@ -323,6 +323,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     if use_int4_values:
         tiered_caches = create_tiered_cache_int4v_from_model(
             past_kv, layer_ids, group_size=group_size,
+            max_new_tokens=max_new + 8,
         )
     else:
         tiered_caches = create_tiered_cache_from_model(

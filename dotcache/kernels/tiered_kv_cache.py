@@ -805,8 +805,16 @@ def create_tiered_cache_int4v_from_model(
     layer_ids: list[int],
     block_size: int = 16,
     group_size: int = 16,  # paper §7
+    max_new_tokens: int = 512,
 ) -> dict[int, TieredKeyCacheLayer]:
-    """Create tiered caches with INT4 per-group values from HF past_key_values."""
+    """Create tiered caches with INT4 per-group values from HF past_key_values.
+
+    max_new_tokens reserves growth room in the INT4 buffers so decode-time
+    append_token() can quantise additional tokens without overflowing the
+    per-block annotation tensors (values_norm_max_per_block, values_int4_errors).
+    Callers that decode more than the default 512 tokens MUST pass this
+    explicitly, matching what they pass to create_tiered_cache_from_model().
+    """
     caches = {}
     for layer_id in layer_ids:
         if hasattr(past_kv, "layers"):
@@ -824,8 +832,14 @@ def create_tiered_cache_int4v_from_model(
         # Constructor requires N % block_size == 0; pass the aligned slices.
         # (Prior code computed the aligned tensors then passed the unaligned
         # originals, which blew up on any seq_len not a multiple of block_size.)
+        # The trailing (seq_len - aligned_len) FP16 tokens weren't quantised
+        # into the INT4 prefill buffers, so they'll be re-appended via
+        # append_token() — add their count to the reservation so the buffer
+        # has room for them plus the max_new_tokens decode budget.
         caches[layer_id] = TieredKeyCacheLayer.from_fp16_cache_int4v(
-            keys_aligned, values_aligned, block_size=block_size, group_size=group_size,
+            keys_aligned, values_aligned,
+            block_size=block_size, group_size=group_size,
+            max_new_tokens=max_new_tokens + (seq_len - aligned_len),
         )
         # num_tokens tracks what the INT4 packed tensor actually covers;
         # the trailing (seq_len - aligned_len) tokens weren't quantised and

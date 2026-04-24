@@ -174,10 +174,12 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         if use_int4_values:
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_kv, layer_ids, group_size=group_size,
+                max_new_tokens=max_new_tokens + 8,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(
-                past_kv, layer_ids, fp16_key_cache_capacity=_cap,
+                past_kv, layer_ids, max_new_tokens=max_new_tokens + 8,
+                fp16_key_cache_capacity=_cap,
             )
         del past_kv
         gc.collect()
