@@ -80,15 +80,17 @@ class LlamaReplayRecord:
 
 @dataclass
 class CertifiedAttentionState:
-    """Runtime state for certified attention mode."""
+    """Runtime state for certified attention mode.
+
+    The paper flow attends every block (top-K* + E_key tail bound). There
+    is intentionally no per-layer epsilon / block_epsilon / concentration
+    knob here — those drove the legacy block-skipping path and are gone.
+    """
     tiered_caches: dict  # layer_id → TieredKeyCacheLayer
-    layer_epsilons: dict[int, float]  # per-layer epsilon overrides
-    default_epsilon: float = 1e-4
     block_size: int = 16
     collect_stats: bool = True  # set False during timed runs to avoid GPU syncs
     append_kv: bool = False  # append new K/V tokens to tiered cache during decode
     top_k_fp16_keys: int = 4  # top-K blocks use FP16 keys for quality
-    concentration_threshold: float = 0.0  # if max block mass < this, don't skip (diffuse attention safety)
     # Rung-3 ranking-consistency fallback (detect INT8 vs FP16 ranking disagreement
     # on the top-K blocks and, on disagreement, recompute that head with full FP16
     # keys + values). See docs: Ranking-Consistency Fallback Spec.
@@ -675,17 +677,15 @@ class DotCacheLlamaAttention(nn.Module):
             )
 
         # Certified attention: Phase 1 (INT8 score+certify) + Phase 2 (selective attend)
-        epsilon = cert_state.layer_epsilons.get(self.layer_idx, cert_state.default_epsilon)
         gqa_group = self.config.num_attention_heads // self.config.num_key_value_heads
         q_scale = float(self.base_attention.scaling)
 
         collect = cert_state.collect_stats
         context_states, stats = certified_attention_layer(
-            cache, q_all, gqa_group, q_scale, block_epsilon=epsilon,
+            cache, q_all, gqa_group, q_scale,
             collect_stats=collect,
             v_tolerance=cert_state.v_tolerance,
             top_k_fp16_keys=cert_state.top_k_fp16_keys,
-            concentration_threshold=cert_state.concentration_threshold,
             ranking_fallback=cert_state.ranking_fallback,
             ranking_r=cert_state.ranking_r,
             ranking_fallback_mode=cert_state.ranking_fallback_mode,
@@ -917,10 +917,6 @@ class LlamaDotCacheModelAdapter:
         past_key_values,
         *,
         v_tolerance: float,
-        layer_epsilons: dict[int, float] | None = None,
-        epsilon_profile: Any = None,
-        context_length: int | None = None,
-        default_epsilon: float = 1e-4,
         block_size: int = 16,
         use_int4_values: bool = False,
         group_size: int = 16,
@@ -933,10 +929,6 @@ class LlamaDotCacheModelAdapter:
             v_tolerance: INT4-vs-FP16 value-format threshold (paper §7: 0.05).
                 Required — no silent default. The kernel rejects any path
                 that doesn't carry this through explicitly.
-            layer_epsilons: per-layer epsilon dict (simple mode)
-            epsilon_profile: EpsilonProfile instance (context-aware mode)
-            context_length: context length for profile lookup (required if epsilon_profile set)
-            default_epsilon: fallback epsilon for uncalibrated layers
             block_size: tokens per block for INT8 quantisation
             use_int4_values: if True, use INT4 per-group values (45% less VRAM)
             group_size: INT4 value group size (paper §7: 16). Ignored when
@@ -960,24 +952,8 @@ class LlamaDotCacheModelAdapter:
                 max_new_tokens=max_new_tokens,
             )
 
-        # Resolve layer epsilons
-        if epsilon_profile is not None:
-            if context_length is None:
-                # Infer from KV cache length
-                if hasattr(past_key_values, "layers"):
-                    context_length = past_key_values.layers[0].keys[0].shape[1]
-                else:
-                    context_length = 8192  # fallback
-            resolved_epsilons = epsilon_profile.get_layer_epsilons(context_length)
-        elif layer_epsilons is not None:
-            resolved_epsilons = layer_epsilons
-        else:
-            resolved_epsilons = {}
-
         self.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
-            layer_epsilons=resolved_epsilons,
-            default_epsilon=default_epsilon,
             block_size=block_size,
             v_tolerance=v_tolerance,
         )

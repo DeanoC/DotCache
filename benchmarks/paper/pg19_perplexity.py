@@ -265,11 +265,8 @@ def compute_certified_perplexity(
     model, adapter, chunks: list[torch.Tensor],
     *,
     v_tolerance: float,
-    calibrated_profile=None,
     eval_start_frac: float = 0.5,
-    epsilon_override: float = None,
     top_k_override: int = None,
-    concentration_threshold: float = 0.0,
     device: str = "cuda",
     use_int4_values: bool = False,
     group_size: int = 16,
@@ -364,27 +361,13 @@ def compute_certified_perplexity(
         gc.collect()
         torch.cuda.empty_cache()
 
-        # Get layer epsilons from calibrated profile or override
-        if epsilon_override is not None:
-            layer_epsilons = {}
-            default_eps = epsilon_override
-        elif calibrated_profile is not None:
-            layer_epsilons = calibrated_profile.get_layer_epsilons_min(prefix_len)
-            default_eps = 1e-4
-        else:
-            layer_epsilons = {}
-            default_eps = 1e-4
-
         top_k = top_k_override if top_k_override is not None else 4
 
         adapter.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
-            layer_epsilons=layer_epsilons,
-            default_epsilon=default_eps,
             collect_stats=True,
             append_kv=True,
             top_k_fp16_keys=top_k,
-            concentration_threshold=concentration_threshold,
             v_tolerance=v_tolerance,
             tau_cov=tau_cov,
             k_min=k_min,
@@ -518,7 +501,6 @@ def main():
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     from dotcache.integrations.llama import LlamaDotCacheModelAdapter
     from dotcache.config import DotCacheConfig
-    from dotcache.calibration.calibrated_profile import CalibratedProfile
 
     parser = argparse.ArgumentParser(description="PG-19 perplexity: dense vs certified")
     parser.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
@@ -528,17 +510,11 @@ def main():
                         help="Number of document chunks to evaluate")
     parser.add_argument("--eval-start", type=float, default=0.5,
                         help="Fraction of context for dense prefix (rest is certified)")
-    parser.add_argument("--profile", default=None,
-                        help="Path to calibrated profile .npz")
     parser.add_argument("--output", default="benchmarks/results/pg19_perplexity.json")
     parser.add_argument("--dense-only", action="store_true",
                         help="Only run dense baseline (skip certified)")
-    parser.add_argument("--epsilon-override", type=float, default=None,
-                        help="Override all layer epsilons (e.g. 0.0 for no-skip diagnostic)")
     parser.add_argument("--top-k-override", type=int, default=None,
                         help="Override top_k_fp16_keys (default: 4)")
-    parser.add_argument("--concentration-threshold", type=float, default=0.0,
-                        help="If max block mass fraction < this, disable skip for that head (0=off, 0.02=2%%)")
     # Paper-alignment flags (T4/T7/Rung1/T9/T10).
     parser.add_argument("--tau-cov", type=float, default=0.0,
                         help="Adaptive K* cumulative-mass threshold (0 or omitted = disabled; paper default 0.995)")
@@ -577,11 +553,6 @@ def main():
     head_dim = model.config.hidden_size // model.config.num_attention_heads
     config = DotCacheConfig(head_dim=head_dim)
     adapter = LlamaDotCacheModelAdapter(model, config)
-
-    profile = None
-    if args.profile:
-        profile = CalibratedProfile.load(args.profile)
-        print(f"Loaded profile: {profile.summary()[:200]}")
 
     # Load PG-19 chunks
     print(f"\nLoading PG-19 test set: {args.num_chunks} chunks × {args.context} tokens...")
@@ -622,11 +593,8 @@ def main():
         t0 = time.perf_counter()
         cert_result = compute_certified_perplexity(
             model, adapter, chunks,
-            calibrated_profile=profile,
             eval_start_frac=args.eval_start,
-            epsilon_override=args.epsilon_override,
             top_k_override=args.top_k_override,
-            concentration_threshold=args.concentration_threshold,
             v_tolerance=args.v_tolerance,
             use_int4_values=args.use_int4_values,
             group_size=args.group_size,
@@ -686,9 +654,6 @@ def main():
         print(f"Certified perplexity: {cert_result['perplexity']:.4f}")
         print(f"Ratio (cert/dense):   {ratio:.6f}")
         print(f"Delta:                {delta:+.4f}")
-        print(f"Skip rate:            {cert_result.get('skip_rate', 0.0):.4f} "
-              f"({cert_result.get('skipped_blocks', 0)}/{cert_result.get('total_blocks', 0)} blocks)")
-        print(f"Concentration thr:    {args.concentration_threshold}")
 
     # Save results
     output = {
@@ -697,8 +662,6 @@ def main():
         "context_length": args.context,
         "num_chunks": len(chunks),
         "eval_start_frac": args.eval_start,
-        "concentration_threshold": args.concentration_threshold,
-        "default_epsilon_override": args.epsilon_override,
         "top_k_override": args.top_k_override,
         "cache_config": cache_config_dict(args),
         "dense": dense_result,

@@ -602,12 +602,10 @@ def certified_attention_layer(
     q_all: torch.Tensor,           # [num_q_heads, head_dim] model dtype (BF16) or float32
     gqa_group: int,
     q_scale: float = None,
-    block_epsilon: float = 0.001,
     collect_stats: bool = True,
     *,
     v_tolerance: float,
     top_k_fp16_keys: int = 0,
-    concentration_threshold: float = 0.0,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -676,6 +674,11 @@ def certified_attention_layer(
     # Phase 1: INT8 scoring only on fully quantized blocks
     if n_qblocks > 0:
         with _PhaseTimer(phase_timings, "phase1_int8_scoring"):
+            # block_epsilon=0.0 forces an all-False skip_mask: the paper
+            # flow attends every block (top-K via adaptive K*, tail via
+            # paper §4.5 E_key bound). Legacy block-mass skipping is
+            # permanently disabled here — do NOT re-expose block_epsilon
+            # as a parameter.
             m_b, S_b, skip_mask = fused_score_certify_multihead(
                 K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
                 K_scale=cache.keys_scale[:, :n_qblocks, :],
@@ -685,7 +688,7 @@ def certified_attention_layer(
                 gqa_group=gqa_group,
                 block_size=bs,
                 q_scale=q_scale,
-                block_epsilon=block_epsilon,
+                block_epsilon=0.0,
             )
     else:
         device = q_all.device
@@ -1014,22 +1017,10 @@ def certified_attention_layer(
             stats = {}
         return output, stats
 
-    # Entropy gating: if attention is diffuse (no block dominates),
-    # disable skipping for that head — small-mass blocks may carry critical
-    # information (e.g., needle retrieval with weak signal).
-    # Uses Phase 1 outputs so it's essentially free.
-    if num_active_blocks > 0 and concentration_threshold > 0:
-        # Per-block mass fraction per head
-        m_global = m_b.amax(dim=1, keepdim=True)  # [num_q_heads, 1]
-        log_mass = torch.log(S_b.clamp(min=1e-30)) + m_b - m_global
-        mass = torch.exp(log_mass)  # [num_q_heads, num_active_blocks]
-        total_mass = mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
-        mass_frac = mass / total_mass
-        mass_max_per_head = mass_frac.max(dim=1).values  # [num_q_heads]
-        # Diffuse heads: no single block has enough mass → don't skip anything
-        diffuse_heads = mass_max_per_head < concentration_threshold
-        if diffuse_heads.any():
-            skip_mask[diffuse_heads, :] = False
+    # (Removed: legacy entropy-gating / concentration_threshold heuristic.
+    # With block_epsilon=0.0 the skip_mask is already all-False, so every
+    # block contributes to attention via top-K* + tail E_key. The paper
+    # §7 knob set has no concentration_threshold — do not re-introduce.)
 
     # Phase 2: Attend using SDPA for exact precision matching with dense path.
     # The Triton kernels compute in F32 which diverges from the BF16 SDPA used
@@ -1463,7 +1454,6 @@ def benchmark_certified_vs_full(
     gqa_group: int,
     iters: int = 1000,
     q_scale: float = None,
-    block_epsilon: float = 0.001,
 ) -> dict[str, float]:
     """Benchmark certified attention vs full attention on one layer."""
     import time
@@ -1478,7 +1468,7 @@ def benchmark_certified_vs_full(
     # Warmup
     for _ in range(10):
         certified_attention_layer(
-            cache, q_all, gqa_group, q_scale, block_epsilon,
+            cache, q_all, gqa_group, q_scale,
             v_tolerance=DEFAULT_V_TOLERANCE,
         )
         for qh in range(num_q_heads):
@@ -1505,7 +1495,7 @@ def benchmark_certified_vs_full(
     t0 = time.perf_counter()
     for _ in range(iters):
         output, stats = certified_attention_layer(
-            cache, q_all, gqa_group, q_scale, block_epsilon,
+            cache, q_all, gqa_group, q_scale,
             v_tolerance=DEFAULT_V_TOLERANCE,
         )
     torch.cuda.synchronize()
@@ -1513,7 +1503,7 @@ def benchmark_certified_vs_full(
 
     # Correctness
     output_cert, stats = certified_attention_layer(
-        cache, q_all, gqa_group, q_scale, block_epsilon,
+        cache, q_all, gqa_group, q_scale,
         v_tolerance=DEFAULT_V_TOLERANCE,
     )
     output_full = torch.empty_like(output_cert)

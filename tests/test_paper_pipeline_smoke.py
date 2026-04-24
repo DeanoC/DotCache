@@ -95,8 +95,6 @@ def _run_paper_pipeline(*, v_tolerance: float, use_int4_values: bool,
     # Build state with the paper §7 knobs
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered,
-        layer_epsilons={},
-        default_epsilon=1e-4,
         collect_stats=True,
         append_kv=True,
         top_k_fp16_keys=4,

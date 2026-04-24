@@ -166,7 +166,7 @@ class TestEKeyFormula:
         from dotcache.integrations.llama import CertifiedAttentionState
 
         s = CertifiedAttentionState(
-            tiered_caches={}, layer_epsilons={}, v_tolerance=0.05,
+            tiered_caches={}, v_tolerance=0.05,
         )
         _base = {"total_blocks": 100, "skipped_blocks": 0, "skip_rate": 0.0}
         s.step_stats = [

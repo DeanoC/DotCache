@@ -365,9 +365,7 @@ def generate_dense(model, tokenizer, adapter, prompt: str, max_new: int,
 def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
                        *,
                        v_tolerance: float,
-                       calibrated_profile=None, default_epsilon: float = 1e-4,
                        top_k_fp16_keys: int = 4,
-                       concentration_threshold: float = 0.02,
                        device: str = "cuda",
                        use_int4_values: bool = False,
                        group_size: int = 16,
@@ -419,11 +417,6 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     gc.collect()
     torch.cuda.empty_cache()
 
-    if calibrated_profile is not None:
-        layer_epsilons = calibrated_profile.get_layer_epsilons_min(seq_len)
-    else:
-        layer_epsilons = {}
-
     collect_stats = (
         bool(ranking_fallback)
         or (tau_cov is not None and tau_cov > 0)
@@ -432,12 +425,9 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     )
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered_caches,
-        layer_epsilons=layer_epsilons,
-        default_epsilon=default_epsilon,
         collect_stats=collect_stats,
         append_kv=True,
         top_k_fp16_keys=top_k_fp16_keys,
-        concentration_threshold=concentration_threshold,
         v_tolerance=v_tolerance,
         tau_cov=tau_cov,
         k_min=k_min,
@@ -492,8 +482,7 @@ def run_ruler(
     subtasks: list[str], contexts: list[int], num_samples: int,
     *,
     v_tolerance: float,
-    calibrated_profile=None, default_epsilon: float = 1e-4,
-    top_k_fp16_keys: int = 4, concentration_threshold: float = 0.02,
+    top_k_fp16_keys: int = 4,
     seed_base: int = 20260416, device: str = "cuda",
     use_int4_values: bool = False,
     group_size: int = 16,
@@ -541,10 +530,7 @@ def run_ruler(
                     v_tolerance=v_tolerance,
                     use_int4_values=use_int4_values,
                     group_size=group_size,
-                    calibrated_profile=calibrated_profile,
-                    default_epsilon=default_epsilon,
                     top_k_fp16_keys=top_k_fp16_keys,
-                    concentration_threshold=concentration_threshold,
                     device=device,
                     tau_cov=tau_cov, k_min=k_min, k_max=k_max,
                     ranking_fallback=ranking_fallback, ranking_r=ranking_r,
@@ -599,18 +585,14 @@ def main():
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     from dotcache.integrations.llama import LlamaDotCacheModelAdapter
     from dotcache.config import DotCacheConfig
-    from dotcache.calibration.calibrated_profile import CalibratedProfile
 
     parser = argparse.ArgumentParser(description="RULER (subset): dense vs certified")
     parser.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
     parser.add_argument("--contexts", type=int, nargs="+", default=[4096])
     parser.add_argument("--num-samples", type=int, default=10)
     parser.add_argument("--subtasks", nargs="+", default=list(SUBTASK_BUILDERS.keys()))
-    parser.add_argument("--profile", default=None)
     parser.add_argument("--output", default="benchmarks/results/ruler.json")
-    parser.add_argument("--default-epsilon", type=float, default=1e-4)
     parser.add_argument("--top-k-fp16", type=int, default=4)
-    parser.add_argument("--concentration-threshold", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=20260416)
     # Paper-alignment flags (T4/T7/Rung1/T9/T10).
     parser.add_argument("--tau-cov", type=float, default=0.0,
@@ -653,15 +635,10 @@ def main():
     config = DotCacheConfig(head_dim=head_dim)
     adapter = LlamaDotCacheModelAdapter(model, config)
 
-    profile = None
-    if args.profile:
-        profile = CalibratedProfile.load(args.profile)
-        print(f"Loaded profile: {profile.summary()[:200]}")
-
     print(f"\nRULER: subtasks={args.subtasks}, "
           f"contexts={[c//1024 for c in args.contexts]}K, "
-          f"n={args.num_samples}, eps_default={args.default_epsilon}, "
-          f"top_k_fp16={args.top_k_fp16}, conc_thr={args.concentration_threshold}")
+          f"n={args.num_samples}, "
+          f"top_k_fp16={args.top_k_fp16}")
 
     telemetry_collector = None
     if args.pagein_telemetry:
@@ -679,10 +656,7 @@ def main():
         v_tolerance=args.v_tolerance,
         use_int4_values=args.use_int4_values,
         group_size=args.group_size,
-        calibrated_profile=profile,
-        default_epsilon=args.default_epsilon,
         top_k_fp16_keys=args.top_k_fp16,
-        concentration_threshold=args.concentration_threshold,
         seed_base=args.seed,
         tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
         k_min=args.k_min,
@@ -734,9 +708,7 @@ def main():
         "subtasks": args.subtasks,
         "contexts": args.contexts,
         "num_samples": args.num_samples,
-        "default_epsilon": args.default_epsilon,
         "top_k_fp16": args.top_k_fp16,
-        "concentration_threshold": args.concentration_threshold,
         "seed": args.seed,
         "wall_minutes": wall / 60.0,
         "overall_dense": overall_d,

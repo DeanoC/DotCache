@@ -15,14 +15,14 @@ def test_certified_attention_state_rejects_missing_v_tolerance():
     """CertifiedAttentionState raises ValueError when v_tolerance is omitted."""
     from dotcache.integrations.llama import CertifiedAttentionState
     with pytest.raises(ValueError, match="v_tolerance"):
-        CertifiedAttentionState(tiered_caches={}, layer_epsilons={})
+        CertifiedAttentionState(tiered_caches={})
 
 
 def test_certified_attention_state_accepts_explicit_v_tolerance():
     """Construction succeeds when v_tolerance is passed."""
     from dotcache.integrations.llama import CertifiedAttentionState
     s = CertifiedAttentionState(
-        tiered_caches={}, layer_epsilons={}, v_tolerance=0.05,
+        tiered_caches={}, v_tolerance=0.05,
     )
     assert s.v_tolerance == 0.05
 
@@ -31,7 +31,7 @@ def test_score_consistency_check_defaults_true_on_state():
     """Paper §7 specifies score_consistency_check enabled."""
     from dotcache.integrations.llama import CertifiedAttentionState
     s = CertifiedAttentionState(
-        tiered_caches={}, layer_epsilons={}, v_tolerance=0.5,
+        tiered_caches={}, v_tolerance=0.5,
     )
     assert s.score_consistency_check is True
 

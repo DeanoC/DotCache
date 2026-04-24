@@ -49,7 +49,6 @@ class TestEq30BoundaryCheck:
         from dotcache.kernels.certified_attention import certified_attention_layer
         return certified_attention_layer(
             cache, q, gqa_group=1,
-            block_epsilon=1e-9,  # never skip
             v_tolerance=0.5,
             collect_stats=True,
             ranking_fallback=True,
@@ -148,7 +147,7 @@ class TestEq30BoundaryCheck:
 
         # Synthesise per-layer step records and exercise aggregation directly.
         s = CertifiedAttentionState(
-            tiered_caches={}, layer_epsilons={}, v_tolerance=0.05,
+            tiered_caches={}, v_tolerance=0.05,
         )
         # Minimum fields the existing aggregator expects, plus the new
         # boundary-check fields this step adds.

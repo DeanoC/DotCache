@@ -100,12 +100,9 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
     context_tokens: int, depth: float, needle_idx: int,
     *,
     v_tolerance: float,
-    calibrated_profile=None,
     max_new_tokens: int = 50,
     device: str = "cuda",
-    default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4,
-    concentration_threshold: float = 0.0,
     use_int4_values: bool = False,
     group_size: int = 16,
     ranking_fallback: bool = False,
@@ -185,12 +182,6 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         gc.collect()
         torch.cuda.empty_cache()
 
-        # Get layer epsilons from calibrated profile or default
-        if calibrated_profile is not None:
-            layer_epsilons = calibrated_profile.get_layer_epsilons_min(seq_len)
-        else:
-            layer_epsilons = {}
-
         # Enable stats whenever a diagnostic feature is on (ranking fallback,
         # adaptive K*, score-consistency, or exploration) so the aggregator
         # has data to report; otherwise keep stats off to match the previous
@@ -203,12 +194,9 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         )
         adapter.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
-            layer_epsilons=layer_epsilons,
-            default_epsilon=default_epsilon,
             collect_stats=collect_stats,
             append_kv=True,  # Append new K/V tokens during decode
             top_k_fp16_keys=top_k_fp16_keys,
-            concentration_threshold=concentration_threshold,
             v_tolerance=v_tolerance,
             ranking_fallback=ranking_fallback,
             ranking_r=ranking_r,
@@ -305,11 +293,8 @@ def run_niah_sweep(
     v_tolerance: float,
     depths: list[float] = None,
     num_needles: int = 5,
-    calibrated_profile=None,
     device: str = "cuda",
-    default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4,
-    concentration_threshold: float = 0.0,
     use_int4_values: bool = False,
     group_size: int = 16,
     ranking_fallback: bool = False,
@@ -341,11 +326,8 @@ def run_niah_sweep(
                     r = run_niah_cell(
                         model, tokenizer, adapter, mode,
                         ctx_len, depth, needle_idx,
-                        calibrated_profile=calibrated_profile,
                         device=device,
-                        default_epsilon=default_epsilon,
                         top_k_fp16_keys=top_k_fp16_keys,
-                        concentration_threshold=concentration_threshold,
                         v_tolerance=v_tolerance,
                         use_int4_values=use_int4_values,
                         group_size=group_size,
@@ -442,20 +424,14 @@ def main():
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     from dotcache.integrations.llama import LlamaDotCacheModelAdapter
     from dotcache.config import DotCacheConfig
-    from dotcache.calibration.calibrated_profile import CalibratedProfile
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
     parser.add_argument("--contexts", type=int, nargs="+", default=[4096, 8192])
     parser.add_argument("--needles", type=int, default=3)
-    parser.add_argument("--profile", default=None, help="Path to calibrated profile .npz")
     parser.add_argument("--output", default="benchmarks/results/niah.json")
-    parser.add_argument("--default-epsilon", type=float, default=1e-4,
-                        help="Default epsilon when no profile epsilon available (0=no skipping)")
     parser.add_argument("--top-k-fp16", type=int, default=4,
                         help="Top-K blocks use FP16 keys (999=all FP16, 0=all INT8)")
-    parser.add_argument("--concentration-threshold", type=float, default=0.0,
-                        help="If max block mass fraction < this, disable skip for that head (0=off, 0.02=2%%)")
     parser.add_argument("--ranking-fallback", action="store_true",
                         help="Enable Rung-3 ranking-consistency fallback (detect INT8 vs FP16 top-K ranking disagreement and recompute per head)")
     parser.add_argument("--ranking-r", type=int, default=1,
@@ -503,17 +479,12 @@ def main():
     config = DotCacheConfig(head_dim=head_dim)
     adapter = LlamaDotCacheModelAdapter(model, config)
 
-    profile = None
-    if args.profile:
-        profile = CalibratedProfile.load(args.profile)
-        print(f"Loaded profile: {profile.summary()[:200]}")
-
     rf_tag = "off"
     if args.ranking_fallback:
         rf_tag = f"{args.ranking_fallback_mode}(r={args.ranking_r})"
     tau_cov = args.tau_cov if args.tau_cov and args.tau_cov > 0 else None
     adaptive_tag = f"tau_cov={tau_cov} k=[{args.k_min},{args.k_max}]" if tau_cov else "fixed"
-    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, default_epsilon={args.default_epsilon}, top_k_fp16={args.top_k_fp16}, adaptive={adaptive_tag}, ranking_fallback={rf_tag}")
+    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, top_k_fp16={args.top_k_fp16}, adaptive={adaptive_tag}, ranking_fallback={rf_tag}")
 
     telemetry_collector = None
     if args.pagein_telemetry:
@@ -527,10 +498,7 @@ def main():
         model, tokenizer, adapter,
         context_lengths=args.contexts,
         num_needles=args.needles,
-        calibrated_profile=profile,
-        default_epsilon=args.default_epsilon,
         top_k_fp16_keys=args.top_k_fp16,
-        concentration_threshold=args.concentration_threshold,
         v_tolerance=args.v_tolerance,
         use_int4_values=args.use_int4_values,
         group_size=args.group_size,
