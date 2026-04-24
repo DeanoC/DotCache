@@ -277,6 +277,24 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
     ):
         if key in cell_agg:
             result[key] = int(cell_agg[key])
+    # Paper §8.6 hard-STOP triggers + §4.5 bound scalars. Previously
+    # dropped (only ranking_* fields were persisted). See
+    # docs/paper_v1_run_handoff.md §5.
+    for key in (
+        "score_consistency_violation_heads_total",
+        "rung1_fired", "rung2_fired", "rung3_fired", "rung4_fired",
+        "rung1_fired_layers", "rung2_fired_layers",
+        "rung3_fired_layers", "rung4_fired_layers",
+        "boundary_check_fired", "boundary_check_fired_layers",
+        "boundary_check_triggered_heads_total",
+        "e_key_step_mean", "e_key_step_max", "v_max_global",
+        "delta_bound_step_mean",
+        "tail_mass_int8_est_step_mean", "tail_mass_int8_est_step_max",
+        "k_star_mean", "k_star_max",
+        "h2d_key_bytes", "h2d_value_bytes", "h2d_total_bytes",
+    ):
+        if key in cell_agg:
+            result[key] = cell_agg[key]
     return result
 
 

@@ -179,6 +179,88 @@ def compute_dense_perplexity(
     }
 
 
+def _reduce_step_aggs(step_aggs: list[dict]) -> dict:
+    """Reduce a list of per-step aggregated telemetry dicts to a single
+    summary covering the hard-STOP triggers and paper §8.6 fields that
+    were previously dropped by compute_certified_perplexity. Everything is
+    a scalar — safe to embed in the output JSON.
+
+    Reductions:
+      - cumulative counts (sum): *_fired_layers, *_triggered_heads,
+        *_violation_heads, ranking_disagree_r*
+      - boolean-fired counts (sum of True): rung*_fired_steps,
+        boundary_check_fired_steps
+      - means (avg across steps): e_key_step_mean, delta_bound_step_mean,
+        tail_mass_int8_est_step_mean, k_star_mean
+      - maxes (max across steps): e_key_step_max, v_max_global,
+        tail_mass_int8_est_step_max, k_star_max
+    """
+    if not step_aggs:
+        return {"n_steps_aggregated": 0}
+
+    def _sum(key: str) -> int | float:
+        return sum(s.get(key, 0) for s in step_aggs)
+
+    def _count_true(key: str) -> int:
+        return sum(1 for s in step_aggs if bool(s.get(key)))
+
+    def _mean(key: str) -> float | None:
+        vals = [s.get(key) for s in step_aggs if s.get(key) is not None]
+        if not vals:
+            return None
+        return float(sum(vals) / len(vals))
+
+    def _max(key: str) -> float | None:
+        vals = [s.get(key) for s in step_aggs if s.get(key) is not None]
+        if not vals:
+            return None
+        return float(max(vals))
+
+    summary: dict = {"n_steps_aggregated": len(step_aggs)}
+    # Hard-STOP triggers — these MUST be in the output JSON for §8.6 checks.
+    summary["score_consistency_violation_heads_total"] = _sum(
+        "score_consistency_violation_heads_total"
+    )
+    summary["rung4_fired_steps"] = _count_true("rung4_fired")
+    summary["rung1_fired_steps"] = _count_true("rung1_fired")
+    summary["rung2_fired_steps"] = _count_true("rung2_fired")
+    summary["rung3_fired_steps"] = _count_true("rung3_fired")
+    summary["rung1_fired_layers_total"] = _sum("rung1_fired_layers")
+    summary["rung2_fired_layers_total"] = _sum("rung2_fired_layers")
+    summary["rung3_fired_layers_total"] = _sum("rung3_fired_layers")
+    summary["rung4_fired_layers_total"] = _sum("rung4_fired_layers")
+    # Eq. 30 boundary verification (paper §8.6 expects 0 triggers).
+    summary["boundary_check_fired_steps"] = _count_true("boundary_check_fired")
+    summary["boundary_check_fired_layers_total"] = _sum("boundary_check_fired_layers")
+    summary["boundary_check_triggered_heads_total"] = _sum(
+        "boundary_check_triggered_heads_total"
+    )
+    # Ranking disagreement (rare on paper-§7 config).
+    summary["ranking_disagree_r1_total"] = _sum("ranking_disagree_r1")
+    summary["ranking_disagree_r3_total"] = _sum("ranking_disagree_r3")
+    summary["ranking_fallback_triggered_total"] = _sum("ranking_fallback_triggered")
+    summary["ranking_heads_total_all_steps"] = _sum("ranking_heads_total")
+    # Bound / telemetry scalars (paper §4.5 E_key, Δ, V_max, ᾱ_T).
+    for key, reducer_name in [
+        ("e_key_step_mean", "mean"),
+        ("e_key_step_max", "max"),
+        ("v_max_global", "max"),
+        ("delta_bound_step_mean", "mean"),
+        ("tail_mass_int8_est_step_mean", "mean"),
+        ("tail_mass_int8_est_step_max", "max"),
+        ("k_star_mean", "mean"),
+        ("k_star_max", "max"),
+    ]:
+        val = _mean(key) if reducer_name == "mean" else _max(key)
+        if val is not None:
+            summary[key] = val
+    # H2D bandwidth totals (paper §3.2 tiered-memory diagnostics).
+    summary["h2d_key_bytes_total"] = _sum("h2d_key_bytes")
+    summary["h2d_value_bytes_total"] = _sum("h2d_value_bytes")
+    summary["h2d_total_bytes_total"] = _sum("h2d_total_bytes")
+    return summary
+
+
 def compute_certified_perplexity(
     model, adapter, chunks: list[torch.Tensor],
     *,
@@ -230,6 +312,10 @@ def compute_certified_perplexity(
     total_blocks = 0
     total_steps = 0
     per_chunk: list[dict] = []
+    # Accumulator across all chunks — reduced into `overall_telemetry` at
+    # the end. Captures the full aggregate dict per step so we can emit
+    # the §8.6 hard-STOP triggers that were previously dropped.
+    all_step_aggs_accumulator: list[dict] = []
 
     for i, chunk in enumerate(chunks):
         seq_len = chunk.shape[0]
@@ -319,6 +405,13 @@ def compute_certified_perplexity(
         suffix_nll = 0.0
         chunk_skipped = 0
         chunk_blocks = 0
+        # Per-step aggregated telemetry — previously thrown away, now
+        # reduced into per-chunk + overall summaries so the hard-STOP
+        # triggers from docs/paper_v1_run_handoff.md §5
+        # (score_consistency_violation_heads_total, rung4_fired,
+        # e_key_step_mean, boundary_check_fired_layers, …) are actually
+        # visible in the output JSON for diagnosis.
+        chunk_step_aggs: list[dict] = []
 
         for t in range(eval_len - 1):
             token_id = input_ids[:, prefix_len + t]
@@ -338,10 +431,12 @@ def compute_certified_perplexity(
             suffix_nll += nll.item()
             cache_position = cache_position + 1
 
-            # Drain per-step skip stats (aggregated across layers)
+            # Drain per-step aggregated stats — keep the FULL dict, not just
+            # two fields. _reduce_step_aggs() below rolls them up.
             step = adapter.certified_state.aggregate_step_stats()
-            chunk_blocks += step["total_blocks"]
-            chunk_skipped += step["skipped_blocks"]
+            chunk_blocks += step.get("total_blocks", 0)
+            chunk_skipped += step.get("skipped_blocks", 0)
+            chunk_step_aggs.append(step)
             adapter.certified_state.clear_step_stats()
             total_steps += 1
 
@@ -361,6 +456,7 @@ def compute_certified_perplexity(
         # report CI only over the suffix (the actually-certified portion)
         # rather than the full chunk. prefix_tokens and suffix_tokens let
         # them weight consistently.
+        chunk_telemetry = _reduce_step_aggs(chunk_step_aggs)
         per_chunk.append({
             "chunk_idx": i,
             "book_idx": (book_indices[i] if book_indices is not None else None),
@@ -372,7 +468,10 @@ def compute_certified_perplexity(
             "tokens": int(chunk_tokens),
             "skipped_blocks": int(chunk_skipped),
             "total_blocks": int(chunk_blocks),
+            "telemetry": chunk_telemetry,
         })
+        # Accumulate for overall summary (all chunks reduced together).
+        all_step_aggs_accumulator.extend(chunk_step_aggs)
 
         chunk_ppl = math.exp(chunk_nll / chunk_tokens)
         suffix_ppl = math.exp(suffix_nll / max(eval_len - 1, 1))
@@ -394,10 +493,22 @@ def compute_certified_perplexity(
         "perplexity": ppl,
         "total_nll": total_nll,
         "total_tokens": total_tokens,
+        # `skip_rate` / `skipped_blocks` are legacy from Paper-2's
+        # block-skipping semantics. Paper-1 (hybrid attend-all) does NOT
+        # skip blocks — the hybrid kernel attends EVERY block, some with
+        # FP16 keys (top-K*) and some with INT8 keys (tail). What this
+        # counter actually measures is the tail-block fraction from the
+        # adaptive top-K* selector, i.e. `1 - (K* / num_blocks)`. Do NOT
+        # use it as a quality/correctness signal. Kept here for legacy
+        # consumers; the meaningful fields are in `telemetry` below.
         "skip_rate": skip_rate,
         "skipped_blocks": total_skipped,
         "total_blocks": total_blocks,
         "decode_steps": total_steps,
+        # Reduced telemetry across all certified decode steps — THIS is
+        # where the §8.6 hard-STOP signals and paper §4.5 bound scalars
+        # actually live. See docs/paper_v1_run_handoff.md §5.
+        "telemetry": _reduce_step_aggs(all_step_aggs_accumulator),
         "per_chunk": per_chunk,
     }
 
