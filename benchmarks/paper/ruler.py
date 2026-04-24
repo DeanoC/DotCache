@@ -363,10 +363,14 @@ def generate_dense(model, tokenizer, adapter, prompt: str, max_new: int,
 
 
 def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
+                       *,
+                       v_tolerance: float,
                        calibrated_profile=None, default_epsilon: float = 1e-4,
                        top_k_fp16_keys: int = 4,
                        concentration_threshold: float = 0.02,
                        device: str = "cuda",
+                       use_int4_values: bool = False,
+                       group_size: int = 16,
                        # Paper-alignment features (T4/T7/Rung1/T9/T10).
                        tau_cov: float | None = None,
                        k_min: int = 2,
@@ -383,7 +387,10 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     from dotcache.integrations.llama import (
         _ensure_certified_imports, CertifiedAttentionState,
     )
-    from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
+    from dotcache.kernels.tiered_kv_cache import (
+        create_tiered_cache_from_model,
+        create_tiered_cache_int4v_from_model,
+    )
 
     adapter.set_mode("dense")
     inputs = tokenizer(prompt, return_tensors="pt", truncation=False).to(device)
@@ -398,10 +405,15 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     layer_ids = list(range(model.config.num_hidden_layers))
     _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
     _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
-    tiered_caches = create_tiered_cache_from_model(
-        past_kv, layer_ids, max_new_tokens=max_new + 8,
-        fp16_key_cache_capacity=_cap,
-    )
+    if use_int4_values:
+        tiered_caches = create_tiered_cache_int4v_from_model(
+            past_kv, layer_ids, group_size=group_size,
+        )
+    else:
+        tiered_caches = create_tiered_cache_from_model(
+            past_kv, layer_ids, max_new_tokens=max_new + 8,
+            fp16_key_cache_capacity=_cap,
+        )
     del past_kv
     gc.collect()
     torch.cuda.empty_cache()
@@ -425,6 +437,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
         append_kv=True,
         top_k_fp16_keys=top_k_fp16_keys,
         concentration_threshold=concentration_threshold,
+        v_tolerance=v_tolerance,
         tau_cov=tau_cov,
         k_min=k_min,
         k_max=k_max,
@@ -476,9 +489,13 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
 def run_ruler(
     model, tokenizer, adapter,
     subtasks: list[str], contexts: list[int], num_samples: int,
+    *,
+    v_tolerance: float,
     calibrated_profile=None, default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4, concentration_threshold: float = 0.02,
     seed_base: int = 20260416, device: str = "cuda",
+    use_int4_values: bool = False,
+    group_size: int = 16,
     # Paper-alignment features.
     tau_cov: float | None = None,
     k_min: int = 2,
@@ -520,6 +537,9 @@ def run_ruler(
 
                 cert_text, seq_cert, cert_stats = generate_certified(
                     model, tokenizer, adapter, prompt, max_new,
+                    v_tolerance=v_tolerance,
+                    use_int4_values=use_int4_values,
+                    group_size=group_size,
                     calibrated_profile=calibrated_profile,
                     default_epsilon=default_epsilon,
                     top_k_fp16_keys=top_k_fp16_keys,
@@ -608,6 +628,10 @@ def main():
                         help="Collect per-step page-in / rung / VRAM-cache telemetry (Test 3)")
     parser.add_argument("--telemetry-output", default=None,
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _provenance import add_paper_cache_args, cache_config_dict
+    add_paper_cache_args(parser)
     args = parser.parse_args()
 
     for st in args.subtasks:
@@ -650,7 +674,11 @@ def main():
     out = run_ruler(
         model, tokenizer, adapter,
         subtasks=args.subtasks, contexts=args.contexts,
-        num_samples=args.num_samples, calibrated_profile=profile,
+        num_samples=args.num_samples,
+        v_tolerance=args.v_tolerance,
+        use_int4_values=args.use_int4_values,
+        group_size=args.group_size,
+        calibrated_profile=profile,
         default_epsilon=args.default_epsilon,
         top_k_fp16_keys=args.top_k_fp16,
         concentration_threshold=args.concentration_threshold,
@@ -715,6 +743,7 @@ def main():
         "critical_failures": critical,
         "summary": out["summary"],
         "results": out["results"],
+        "cache_config": cache_config_dict(args),
     }
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -95,7 +95,8 @@ def main():
 
         # Warmup
         for _ in range(5):
-            certified_attention_layer(cache, q_all, gqa, q_scale, block_epsilon=eps)
+            certified_attention_layer(cache, q_all, gqa, q_scale, block_epsilon=eps,
+                                      v_tolerance=0.5)
         torch.cuda.synchronize()
 
         # Phase 1: Score + Certify

@@ -282,14 +282,32 @@ def generate_dense(model, tokenizer, adapter, prompt: str, max_new: int,
 
 
 def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
+                       *,
+                       v_tolerance: float,
                        calibrated_profile=None, default_epsilon: float = 1e-4,
                        top_k_fp16_keys: int = 4,
                        concentration_threshold: float = 0.02,
-                       device: str = "cuda") -> tuple[str, int]:
+                       device: str = "cuda",
+                       use_int4_values: bool = False,
+                       group_size: int = 16,
+                       tau_cov: float | None = None,
+                       k_min: int = 2,
+                       k_max: int | None = None,
+                       ranking_fallback: bool = False,
+                       ranking_r: int = 1,
+                       ranking_fallback_mode: str = "full",
+                       score_consistency_check: bool = False,
+                       eps_guard: float = 0.01,
+                       exploration_rate: float = 0.0,
+                       rung1_threshold: float = 0.02,
+                       rung1_multiplier: float = 2.0) -> tuple[str, int]:
     from dotcache.integrations.llama import (
         _ensure_certified_imports, CertifiedAttentionState,
     )
-    from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
+    from dotcache.kernels.tiered_kv_cache import (
+        create_tiered_cache_from_model,
+        create_tiered_cache_int4v_from_model,
+    )
 
     adapter.set_mode("dense")
     inputs = tokenizer(prompt, return_tensors="pt", truncation=False).to(device)
@@ -302,9 +320,14 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
 
     _ensure_certified_imports()
     layer_ids = list(range(model.config.num_hidden_layers))
-    tiered_caches = create_tiered_cache_from_model(
-        past_kv, layer_ids, max_new_tokens=max_new + 8,
-    )
+    if use_int4_values:
+        tiered_caches = create_tiered_cache_int4v_from_model(
+            past_kv, layer_ids, group_size=group_size,
+        )
+    else:
+        tiered_caches = create_tiered_cache_from_model(
+            past_kv, layer_ids, max_new_tokens=max_new + 8,
+        )
     del past_kv
     gc.collect()
     torch.cuda.empty_cache()
@@ -314,14 +337,32 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     else:
         layer_epsilons = {}
 
+    collect_stats = (
+        bool(ranking_fallback)
+        or (tau_cov is not None and tau_cov > 0)
+        or bool(score_consistency_check)
+        or (exploration_rate and exploration_rate > 0)
+    )
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered_caches,
         layer_epsilons=layer_epsilons,
         default_epsilon=default_epsilon,
-        collect_stats=False,
+        collect_stats=collect_stats,
         append_kv=True,
         top_k_fp16_keys=top_k_fp16_keys,
         concentration_threshold=concentration_threshold,
+        v_tolerance=v_tolerance,
+        tau_cov=tau_cov,
+        k_min=k_min,
+        k_max=k_max,
+        ranking_fallback=ranking_fallback,
+        ranking_r=ranking_r,
+        ranking_fallback_mode=ranking_fallback_mode,
+        score_consistency_check=score_consistency_check,
+        eps_guard=eps_guard,
+        exploration_rate=exploration_rate,
+        rung1_threshold=rung1_threshold,
+        rung1_multiplier=rung1_multiplier,
     )
     adapter.set_mode("certified")
 
@@ -376,9 +417,24 @@ def _sample_indices(n_total: int, num_samples: int, subtask: str,
 def run_longbench(
     model, tokenizer, adapter,
     subtasks: list[str], contexts: list[int], num_samples: int,
+    *,
+    v_tolerance: float,
     calibrated_profile=None, default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4, concentration_threshold: float = 0.02,
     seed_base: int = 20260417, device: str = "cuda",
+    use_int4_values: bool = False,
+    group_size: int = 16,
+    tau_cov: float | None = None,
+    k_min: int = 2,
+    k_max: int | None = None,
+    ranking_fallback: bool = False,
+    ranking_r: int = 1,
+    ranking_fallback_mode: str = "full",
+    score_consistency_check: bool = False,
+    eps_guard: float = 0.01,
+    exploration_rate: float = 0.0,
+    rung1_threshold: float = 0.02,
+    rung1_multiplier: float = 2.0,
 ) -> dict:
     # Pre-load all subtasks once (HF datasets cache to ~/.cache/huggingface)
     print("Loading LongBench subtasks...")
@@ -419,11 +475,23 @@ def run_longbench(
 
                 cert_text, seq_cert = generate_certified(
                     model, tokenizer, adapter, prompt, max_new,
+                    v_tolerance=v_tolerance,
+                    use_int4_values=use_int4_values,
+                    group_size=group_size,
                     calibrated_profile=calibrated_profile,
                     default_epsilon=default_epsilon,
                     top_k_fp16_keys=top_k_fp16_keys,
                     concentration_threshold=concentration_threshold,
                     device=device,
+                    tau_cov=tau_cov, k_min=k_min, k_max=k_max,
+                    ranking_fallback=ranking_fallback,
+                    ranking_r=ranking_r,
+                    ranking_fallback_mode=ranking_fallback_mode,
+                    score_consistency_check=score_consistency_check,
+                    eps_guard=eps_guard,
+                    exploration_rate=exploration_rate,
+                    rung1_threshold=rung1_threshold,
+                    rung1_multiplier=rung1_multiplier,
                 )
                 cert_score = score_sample(subtask, cert_text, refs, all_classes)
                 done += 1
@@ -483,6 +551,15 @@ def main():
     parser.add_argument("--top-k-fp16", type=int, default=4)
     parser.add_argument("--concentration-threshold", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=20260417)
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _provenance import (
+        add_paper_cache_args,
+        add_paper_section7_args,
+        cache_config_dict,
+    )
+    add_paper_section7_args(parser)
+    add_paper_cache_args(parser)
     args = parser.parse_args()
 
     for st in args.subtasks:
@@ -517,11 +594,26 @@ def main():
     out = run_longbench(
         model, tokenizer, adapter,
         subtasks=args.subtasks, contexts=args.contexts,
-        num_samples=args.num_samples, calibrated_profile=profile,
+        num_samples=args.num_samples,
+        v_tolerance=args.v_tolerance,
+        use_int4_values=args.use_int4_values,
+        group_size=args.group_size,
+        calibrated_profile=profile,
         default_epsilon=args.default_epsilon,
         top_k_fp16_keys=args.top_k_fp16,
         concentration_threshold=args.concentration_threshold,
         seed_base=args.seed,
+        tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
+        k_min=args.k_min,
+        k_max=args.k_max,
+        ranking_fallback=args.ranking_fallback,
+        ranking_r=args.ranking_r,
+        ranking_fallback_mode=args.ranking_fallback_mode,
+        score_consistency_check=args.score_consistency_check,
+        eps_guard=args.eps_guard,
+        exploration_rate=args.exploration_rate,
+        rung1_threshold=args.rung1_threshold,
+        rung1_multiplier=args.rung1_multiplier,
     )
     wall = time.perf_counter() - t0
 
@@ -558,6 +650,7 @@ def main():
         "critical_failures": critical,
         "summary": out["summary"],
         "results": out["results"],
+        "cache_config": cache_config_dict(args),
     }
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)

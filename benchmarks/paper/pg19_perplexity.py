@@ -181,12 +181,16 @@ def compute_dense_perplexity(
 
 def compute_certified_perplexity(
     model, adapter, chunks: list[torch.Tensor],
+    *,
+    v_tolerance: float,
     calibrated_profile=None,
     eval_start_frac: float = 0.5,
     epsilon_override: float = None,
     top_k_override: int = None,
     concentration_threshold: float = 0.0,
     device: str = "cuda",
+    use_int4_values: bool = False,
+    group_size: int = 16,
     # Paper-alignment features (T4/T7/Rung1/T9/T10).
     tau_cov: float | None = None,
     k_min: int = 2,
@@ -215,7 +219,10 @@ def compute_certified_perplexity(
             Tokens after this point are evaluated with certified attention.
     """
     from dotcache.integrations.llama import _ensure_certified_imports, CertifiedAttentionState
-    from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
+    from dotcache.kernels.tiered_kv_cache import (
+        create_tiered_cache_from_model,
+        create_tiered_cache_int4v_from_model,
+    )
 
     total_nll = 0.0
     total_tokens = 0
@@ -257,10 +264,15 @@ def compute_certified_perplexity(
         layer_ids = list(range(model.config.num_hidden_layers))
         _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
         _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
-        tiered_caches = create_tiered_cache_from_model(
-            past_kv, layer_ids, max_new_tokens=eval_len + 16,
-            fp16_key_cache_capacity=_cap,
-        )
+        if use_int4_values:
+            tiered_caches = create_tiered_cache_int4v_from_model(
+                past_kv, layer_ids, group_size=group_size,
+            )
+        else:
+            tiered_caches = create_tiered_cache_from_model(
+                past_kv, layer_ids, max_new_tokens=eval_len + 16,
+                fp16_key_cache_capacity=_cap,
+            )
         del past_kv
         gc.collect()
         torch.cuda.empty_cache()
@@ -286,6 +298,7 @@ def compute_certified_perplexity(
             append_kv=True,
             top_k_fp16_keys=top_k,
             concentration_threshold=concentration_threshold,
+            v_tolerance=v_tolerance,
             tau_cov=tau_cov,
             k_min=k_min,
             k_max=k_max,
@@ -433,6 +446,10 @@ def main():
                         help="Collect per-step page-in / rung / VRAM-cache telemetry (Test 3)")
     parser.add_argument("--telemetry-output", default=None,
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _provenance import add_paper_cache_args, cache_config_dict
+    add_paper_cache_args(parser)
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -498,6 +515,9 @@ def main():
             epsilon_override=args.epsilon_override,
             top_k_override=args.top_k_override,
             concentration_threshold=args.concentration_threshold,
+            v_tolerance=args.v_tolerance,
+            use_int4_values=args.use_int4_values,
+            group_size=args.group_size,
             tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
             k_min=args.k_min,
             k_max=args.k_max,
@@ -568,6 +588,7 @@ def main():
         "concentration_threshold": args.concentration_threshold,
         "default_epsilon_override": args.epsilon_override,
         "top_k_override": args.top_k_override,
+        "cache_config": cache_config_dict(args),
         "dense": dense_result,
         "certified": cert_result,
     }

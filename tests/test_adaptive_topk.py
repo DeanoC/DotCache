@@ -125,6 +125,7 @@ class TestCertifiedAttentionLayerAdaptive:
         _, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, tau_cov=0.995, k_min=2, k_max=8,
+        v_tolerance=0.5,
         )
         assert "k_star_mean" in stats
         assert "tau_cov_actual_mean" in stats
@@ -143,6 +144,7 @@ class TestCertifiedAttentionLayerAdaptive:
             cache, q_all, gqa_group=2,
             collect_stats=True, tau_cov=0.995, k_min=2, k_max=4,
             rung1_threshold=0.02, rung1_multiplier=4.0,
+        v_tolerance=0.5,
         )
         assert stats_cap["rung1_triggered_heads"] >= 1, stats_cap
         # With rung1 expansion in place, k_star should exceed the original k_max
@@ -156,7 +158,8 @@ class TestCertifiedAttentionLayerAdaptive:
         _, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, tau_cov=0.995, k_min=2, k_max=8,
-            rung1_threshold=1.0,  # never triggers
+            rung1_threshold=1.0,  # never triggers,
+        v_tolerance=0.5,
         )
         assert stats["rung1_triggered_heads"] == 0
 
@@ -169,6 +172,7 @@ class TestCertifiedAttentionLayerAdaptive:
         _, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, score_consistency_check=True, eps_guard=0.01,
+        v_tolerance=0.5,
         )
         assert "score_consistency_violation_heads" in stats
         assert stats["score_consistency_violation_heads"] == 0, (
@@ -201,11 +205,13 @@ class TestCertifiedAttentionLayerAdaptive:
             cache, q_all, gqa_group=2,
             collect_stats=True, tau_cov=0.995, k_min=2, k_max=8,
             exploration_rate=0.0,
+        v_tolerance=0.5,
         )
         _, stats_on = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, tau_cov=0.995, k_min=2, k_max=8,
             exploration_rate=0.1, exploration_generator=gen,
+        v_tolerance=0.5,
         )
         assert stats_off["exploration_blocks"] == 0
         assert stats_on["exploration_blocks"] > 0
@@ -223,6 +229,7 @@ class TestCertifiedAttentionLayerAdaptive:
         _, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, tau_cov=None, exploration_rate=0.5,
+        v_tolerance=0.5,
         )
         # No exploration_blocks key because adaptive K* didn't run
         assert "exploration_blocks" not in stats
@@ -234,10 +241,12 @@ class TestCertifiedAttentionLayerAdaptive:
         out_off, stats_off = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, tau_cov=None,
+        v_tolerance=0.5,
         )
         out_none, stats_none = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, tau_cov=0.0,
+        v_tolerance=0.5,
         )
         # tau_cov None or 0 → no adaptive selection
         assert torch.allclose(out_off, out_none, atol=0.0, rtol=0.0)

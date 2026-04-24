@@ -95,15 +95,19 @@ def check_retrieval(generated_text: str, expected_answer: str) -> bool:
     return expected_answer.lower() in generated_text.lower()
 
 
-def run_niah_cell(
+def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-§7 plumbing
     model, tokenizer, adapter, mode: str,
     context_tokens: int, depth: float, needle_idx: int,
+    *,
+    v_tolerance: float,
     calibrated_profile=None,
     max_new_tokens: int = 50,
     device: str = "cuda",
     default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4,
     concentration_threshold: float = 0.0,
+    use_int4_values: bool = False,
+    group_size: int = 16,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -147,7 +151,10 @@ def run_niah_cell(
     elif mode == "certified":
         # Certified: prefill dense, then decode certified
         from dotcache.integrations.llama import _ensure_certified_imports, CertifiedAttentionState
-        from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
+        from dotcache.kernels.tiered_kv_cache import (
+            create_tiered_cache_from_model,
+            create_tiered_cache_int4v_from_model,
+        )
 
         adapter.set_mode("dense")
         with torch.inference_mode():
@@ -164,9 +171,14 @@ def run_niah_cell(
         layer_ids = list(range(model.config.num_hidden_layers))
         _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
         _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
-        tiered_caches = create_tiered_cache_from_model(
-            past_kv, layer_ids, fp16_key_cache_capacity=_cap,
-        )
+        if use_int4_values:
+            tiered_caches = create_tiered_cache_int4v_from_model(
+                past_kv, layer_ids, group_size=group_size,
+            )
+        else:
+            tiered_caches = create_tiered_cache_from_model(
+                past_kv, layer_ids, fp16_key_cache_capacity=_cap,
+            )
         del past_kv
         gc.collect()
         torch.cuda.empty_cache()
@@ -195,6 +207,7 @@ def run_niah_cell(
             append_kv=True,  # Append new K/V tokens during decode
             top_k_fp16_keys=top_k_fp16_keys,
             concentration_threshold=concentration_threshold,
+            v_tolerance=v_tolerance,
             ranking_fallback=ranking_fallback,
             ranking_r=ranking_r,
             ranking_fallback_mode=ranking_fallback_mode,
@@ -268,6 +281,8 @@ def run_niah_cell(
 def run_niah_sweep(
     model, tokenizer, adapter,
     context_lengths: list[int],
+    *,
+    v_tolerance: float,
     depths: list[float] = None,
     num_needles: int = 5,
     calibrated_profile=None,
@@ -275,6 +290,8 @@ def run_niah_sweep(
     default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4,
     concentration_threshold: float = 0.0,
+    use_int4_values: bool = False,
+    group_size: int = 16,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -309,6 +326,9 @@ def run_niah_sweep(
                         default_epsilon=default_epsilon,
                         top_k_fp16_keys=top_k_fp16_keys,
                         concentration_threshold=concentration_threshold,
+                        v_tolerance=v_tolerance,
+                        use_int4_values=use_int4_values,
+                        group_size=group_size,
                         ranking_fallback=ranking_fallback,
                         ranking_r=ranking_r,
                         ranking_fallback_mode=ranking_fallback_mode,
@@ -443,6 +463,10 @@ def main():
                         help="Collect per-step page-in / rung / VRAM-cache telemetry during certified decode (Test 3)")
     parser.add_argument("--telemetry-output", default=None,
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _provenance import add_paper_cache_args, cache_config_dict
+    add_paper_cache_args(parser)
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -487,6 +511,9 @@ def main():
         default_epsilon=args.default_epsilon,
         top_k_fp16_keys=args.top_k_fp16,
         concentration_threshold=args.concentration_threshold,
+        v_tolerance=args.v_tolerance,
+        use_int4_values=args.use_int4_values,
+        group_size=args.group_size,
         ranking_fallback=args.ranking_fallback,
         ranking_r=args.ranking_r,
         ranking_fallback_mode=args.ranking_fallback_mode,
@@ -524,6 +551,7 @@ def main():
         "dense_accuracy": result["dense_accuracy"],
         "certified_accuracy": result["certified_accuracy"],
         "critical_failures": result["critical_failures"],
+        "cache_config": cache_config_dict(args),
     }
     if "ranking_fallback_summary" in result:
         payload["ranking_fallback_summary"] = result["ranking_fallback_summary"]

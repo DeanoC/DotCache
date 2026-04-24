@@ -102,9 +102,10 @@ def _multihead_selective_attend_kernel(
 
 @triton.jit
 def _multihead_selective_attend_int8_kernel(
-    # Data — INT8 keys + scale
+    # Data — INT8 keys + scale + zero point (paper §2.3 asymmetric)
     K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous
     K_scale_ptr,     # [num_kv_heads, num_blocks, head_dim] float32
+    K_zp_ptr,        # [num_kv_heads, num_blocks, head_dim] float32
     V_ptr,           # [num_kv_heads * N, d_v] float16 contiguous
     Q_ptr,           # [num_q_heads, head_dim] float32
     Skip_ptr,        # [num_q_heads, num_blocks] int32
@@ -148,7 +149,9 @@ def _multihead_selective_attend_int8_kernel(
                 base_tok = kv_base + bid * block_size
                 scale_base = (kvh * num_blocks + bid) * head_dim
 
-                # Score: q · (K_int8 * scale) for block_size tokens
+                # Score: q · (K_int8 * scale + z) for block_size tokens.
+                # Paper §2.3 Eq. 1 asymmetric dequant: k̂ = q · s + z.
+                # The +z term yields the §5.2 L575 Σ q_c z_c correction.
                 scores = tl.zeros((block_size,), dtype=tl.float32)
                 row_ptrs = K_int8_ptr + (base_tok + t_offs) * stride_k
                 for d_start in range(0, head_dim, TILE_D):
@@ -156,10 +159,11 @@ def _multihead_selective_attend_int8_kernel(
                     dm = d_off < head_dim
                     q_tile = tl.load(Q_ptr + qh * head_dim + d_off, mask=dm, other=0.0).to(tl.float32)
                     ch_scale = tl.load(K_scale_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
+                    ch_zp = tl.load(K_zp_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
                     k_ptrs = row_ptrs[:, None] + d_off[None, :]
-                    # Load INT8, cast to float32, multiply by per-channel scale — all in-register
+                    # Load INT8, cast to float32, dequant in-register: q*s + z
                     k_int8_tile = tl.load(k_ptrs, mask=dm[None, :], other=0)
-                    k_tile = k_int8_tile.to(tl.float32) * ch_scale[None, :]
+                    k_tile = k_int8_tile.to(tl.float32) * ch_scale[None, :] + ch_zp[None, :]
                     scores += tl.sum(k_tile * q_tile[None, :], axis=1)
                 scores = scores * q_scale
 
@@ -191,6 +195,7 @@ def _multihead_selective_attend_int8_kernel(
 def selective_attend_multihead_int8(
     keys_int8: torch.Tensor,      # [num_kv_heads, N, head_dim] int8
     keys_scale: torch.Tensor,     # [num_kv_heads, num_blocks, head_dim] float32
+    keys_zero_points: torch.Tensor,  # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
     values_fp16: torch.Tensor,    # [num_kv_heads, N, d_v] float16
     q_all: torch.Tensor,          # [num_q_heads, head_dim] float32
     skip_mask_i32: torch.Tensor,  # [num_q_heads, num_blocks] int32
@@ -220,7 +225,7 @@ def selective_attend_multihead_int8(
     TILE_V = triton.next_power_of_2(d_v)
 
     _multihead_selective_attend_int8_kernel[(num_q_heads,)](
-        K_flat, keys_scale.contiguous(), V_flat,
+        K_flat, keys_scale.contiguous(), keys_zero_points.contiguous(), V_flat,
         q_all.contiguous(), skip_mask_i32.contiguous(), output,
         N=N,
         stride_k=head_dim,
@@ -243,9 +248,10 @@ def selective_attend_multihead_int8(
 
 @triton.jit
 def _multihead_selective_attend_int8k_int4v_kernel(
-    # INT8 keys
+    # INT8 keys (paper §2.3 asymmetric)
     K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous
     K_scale_ptr,     # [num_kv_heads, num_blocks, head_dim] float32
+    K_zp_ptr,        # [num_kv_heads, num_blocks, head_dim] float32
     # INT4 packed values + per-group scales/zeros
     V_packed_ptr,    # [num_kv_heads * N, d_v // 2] uint8 contiguous
     V_scales_ptr,    # [num_kv_heads * N, num_groups] float16 contiguous
@@ -293,7 +299,7 @@ def _multihead_selective_attend_int8k_int4v_kernel(
             if skip_val == 0:
                 base_tok = kv_base + bid * block_size
 
-                # ── K scoring (INT8 in-register per-channel dequant) ──
+                # ── K scoring (asymmetric INT8 in-register dequant: q*s + z) ──
                 scale_base = (kvh * num_blocks + bid) * head_dim
                 scores = tl.zeros((block_size,), dtype=tl.float32)
                 row_ptrs = K_int8_ptr + (base_tok + t_offs) * stride_k
@@ -302,9 +308,10 @@ def _multihead_selective_attend_int8k_int4v_kernel(
                     dm = d_off < head_dim
                     q_tile = tl.load(Q_ptr + qh * head_dim + d_off, mask=dm, other=0.0).to(tl.float32)
                     ch_scale = tl.load(K_scale_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
+                    ch_zp = tl.load(K_zp_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
                     k_ptrs = row_ptrs[:, None] + d_off[None, :]
                     k_int8_tile = tl.load(k_ptrs, mask=dm[None, :], other=0)
-                    k_tile = k_int8_tile.to(tl.float32) * ch_scale[None, :]
+                    k_tile = k_int8_tile.to(tl.float32) * ch_scale[None, :] + ch_zp[None, :]
                     scores += tl.sum(k_tile * q_tile[None, :], axis=1)
                 scores = scores * q_scale
 
@@ -374,6 +381,7 @@ def _multihead_selective_attend_int8k_int4v_kernel(
 def selective_attend_multihead_int8k_int4v(
     keys_int8: torch.Tensor,          # [num_kv_heads, N, head_dim] int8
     keys_scale: torch.Tensor,         # [num_kv_heads, num_blocks, head_dim] float32
+    keys_zero_points: torch.Tensor,   # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
     values_int4_packed: torch.Tensor,  # [num_kv_heads, N, d_v//2] uint8
     values_int4_scales: torch.Tensor,  # [num_kv_heads, N, num_groups] float16
     values_int4_zeros: torch.Tensor,   # [num_kv_heads, N, num_groups] float16
@@ -381,12 +389,12 @@ def selective_attend_multihead_int8k_int4v(
     skip_mask_i32: torch.Tensor,      # [num_q_heads, num_blocks] int32
     gqa_group: int,
     block_size: int = 16,
-    group_size: int = 32,
+    group_size: int = 16,  # paper §7
     q_scale: float = 1.0,
 ) -> torch.Tensor:
     """INT8 keys + INT4 per-group values, both dequantised in-register.
 
-    Keys: INT8 per-block symmetric, dequant = int8 * k_scale
+    Keys: INT8 per-block ASYMMETRIC (paper §2.3), dequant = q · k_scale + k_zp
     Values: INT4 per-group asymmetric, dequant = int4 * v_scale + v_zero
 
     Returns [num_q_heads, d_v] float32.
@@ -409,7 +417,7 @@ def selective_attend_multihead_int8k_int4v(
     TILE_V = triton.next_power_of_2(d_v)
 
     _multihead_selective_attend_int8k_int4v_kernel[(num_q_heads,)](
-        K_flat, keys_scale.contiguous(),
+        K_flat, keys_scale.contiguous(), keys_zero_points.contiguous(),
         V_packed_flat, V_scales_flat, V_zeros_flat,
         q_all.contiguous(), skip_mask_i32.contiguous(), output,
         N=N,
@@ -435,9 +443,10 @@ def selective_attend_multihead_int8k_int4v(
 
 @triton.jit
 def _multihead_selective_attend_hybrid_kernel(
-    # INT8 keys
+    # INT8 keys (paper §2.3 asymmetric)
     K_int8_ptr,      # [num_kv_heads * N, head_dim] int8
     K_scale_ptr,     # [num_kv_heads, num_blocks, head_dim] float32
+    K_zp_ptr,        # [num_kv_heads, num_blocks, head_dim] float32
     # FP16 keys (same layout, only top-K blocks read from here)
     K_fp16_ptr,      # [num_kv_heads * N, head_dim] float16
     # Per-head mask: 1 = use FP16 keys, 0 = use INT8 keys
@@ -503,10 +512,12 @@ def _multihead_selective_attend_hybrid_kernel(
                     dm = d_off < head_dim
                     q_tile = tl.load(Q_ptr + qh * head_dim + d_off, mask=dm, other=0.0).to(tl.float32)
                     ch_scale = tl.load(K_scale_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
+                    ch_zp = tl.load(K_zp_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
 
-                    # Always load INT8 (cheap — 1 byte per element)
+                    # Always load INT8 (cheap — 1 byte per element). Asymmetric
+                    # dequant (paper §2.3 Eq. 1): k̂ = q · s + z.
                     k_int8 = tl.load(int8_row_ptrs[:, None] + d_off[None, :], mask=dm[None, :], other=0)
-                    k_tile = k_int8.to(tl.float32) * ch_scale[None, :]
+                    k_tile = k_int8.to(tl.float32) * ch_scale[None, :] + ch_zp[None, :]
 
                     # Conditionally load FP16 for top-K blocks (mask-gated)
                     # For non-top-K blocks, the mask zeros out the FP16 contribution.
@@ -572,7 +583,7 @@ def _multihead_selective_attend_hybrid_kernel(
 
 @triton.jit
 def _hybrid_split_k_partial_kernel(
-    K_int8_ptr, K_scale_ptr, K_fp16_ptr,
+    K_int8_ptr, K_scale_ptr, K_zp_ptr, K_fp16_ptr,
     TopK_mask_ptr, V_ptr, Q_ptr, Skip_ptr,
     # Per-split outputs: [num_q_heads, num_splits, ...]
     M_part_ptr,   # [num_q_heads, num_splits] float32
@@ -647,9 +658,11 @@ def _hybrid_split_k_partial_kernel(
                     dm = d_off < head_dim
                     q_tile = tl.load(Q_ptr + qh * head_dim + d_off, mask=dm, other=0.0).to(tl.float32)
                     ch_scale = tl.load(K_scale_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
+                    ch_zp = tl.load(K_zp_ptr + scale_base + d_off, mask=dm, other=0.0).to(tl.float32)
 
+                    # Asymmetric INT8 dequant (paper §2.3 Eq. 1): k̂ = q · s + z.
                     k_int8 = tl.load(int8_row_ptrs[:, None] + d_off[None, :], mask=dm[None, :], other=0)
-                    k_tile = k_int8.to(tl.float32) * ch_scale[None, :]
+                    k_tile = k_int8.to(tl.float32) * ch_scale[None, :] + ch_zp[None, :]
 
                     k_fp16 = tl.load(
                         fp16_row_ptrs[:, None] + d_off[None, :],
@@ -740,6 +753,7 @@ def _hybrid_split_k_reduce_kernel(
 def selective_attend_multihead_hybrid_split_k(
     keys_int8: torch.Tensor,
     keys_scale: torch.Tensor,
+    keys_zero_points: torch.Tensor,  # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
     keys_fp16: torch.Tensor,
     topk_mask: torch.Tensor,
     values_fp16: torch.Tensor,
@@ -789,6 +803,13 @@ def selective_attend_multihead_hybrid_split_k(
     assert keys_fp16.stride(2) == 1 and keys_fp16.stride(1) == head_dim
     assert values_fp16.stride(2) == 1 and values_fp16.stride(1) == d_v
     assert keys_scale.stride(2) == 1 and keys_scale.stride(1) == head_dim
+    # Asymmetric zero points share the same layout as keys_scale
+    # (paper §2.3 — both are per-channel-per-block float32).
+    assert keys_zero_points.stride(2) == 1 and keys_zero_points.stride(1) == head_dim
+    assert keys_zero_points.stride(0) == keys_scale.stride(0), (
+        "keys_zero_points must have the same kv-head stride as keys_scale "
+        "so the kernel's scale_base offset reaches the matching zp slot."
+    )
     stride_kv_k = keys_int8.stride(0)
     stride_kv_kfp16 = keys_fp16.stride(0)
     stride_kv_v = values_fp16.stride(0)
@@ -805,7 +826,7 @@ def selective_attend_multihead_hybrid_split_k(
     lbv = block_size if last_block_valid is None else int(last_block_valid)
 
     _hybrid_split_k_partial_kernel[(num_q_heads * num_splits,)](
-        keys_int8, keys_scale, keys_fp16,
+        keys_int8, keys_scale, keys_zero_points, keys_fp16,
         topk_mask, values_fp16, q_all, skip_mask_i32,
         m_part, l_part, acc_part,
         stride_kv_k=stride_kv_k,
@@ -841,6 +862,7 @@ def selective_attend_multihead_hybrid_split_k(
 def selective_attend_multihead_hybrid(
     keys_int8: torch.Tensor,       # [num_kv_heads, N, head_dim] int8
     keys_scale: torch.Tensor,      # [num_kv_heads, num_blocks, head_dim] float32
+    keys_zero_points: torch.Tensor,  # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
     keys_fp16: torch.Tensor,       # [num_kv_heads, N, head_dim] float16
     topk_mask: torch.Tensor,       # [num_q_heads, num_blocks] int32 (1=fp16, 0=int8)
     values_fp16: torch.Tensor,     # [num_kv_heads, N, d_v] float16
@@ -873,7 +895,7 @@ def selective_attend_multihead_hybrid(
 
     lbv = block_size if last_block_valid is None else int(last_block_valid)
     _multihead_selective_attend_hybrid_kernel[(num_q_heads,)](
-        K_int8_flat, keys_scale.contiguous(),
+        K_int8_flat, keys_scale.contiguous(), keys_zero_points.contiguous(),
         K_fp16_flat,
         topk_mask.contiguous(),
         V_flat,

@@ -199,6 +199,7 @@ def run_one_repeat(
             layer_epsilons={},
             collect_stats=False,   # timed run — avoid the per-layer stat sync
             append_kv=True,
+            v_tolerance=0.5,  # legacy default; paper benches use 0.05
             **_cert_kwargs(config),
         )
         adapter.certified_state = cert_state
@@ -334,7 +335,9 @@ def main() -> int:
                          "identified by the per-token cache trace.")
     args = ap.parse_args()
 
-    os.environ.setdefault("DOTCACHE_V_TOL", "0.05")
+    # DOTCACHE_V_TOL was attempted as a runtime override but the env var was
+    # never read by any kernel — see docs/paper_code_audit_20260424.md.
+    # The CertifiedAttentionState construction in this file hardcodes 0.5.
 
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     from dotcache.integrations.llama import LlamaDotCacheModelAdapter

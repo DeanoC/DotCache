@@ -1,8 +1,10 @@
 """Tiered KV cache: per-channel INT8 keys in VRAM, FP16 originals in pinned CPU RAM.
 
 Keys are quantised per-channel: each of the head_dim channels gets its own
-symmetric INT8 scale within each block of block_size tokens.  This preserves
-resolution for low-magnitude channels that per-block quantisation crushes.
+asymmetric INT8 scale + zero point within each block of block_size tokens
+(paper §2.3, range [-128, 127]). This preserves resolution for low-magnitude
+channels that per-block quantisation crushes, AND captures the per-channel
+mean offset that symmetric quantisation wastes a code on.
 
 Quantisation is deferred: trailing partial blocks (< block_size tokens) stay
 in FP16 in VRAM.  When a block fills to block_size tokens, all tokens are
@@ -30,6 +32,9 @@ class TieredKeyCacheLayer:
     # VRAM (hot) — INT8 quantised keys (only complete blocks have valid data)
     keys_int8: torch.Tensor          # [kv_heads, N, head_dim] int8, device=cuda
     keys_scale: torch.Tensor          # [kv_heads, num_blocks, head_dim] float32 (per-channel)
+    # Per-channel zero points (paper §2.3 asymmetric quant). Same shape as
+    # keys_scale; values typically lie in [-128, 127]. Dequant: x = (q - z) * s.
+    keys_zero_points: torch.Tensor    # [kv_heads, num_blocks, head_dim] float32
     # INT8 certification correction per block
     correction: torch.Tensor          # [kv_heads, num_blocks] float32, device=cuda
 
@@ -61,7 +66,12 @@ class TieredKeyCacheLayer:
     values_int4_scales: torch.Tensor | None = None   # [kv_heads, N, num_groups] float16, cuda
     values_int4_zeros: torch.Tensor | None = None    # [kv_heads, N, num_groups] float16, cuda
     values_int4_errors: torch.Tensor | None = None   # [kv_heads, num_blocks] float32, cuda
-    values_int4_group_size: int = 32
+    values_int4_group_size: int = 16  # paper §7
+    # Per-block max value-vector ℓ₂ norm: ν_b = max_{t∈b} ‖V_t‖₂ (paper §2.3
+    # last paragraph). The Theorem-1 key-error bound uses V_max = max_b ν_b.
+    # One float per block per kv-head; written at quant time and updated
+    # incrementally by append_token. Required by §4.5 E_key telemetry.
+    values_norm_max_per_block: torch.Tensor | None = None  # [kv_heads, num_blocks] float32, cuda
 
     # CPU warm tier — FP16 values for fallback when INT4 error too high
     values_fp16_cpu: torch.Tensor | None = None  # [kv_heads, N, d_v] float16, pinned CPU
@@ -119,23 +129,36 @@ class TieredKeyCacheLayer:
         # Reshape to blocks for per-channel quantisation
         keys_blocked = keys_fp16.reshape(kv_heads, num_blocks, block_size, head_dim).to(torch.float32)
 
-        # Per-channel symmetric INT8 quantisation: each channel gets its own scale
-        # k_max: [kv_heads, num_blocks, head_dim] — max(abs) across the block_size tokens
-        k_max = keys_blocked.abs().amax(dim=2).clamp(min=1e-8)
-        k_scale = k_max / 127.0  # [kv_heads, num_blocks, head_dim]
+        # Per-channel ASYMMETRIC INT8 quantisation (paper §2.3 Eq. 1):
+        #   q   = clamp(round((k - z) / s), -128, 127)
+        #   k̂  = q · s + z
+        # where z is a real-valued offset in fp space (NOT constrained to
+        # the integer range — that's the standard "fp zero point" convention).
+        # We pick z = midpoint of [k_min, k_max] to centre the quant grid on
+        # the channel's data, and s = range / 255 to spend all 256 codes on
+        # the actual span. For data shifted far from origin (positive-only
+        # activations) this preserves precision that symmetric quant wastes.
+        k_min = keys_blocked.amin(dim=2)
+        k_max = keys_blocked.amax(dim=2)
+        k_range = (k_max - k_min).clamp(min=1e-8)  # degenerate-channel guard
+        k_scale = k_range / 255.0
+        k_zero_points = (k_min + k_max) / 2.0  # fp-space midpoint
         keys_int8 = (
-            (keys_blocked / k_scale[:, :, None, :])  # broadcast over token dim
+            ((keys_blocked - k_zero_points[:, :, None, :]) / k_scale[:, :, None, :])
             .round()
-            .clamp(-127, 127)
+            .clamp(-128, 127)
             .to(torch.int8)
             .reshape(kv_heads, N, head_dim)
             .contiguous()
         )
 
         # Correction factor uses L2 norm of per-channel scale vector.
-        # Per-token reconstruction error: ||k - k'||_2 = (1/2) * ||k_scale||_2 / 127
-        # Score error bound: delta ≈ ||k_scale||_2 / 127
-        # Much tighter than per-block: sqrt(d) * max_scale / 127
+        # Per-channel ULP = scale (one quant level). Per-element max error = scale/2.
+        # Per-token L2 error bound = ||scale||_2 / 2 (worst-case all channels at half-ULP).
+        # Asymmetric quant has tighter scales than symmetric for the same data
+        # (255 levels vs 127), so the same formula yields a smaller delta.
+        # The /127 divisor preserves the existing score-error proportionality
+        # used by the certification kernel (see correction_active() consumers).
         k_scale_l2 = k_scale.norm(dim=-1)  # [kv_heads, num_blocks]
         delta_per_block = k_scale_l2 / 127.0
         correction = torch.exp(2.0 * delta_per_block)
@@ -163,12 +186,24 @@ class TieredKeyCacheLayer:
         values_fp16_buf = torch.zeros(kv_heads, capacity, d_v, dtype=kv_dtype, device=device)
         values_fp16_buf[:, :N, :] = values_fp16_cuda
 
-        # Scale/correction buffers — per-channel: [kv_heads, max_blocks, head_dim]
+        # Scale/zero-point/correction buffers — per-channel: [kv_heads, max_blocks, head_dim]
         max_total_blocks = num_blocks + max_new_blocks
         scale_buf = torch.zeros(kv_heads, max_total_blocks, head_dim, dtype=torch.float32, device=device)
         scale_buf[:, :num_blocks, :] = k_scale.to(torch.float32)
+        zp_buf = torch.zeros(kv_heads, max_total_blocks, head_dim, dtype=torch.float32, device=device)
+        zp_buf[:, :num_blocks, :] = k_zero_points.to(torch.float32)
         corr_buf = torch.ones(kv_heads, max_total_blocks, dtype=torch.float32, device=device)
         corr_buf[:, :num_blocks] = correction.to(torch.float32)
+
+        # Per-block max value-norm ν_b (paper §2.3) — required by Theorem-1
+        # key-error bound and the §4.5 E_key telemetry contract.
+        # values_fp16: [kv_heads, N, d_v]. Per-token ‖V_t‖₂, then per-block max.
+        v_norm_per_token = values_fp16.to(torch.float32).norm(dim=-1)         # [kv_heads, N]
+        v_norm_per_block = (
+            v_norm_per_token.reshape(kv_heads, num_blocks, block_size).amax(dim=-1)
+        )                                                                      # [kv_heads, num_blocks]
+        v_norm_buf = torch.zeros(kv_heads, max_total_blocks, dtype=torch.float32, device=device)
+        v_norm_buf[:, :num_blocks] = v_norm_per_block
 
         # CPU buffer for keys (preserve model dtype)
         keys_fp16_cpu_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=kv_dtype, pin_memory=True)
@@ -185,18 +220,22 @@ class TieredKeyCacheLayer:
         if fp16_key_cache_capacity is None:
             keys_fp16_gpu_buf[:, :N, :] = keys_fp16.to(dtype=kv_dtype, device=device)
 
-        # Pre-compute dequant into buffer
-        # Per-channel: k_scale is [kv_heads, num_blocks, head_dim], broadcast over token dim
+        # Pre-compute dequant into buffer (paper §2.3: k̂ = q · s + z)
+        # Per-channel: k_scale and k_zero_points are [kv_heads, num_blocks, head_dim],
+        # broadcast over token dim.
         keys_deq_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=torch.float32, device=device)
         keys_deq_buf[:, :N, :] = (
             keys_int8.to(torch.float32).reshape(kv_heads, num_blocks, block_size, head_dim)
             * k_scale.to(torch.float32)[:, :, None, :]
+            + k_zero_points.to(torch.float32)[:, :, None, :]
         ).reshape(kv_heads, N, head_dim)
 
         result = cls(
             keys_int8=keys_int8_buf,
             keys_scale=scale_buf,
+            keys_zero_points=zp_buf,
             correction=corr_buf,
+            values_norm_max_per_block=v_norm_buf,
             values_fp16=values_fp16_buf,
             keys_fp16_cpu=keys_fp16_cpu_buf,
             kv_heads=kv_heads,
@@ -223,34 +262,73 @@ class TieredKeyCacheLayer:
         keys_fp16: torch.Tensor,     # [kv_heads, N, head_dim] float16/32, device=cuda
         values_fp16: torch.Tensor,   # [kv_heads, N, d_v] float16/32, device=cuda
         block_size: int = 16,
-        group_size: int = 32,
+        group_size: int = 16,  # paper §7
         max_pagein_blocks: int = 64,
+        max_new_tokens: int = 512,
     ) -> "TieredKeyCacheLayer":
         """Create tiered cache with INT4 per-group values.
 
         Keys: per-channel INT8 in VRAM (same as v1)
         Values: INT4 per-group in VRAM (NEW — saves ~38% vs FP16)
         FP16 originals: pinned CPU (both K and V)
+
+        max_new_tokens reserves growth room in the INT4 buffers so decode-time
+        append_token() can quantise and write new tokens without reallocation.
+        Without this the audit's "INT4 path has never run end-to-end" risk
+        manifests as a shape mismatch in the kernel reshape.
         """
         from dotcache.kernels.int4_group_quantise import quantise_int4_grouped_block
 
         # Build the base cache (INT8 keys, FP16 values)
-        base = cls.from_fp16_cache(keys_fp16, values_fp16, block_size, max_pagein_blocks)
+        base = cls.from_fp16_cache(
+            keys_fp16, values_fp16, block_size, max_pagein_blocks,
+            max_new_tokens=max_new_tokens,
+        )
 
-        # Quantise values to INT4 per-group
+        # Quantise prefill values to INT4 per-group
         int4_result = quantise_int4_grouped_block(
             values_fp16.to(torch.float16), block_size=block_size, group_size=group_size,
         )
 
-        # Store INT4 values on the cache
-        base.values_int4_packed = int4_result["data_packed"].contiguous()
-        base.values_int4_scales = int4_result["scales"].contiguous()
-        base.values_int4_zeros = int4_result["zeros"].contiguous()
-        base.values_int4_errors = int4_result["error_bounds"].contiguous()
+        kv_heads, N, d_v = values_fp16.shape
+        capacity = base.keys_int8.shape[1]  # matches keys_int8 buffer capacity
+        num_groups = d_v // group_size
+        num_total_blocks = base.keys_scale.shape[1]
+        device = values_fp16.device
+
+        # Pre-allocate INT4 buffers sized to the same capacity as keys_int8 so
+        # append_token can write new tokens at decode time.
+        int4_packed_buf = torch.zeros(
+            kv_heads, capacity, d_v // 2, dtype=torch.uint8, device=device,
+        )
+        int4_packed_buf[:, :N, :] = int4_result["data_packed"].contiguous()
+        int4_scales_buf = torch.zeros(
+            kv_heads, capacity, num_groups, dtype=torch.float16, device=device,
+        )
+        int4_scales_buf[:, :N, :] = int4_result["scales"].contiguous()
+        int4_zeros_buf = torch.zeros(
+            kv_heads, capacity, num_groups, dtype=torch.float16, device=device,
+        )
+        int4_zeros_buf[:, :N, :] = int4_result["zeros"].contiguous()
+        int4_errors_buf = torch.zeros(
+            kv_heads, num_total_blocks, dtype=torch.float32, device=device,
+        )
+        int4_errors_buf[:, :N // block_size] = int4_result["error_bounds"].contiguous()
+
+        base.values_int4_packed = int4_packed_buf
+        base.values_int4_scales = int4_scales_buf
+        base.values_int4_zeros = int4_zeros_buf
+        base.values_int4_errors = int4_errors_buf
         base.values_int4_group_size = group_size
 
-        # Move FP16 values to CPU pinned (they're currently in VRAM as values_fp16)
-        base.values_fp16_cpu = base.values_fp16.cpu().pin_memory()
+        # Pre-allocate CPU pinned FP16 buffer at capacity so append_token can
+        # also write the FP16 ground truth (needed for Rung-2 fallback).
+        values_fp16_cpu_buf = torch.zeros(
+            kv_heads, capacity, d_v,
+            dtype=base.values_fp16.dtype, pin_memory=True,
+        )
+        values_fp16_cpu_buf[:, :N, :] = base.values_fp16[:, :N, :].cpu()
+        base.values_fp16_cpu = values_fp16_cpu_buf
 
         # Free FP16 values from VRAM — INT4 replaces them
         base.values_fp16 = None
@@ -298,23 +376,29 @@ class TieredKeyCacheLayer:
             device=device, dtype=torch.float32
         )  # [kv_heads, block_size, head_dim]
 
-        # Per-channel absmax scale
-        k_max = keys_block.abs().amax(dim=1).clamp(min=1e-8)  # [kv_heads, head_dim]
-        k_scale = k_max / 127.0  # [kv_heads, head_dim]
+        # Per-channel ASYMMETRIC INT8 (paper §2.3 Eq. 1):
+        #   q = clamp(round((k - z) / s), -128, 127),  k̂ = q · s + z
+        # z is the fp-space midpoint of the channel's range.
+        k_min = keys_block.amin(dim=1)  # [kv_heads, head_dim]
+        k_max = keys_block.amax(dim=1)
+        k_range = (k_max - k_min).clamp(min=1e-8)
+        k_scale = k_range / 255.0
+        k_zp = (k_min + k_max) / 2.0  # fp-space midpoint
 
         # Quantize all block_size tokens at once
         k_int8 = (
-            (keys_block / k_scale[:, None, :])
-            .round().clamp(-127, 127).to(torch.int8)
+            ((keys_block - k_zp[:, None, :]) / k_scale[:, None, :])
+            .round().clamp(-128, 127).to(torch.int8)
         )  # [kv_heads, block_size, head_dim]
 
-        # Write INT8 keys to VRAM
+        # Write INT8 keys + per-channel scale + zero point to VRAM
         self.keys_int8[:, start:end, :] = k_int8
-
-        # Write per-channel scale
         self.keys_scale[:, block_idx, :] = k_scale
+        self.keys_zero_points[:, block_idx, :] = k_zp
 
-        # Correction factor: delta = ||k_scale||_2 / 127
+        # Correction factor: delta = ||k_scale||_2 / 127 (proportionality preserved
+        # from the symmetric-era formula; asymmetric scale is smaller for the same
+        # data so delta is also smaller — tighter bound).
         k_scale_l2 = k_scale.norm(dim=-1)  # [kv_heads]
         delta = k_scale_l2 / 127.0
         self.correction[:, block_idx] = torch.exp(2.0 * delta)
@@ -333,9 +417,10 @@ class TieredKeyCacheLayer:
             self._fp16_key_resident[int(block_idx)] = True
 
         # Update dequant buffer with INT8-dequantised values (replaces the exact FP16)
+        # Paper §2.3: k̂ = q · s + z
         if self._keys_deq_f32 is not None:
             self._keys_deq_f32[:, start:end, :] = (
-                k_int8.to(torch.float32) * k_scale[:, None, :]
+                k_int8.to(torch.float32) * k_scale[:, None, :] + k_zp[:, None, :]
             )
 
         self.num_quantized_blocks = block_idx + 1
@@ -358,9 +443,49 @@ class TieredKeyCacheLayer:
         new_k = key_fp16.to(dtype=kv_dtype).squeeze(1)  # [kv_heads, head_dim]
         new_v = value_fp16.to(dtype=kv_dtype).squeeze(1)
 
+        # Per-block max value-norm ν_b update (paper §2.3). Take max with
+        # the existing block annotation so partial-block appends correctly
+        # accumulate. Required by §4.5 E_key telemetry.
+        if self.values_norm_max_per_block is not None:
+            block_idx = pos // self.block_size
+            new_v_norm_per_head = new_v.to(device=device, dtype=torch.float32).norm(dim=-1)  # [kv_heads]
+            self.values_norm_max_per_block[:, block_idx] = torch.maximum(
+                self.values_norm_max_per_block[:, block_idx],
+                new_v_norm_per_head,
+            )
+
         # Write value into pre-allocated VRAM buffer (preserves model dtype)
         if self.values_fp16 is not None:
             self.values_fp16[:, pos, :] = new_v.to(device=device, dtype=kv_dtype)
+
+        # INT4-values path: quantise the new token and write to the INT4 buffers.
+        # Group quant is per-TOKEN (each token's d_v split into d_v/g groups,
+        # each group's scale/zero from that token's own values) — no need to
+        # wait for the block to fill, unlike keys (which need per-channel
+        # absmax over the full block to compute per-channel scale).
+        # The kernel reads N from keys_int8.shape[1], so values_int4_* must
+        # grow in lockstep with keys (paper §3.1 / §7).
+        # We also update the per-block error annotation η_b incrementally:
+        # η_b = max ℓ₂ reconstruction error across the block's tokens
+        # (paper §2.3 / Theorem 1). Without this, decide_v_format_tight
+        # silently under-estimates per-block error for blocks containing
+        # appended tokens, biasing the Rung-2 decision toward INT4.
+        if self.values_int4_packed is not None:
+            from dotcache.kernels.int4_group_quantise import quantise_int4_grouped
+            new_v_per_head = new_v.to(device=device)  # [kv_heads, d_v]
+            kv_h = new_v_per_head.shape[0]
+            block_idx = pos // self.block_size
+            for h in range(kv_h):
+                r = quantise_int4_grouped(
+                    new_v_per_head[h:h+1, :],  # [1, d_v]
+                    group_size=self.values_int4_group_size,
+                )
+                self.values_int4_packed[h, pos:pos+1, :] = r["data_packed"]
+                self.values_int4_scales[h, pos:pos+1, :] = r["scales"]
+                self.values_int4_zeros[h, pos:pos+1, :] = r["zeros"]
+                # Update η_b incrementally — keep the max over block tokens.
+                cur = float(self.values_int4_errors[h, block_idx].item())
+                self.values_int4_errors[h, block_idx] = max(cur, r["error_bound"])
 
         # Write key into pre-allocated CPU buffer (preserves model dtype)
         self.keys_fp16_cpu[:, pos, :] = new_k.cpu()
@@ -442,6 +567,26 @@ class TieredKeyCacheLayer:
         """Per-channel scales for active blocks: [kv_heads, active_blocks, head_dim]."""
         return self.keys_scale[:, :self.active_blocks, :]
 
+    def keys_zero_points_active(self) -> torch.Tensor:
+        """Per-channel zero points for active blocks: [kv_heads, active_blocks, head_dim].
+
+        Paper §2.3 asymmetric INT8 quant. Dequant: x = (q - z) * s.
+        """
+        return self.keys_zero_points[:, :self.active_blocks, :]
+
+    def v_max_global(self) -> float:
+        """V_max = max_b ν_b across all active blocks and KV-heads (paper §2.3 / §4.5).
+
+        Returns 0.0 if no per-block annotation exists (legacy caches that
+        bypassed from_fp16_cache). Used by the §4.5 E_key telemetry.
+        """
+        if self.values_norm_max_per_block is None:
+            return 0.0
+        active = self.values_norm_max_per_block[:, :self.active_blocks]
+        if active.numel() == 0:
+            return 0.0
+        return float(active.max().item())
+
     def correction_active(self) -> torch.Tensor:
         return self.correction[:, :self.active_blocks]
 
@@ -463,12 +608,14 @@ class TieredKeyCacheLayer:
             self.kv_heads, self.aligned_tokens, self.head_dim,
             dtype=torch.float32, device=device,
         )
-        # Quantised blocks: dequant INT8 with per-channel scales
+        # Quantised blocks: dequant INT8 with per-channel scale + zero point
+        # (paper §2.3 Eq. 1: k̂ = q · s + z)
         if nq > 0:
             self._keys_deq_f32[:, :qt, :] = (
                 self.keys_int8[:, :qt, :].to(torch.float32)
-                .reshape(self.kv_heads, nq, self.block_size, self.head_dim)
+                    .reshape(self.kv_heads, nq, self.block_size, self.head_dim)
                 * self.keys_scale[:, :nq, None, :]
+                + self.keys_zero_points[:, :nq, None, :]
             ).reshape(self.kv_heads, qt, self.head_dim)
         # Trailing partial block: exact FP16
         if qt < self.num_tokens:
@@ -483,6 +630,7 @@ class TieredKeyCacheLayer:
         """Total VRAM usage."""
         total = self.keys_int8.nelement() * 1      # INT8
         total += self.keys_scale.nelement() * 4     # float32 per-channel: [kv_heads, blocks, head_dim]
+        total += self.keys_zero_points.nelement() * 4  # float32 per-channel zero points
         total += self.correction.nelement() * 4     # float32
         if self.values_fp16 is not None:
             total += self.values_fp16.nelement() * 2    # float16
@@ -656,7 +804,7 @@ def create_tiered_cache_int4v_from_model(
     past_kv,
     layer_ids: list[int],
     block_size: int = 16,
-    group_size: int = 32,
+    group_size: int = 16,  # paper §7
 ) -> dict[int, TieredKeyCacheLayer]:
     """Create tiered caches with INT4 per-group values from HF past_key_values."""
     caches = {}

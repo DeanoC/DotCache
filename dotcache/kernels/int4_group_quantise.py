@@ -1,10 +1,14 @@
 """Per-group INT4 quantisation for value vectors.
 
-Storage layout (for one block of 16 tokens × 128 dims, group_size=32):
+Paper §7 specifies group_size=16; this is the default below. The kernel
+parameter is overridable so the appendix-B ablation can sweep g ∈ {16, 32}.
+
+Storage layout (for one block of 16 tokens × 128 dims, group_size=16):
   - Data: 16 × 128 × 4 bits = 1024 bytes (vs 2048 for INT8)
-  - Scales: 16 tokens × 4 groups × float16 = 128 bytes
-  - Zeros: 16 tokens × 4 groups × float16 = 128 bytes
-  - Total: ~1280 bytes per block (vs 2048 INT8, 4096 FP16)
+  - Scales: 16 tokens × 8 groups × float16 = 256 bytes
+  - Zeros: 16 tokens × 8 groups × float16 = 256 bytes
+  - Total: ~1536 bytes per block, i.e. 96 bytes/token (paper §8.5)
+    (vs 2048 INT8, 4096 FP16)
 
 Packing: two INT4 values per byte, low nibble first.
 """
@@ -12,7 +16,7 @@ from __future__ import annotations
 
 import torch
 
-GROUP_SIZE = 32  # 128 / 32 = 4 groups per token
+GROUP_SIZE = 16  # paper §7: g=16 → 128/16 = 8 groups per token
 
 
 def quantise_int4_grouped(

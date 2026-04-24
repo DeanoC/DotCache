@@ -110,8 +110,15 @@ class CertifiedAttentionState:
     # Score-consistency check (paper §6): defence-in-depth per-block Δ bound.
     # Expected trigger rate is exactly 0 on well-behaved runs; non-zero counts
     # indicate Theorem-2 was empirically violated (stale metadata / corruption).
-    score_consistency_check: bool = False
+    score_consistency_check: bool = True
     eps_guard: float = 0.01
+    # INT4 value tolerance (paper §3.4 / §7). The runtime decides INT4 vs
+    # FP16 values per layer per step by comparing the per-head value-error
+    # bound (Σ_b ρ_b · η_b) against this threshold; below → INT4, above →
+    # Rung-2 escalation to FP16. Paper §7 specifies 0.05. The kernel
+    # requires this to be passed explicitly — no silent default — so paper
+    # benches must set this on the state. Legacy callers should set 0.5.
+    v_tolerance: float = -1.0  # sentinel; validated in __post_init__
     # Exploration budget (paper §6): per-step Bernoulli promotion of a small
     # fraction of non-top-K* blocks to FP16. Monitoring only; 0.0 disables.
     exploration_rate: float = 0.0
@@ -150,6 +157,13 @@ class CertifiedAttentionState:
     def __post_init__(self):
         if self.step_stats is None:
             self.step_stats = []
+        if self.v_tolerance < 0.0:
+            raise ValueError(
+                "CertifiedAttentionState requires explicit v_tolerance "
+                "(paper §7 spec: 0.05). Set v_tolerance=... at construction. "
+                "No silent default — see docs/paper_code_audit_20260424.md "
+                "for the v_tolerance plumbing bug this guard prevents."
+            )
 
     def clear_step_stats(self) -> list[dict]:
         stats = self.step_stats
@@ -224,6 +238,19 @@ class CertifiedAttentionState:
                 agg[rung_k.replace("fired", "fired_layers")] = int(sum(
                     1 for s in entries if bool(s.get(rung_k))
                 ))
+        # Eq. 30 boundary verification (paper §6.1, §8.6 expects 0 across all
+        # cells). Aggregate per-step the same way as the rungs: a step
+        # 'fires' if any layer triggered, with a per-step layer count.
+        if any("boundary_check_fired" in s for s in entries):
+            agg["boundary_check_fired"] = any(
+                bool(s.get("boundary_check_fired")) for s in entries
+            )
+            agg["boundary_check_fired_layers"] = int(sum(
+                1 for s in entries if bool(s.get("boundary_check_fired"))
+            ))
+            agg["boundary_check_triggered_heads_total"] = int(sum(
+                int(s.get("boundary_check_triggered_heads", 0)) for s in entries
+            ))
         # FP16 key cache rollup (paper §3.2 tiered memory). Sum hits/misses
         # across layers for this step; capacity is a constant per layer.
         if any("fp16_cache_capacity_blocks" in s for s in entries):
@@ -243,6 +270,44 @@ class CertifiedAttentionState:
         if k_star_means:
             agg["k_star_mean"] = float(sum(k_star_means) / len(k_star_means))
             agg["k_star_max"] = int(max(s.get("k_star_max", 0) for s in entries))
+        # Tail mass rollup (paper §3.3 ᾱ_T) — mean over layers per step,
+        # max across layers for the worst-case bound.
+        tail_means = [
+            s.get("tail_mass_int8_est_mean") for s in entries
+            if s.get("tail_mass_int8_est_mean") is not None
+        ]
+        if tail_means:
+            agg["tail_mass_int8_est_step_mean"] = float(sum(tail_means) / len(tail_means))
+            agg["tail_mass_int8_est_step_max"] = float(max(
+                s.get("tail_mass_int8_est_max", 0.0) for s in entries
+            ))
+        # Δ bound rollup (paper Eq. 4) — only emitted when score-consistency
+        # was enabled (otherwise δ wasn't computed for telemetry).
+        delta_means = [
+            s.get("delta_bound_mean") for s in entries
+            if s.get("delta_bound_mean") is not None
+        ]
+        if delta_means:
+            agg["delta_bound_step_mean"] = float(sum(delta_means) / len(delta_means))
+        # Paper §4.5 E_key contract — the key-error bound assembled per step
+        # per head and reduced to mean/max here. v_max_layer is the per-
+        # layer V_max = max_b ν_b; we emit the global max across layers
+        # since the paper bound uses the worst-case across the whole cache.
+        e_key_means = [
+            s.get("e_key_step_mean") for s in entries
+            if s.get("e_key_step_mean") is not None
+        ]
+        if e_key_means:
+            agg["e_key_step_mean"] = float(sum(e_key_means) / len(e_key_means))
+            agg["e_key_step_max"] = float(max(
+                s.get("e_key_step_max", 0.0) for s in entries
+            ))
+        v_max_layers = [
+            s.get("v_max_layer") for s in entries
+            if s.get("v_max_layer") is not None
+        ]
+        if v_max_layers:
+            agg["v_max_global"] = float(max(v_max_layers))
         return agg
 
 
@@ -618,6 +683,7 @@ class DotCacheLlamaAttention(nn.Module):
         context_states, stats = certified_attention_layer(
             cache, q_all, gqa_group, q_scale, block_epsilon=epsilon,
             collect_stats=collect,
+            v_tolerance=cert_state.v_tolerance,
             top_k_fp16_keys=cert_state.top_k_fp16_keys,
             concentration_threshold=cert_state.concentration_threshold,
             ranking_fallback=cert_state.ranking_fallback,
@@ -850,23 +916,30 @@ class LlamaDotCacheModelAdapter:
         self,
         past_key_values,
         *,
+        v_tolerance: float,
         layer_epsilons: dict[int, float] | None = None,
         epsilon_profile: Any = None,
         context_length: int | None = None,
         default_epsilon: float = 1e-4,
         block_size: int = 16,
         use_int4_values: bool = False,
+        group_size: int = 16,
     ) -> None:
         """Build tiered caches from prefill KV and prepare for certified decode.
 
         Args:
             past_key_values: HF DynamicCache from prefill
+            v_tolerance: INT4-vs-FP16 value-format threshold (paper §7: 0.05).
+                Required — no silent default. The kernel rejects any path
+                that doesn't carry this through explicitly.
             layer_epsilons: per-layer epsilon dict (simple mode)
             epsilon_profile: EpsilonProfile instance (context-aware mode)
             context_length: context length for profile lookup (required if epsilon_profile set)
             default_epsilon: fallback epsilon for uncalibrated layers
             block_size: tokens per block for INT8 quantisation
             use_int4_values: if True, use INT4 per-group values (45% less VRAM)
+            group_size: INT4 value group size (paper §7: 16). Ignored when
+                use_int4_values is False.
         """
         _ensure_certified_imports()
         layer_ids = list(range(self.model.config.num_hidden_layers))
@@ -875,6 +948,7 @@ class LlamaDotCacheModelAdapter:
             from ..kernels.tiered_kv_cache import create_tiered_cache_int4v_from_model
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_key_values, layer_ids, block_size=block_size,
+                group_size=group_size,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(
@@ -900,6 +974,7 @@ class LlamaDotCacheModelAdapter:
             layer_epsilons=resolved_epsilons,
             default_epsilon=default_epsilon,
             block_size=block_size,
+            v_tolerance=v_tolerance,
         )
 
     def set_capture(self, enabled: bool) -> None:

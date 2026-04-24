@@ -104,6 +104,7 @@ def measure_execution_floor(
                 block_epsilon=0.0,  # disable all skipping
                 collect_stats=False,
                 top_k_fp16_keys=4,  # match production configuration
+                v_tolerance=0.5,  # legacy default for non-paper calibration
             )
 
             # Per-head cosine

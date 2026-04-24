@@ -65,6 +65,7 @@ def run_decode(ctx_len: int, steps: int, fast: bool):
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered,
         layer_epsilons={},
+        v_tolerance=0.5,
         collect_stats=False,
         append_kv=True,
         top_k_fp16_keys=4,

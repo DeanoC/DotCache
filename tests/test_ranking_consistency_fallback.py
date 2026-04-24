@@ -148,6 +148,7 @@ class TestCertifiedAttentionLayerTelemetry:
         _, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, ranking_fallback=False,
+        v_tolerance=0.5,
         )
         # When feature is off, ranking fields must not leak into the schema.
         assert "ranking_heads_total" not in stats
@@ -160,6 +161,7 @@ class TestCertifiedAttentionLayerTelemetry:
         _, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, ranking_fallback=True, ranking_r=1,
+        v_tolerance=0.5,
         )
         assert stats["ranking_heads_total"] == 4
         # r1/r3 are ints in [0, num_q_heads]
@@ -182,11 +184,13 @@ class TestCertifiedAttentionLayerTelemetry:
         out_off, _ = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, ranking_fallback=False,
+        v_tolerance=0.5,
         )
         out_measure, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, ranking_fallback=True, ranking_r=1,
             ranking_fallback_mode="measure",
+        v_tolerance=0.5,
         )
         assert torch.allclose(out_off, out_measure, atol=0.0, rtol=0.0), \
             "measure mode must not alter the output tensor"
@@ -205,11 +209,13 @@ class TestCertifiedAttentionLayerTelemetry:
         out_off, _ = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, ranking_fallback=False,
+        v_tolerance=0.5,
         )
         out_full, stats = certified_attention_layer(
             cache, q_all, gqa_group=2,
             collect_stats=True, ranking_fallback=True, ranking_r=1,
             ranking_fallback_mode="full",
+        v_tolerance=0.5,
         )
 
         # Determine which heads should have been replaced by re-running detection
@@ -222,6 +228,7 @@ class TestCertifiedAttentionLayerTelemetry:
         m_b, _, _ = fused_score_certify_multihead(
             K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
             K_scale=cache.keys_scale[:, :n_qblocks, :],
+            K_zero_points=cache.keys_zero_points[:, :n_qblocks, :],
             q_all=q_all,
             correction=cache.correction[:, :n_qblocks],
             gqa_group=2,
@@ -265,6 +272,7 @@ class TestCertifiedAttentionLayerTelemetry:
                 cache, q_all, gqa_group=2, q_scale=q_scale,
                 collect_stats=True, ranking_fallback=True, ranking_r=3,
                 ranking_fallback_mode="full",
+            v_tolerance=0.5,
             )
             if stats["ranking_fallback_triggered"] > 0:
                 break
@@ -298,6 +306,7 @@ class TestCertifiedAttentionLayerTelemetry:
         m_b, _, _ = fused_score_certify_multihead(
             K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
             K_scale=cache.keys_scale[:, :n_qblocks, :],
+            K_zero_points=cache.keys_zero_points[:, :n_qblocks, :],
             q_all=q_all,
             correction=cache.correction[:, :n_qblocks],
             gqa_group=2,

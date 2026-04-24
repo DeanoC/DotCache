@@ -288,6 +288,7 @@ def _evaluate_layer_epsilon(
         cache, q_all, gqa, q_scale,
         block_epsilon=epsilon_candidate,
         collect_stats=False,
+        v_tolerance=0.5,  # legacy default for non-paper calibration
     )
 
     oracle = pdata["oracle_outputs"][layer_id].to(device)

@@ -39,7 +39,9 @@ def main() -> int:
     ap.add_argument("--output", default="benchmarks/results/perf_tests_20260422/per_token_trace_pg19_cap64.json")
     args = ap.parse_args()
 
-    os.environ["DOTCACHE_V_TOL"] = "0.05"
+    # DOTCACHE_V_TOL was attempted as a runtime override but the env var was
+    # never read by any kernel — see docs/paper_code_audit_20260424.md.
+    # The CertifiedAttentionState construction below hardcodes 0.5.
     os.environ["DOTCACHE_FP16_CACHE_BLOCKS"] = str(args.cache_blocks)
 
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -109,6 +111,7 @@ def main() -> int:
 
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered, layer_epsilons={},
+        v_tolerance=0.5,
         collect_stats=False, append_kv=True, top_k_fp16_keys=4,
         tau_cov=0.995, k_min=2, k_max=128,
         ranking_fallback=True, ranking_r=1,

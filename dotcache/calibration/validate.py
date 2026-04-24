@@ -96,6 +96,7 @@ def validate_profile(
             out_cert, stats = certified_attention_layer(
                 cache, q_all, gqa, q_scale,
                 block_epsilon=eps, collect_stats=True,
+                v_tolerance=0.5,  # legacy default for non-paper calibration
             )
 
             cos = F.cosine_similarity(out_oracle, out_cert, dim=1)

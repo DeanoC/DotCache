@@ -92,11 +92,11 @@ def _runner_env(base: dict | None = None) -> dict:
     env = dict(os.environ if base is None else base)
     # Keep the cache + venv paths stable across pod moves.
     env.setdefault("PYTHONUNBUFFERED", "1")
-    # Patch DEFAULT_V_TOLERANCE inside the child process by pre-pending a
-    # small runtime shim via PYTHONSTARTUP. We can't override a module-level
-    # constant from the shell, so instead tell the bench to use v_tolerance
-    # via DOTCACHE_V_TOL — this is also read by our certified kernels below.
-    env["DOTCACHE_V_TOL"] = V_TOL_OVERRIDE
+    # NOTE: An earlier version of this orchestrator set DOTCACHE_V_TOL=0.05
+    # here in the hope that a PYTHONSTARTUP shim would patch the kernel
+    # default — that shim never existed, so every cell silently used
+    # v_tolerance=0.5 (FP16 values). The fix is to pass --v-tolerance and
+    # --use-int4-values directly on each child CLI; see _cli_for_*.
     return env
 
 
@@ -107,11 +107,15 @@ def _cli_for_pg19(ctx: int, config: str, out_json: Path, smoke: bool) -> list[st
         "--context", str(ctx),
         "--num-chunks", str(s["books"]),
         "--output", str(out_json),
+        # Required by every bench (no silent default), even in dense-only:
+        "--v-tolerance", V_TOL_OVERRIDE,
     ]
     if config == "dense":
         args.append("--dense-only")
     else:
         args += [
+            "--use-int4-values",
+            "--group-size", "16",
             "--tau-cov", CERT_FLAGS["tau_cov"],
             "--k-min", CERT_FLAGS["k_min"],
             "--k-max", CERT_FLAGS["k_max"],
@@ -133,6 +137,8 @@ def _cli_for_niah(ctx: int, config: str, out_json: Path, smoke: bool) -> list[st
         "--contexts", str(ctx),
         "--needles", str(s["needles"]),
         "--output", str(out_json),
+        # Required by every bench (no silent default):
+        "--v-tolerance", V_TOL_OVERRIDE,
     ]
     # NIAH always runs dense + certified in one invocation (that's how the
     # harness is built). We'll dispatch differently: for --config dense the
@@ -141,6 +147,8 @@ def _cli_for_niah(ctx: int, config: str, out_json: Path, smoke: bool) -> list[st
     # orchestrator pulls out the right half for the cell's JSON.
     if config == "certified":
         args += [
+            "--use-int4-values",
+            "--group-size", "16",
             "--tau-cov", CERT_FLAGS["tau_cov"],
             "--k-min", CERT_FLAGS["k_min"],
             "--k-max", CERT_FLAGS["k_max"],
@@ -162,9 +170,13 @@ def _cli_for_ruler(ctx: int, config: str, out_json: Path, smoke: bool) -> list[s
         "--contexts", str(ctx),
         "--num-samples", str(s["num_samples"]),
         "--output", str(out_json),
+        # Required by every bench (no silent default):
+        "--v-tolerance", V_TOL_OVERRIDE,
     ]
     if config == "certified":
         args += [
+            "--use-int4-values",
+            "--group-size", "16",
             "--tau-cov", CERT_FLAGS["tau_cov"],
             "--k-min", CERT_FLAGS["k_min"],
             "--k-max", CERT_FLAGS["k_max"],

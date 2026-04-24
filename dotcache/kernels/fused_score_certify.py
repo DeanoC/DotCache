@@ -205,6 +205,7 @@ def _multihead_score_certify_kernel(
     # Data — all KV heads packed: K_int8[kv_head, N, head_dim]
     K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous (heads packed)
     K_scale_ptr,     # [num_kv_heads, num_blocks, head_dim] float32
+    K_zp_ptr,        # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3 asymmetric)
     Q_ptr,           # [num_q_heads, head_dim] float32
     Corr_ptr,        # [num_kv_heads, num_blocks] float32
     # Output
@@ -268,9 +269,14 @@ def _multihead_score_certify_kernel(
                     d_mask = d_off < head_dim
                     q_tile = tl.load(Q_ptr + q_head_idx * head_dim + d_off, mask=d_mask, other=0.0).to(tl.float32)
                     ch_scale = tl.load(K_scale_ptr + scale_block_base + d_off, mask=d_mask, other=0.0).to(tl.float32)
+                    ch_zp = tl.load(K_zp_ptr + scale_block_base + d_off, mask=d_mask, other=0.0).to(tl.float32)
                     k_ptrs = row_ptrs[:, None] + d_off[None, :]
                     k_tile = tl.load(k_ptrs, mask=d_mask[None, :], other=0).to(tl.float32)
-                    k_fp = k_tile * ch_scale[None, :]
+                    # Asymmetric dequant (paper §2.3 Eq. 1): k̂ = q · s + z.
+                    # Expansion in dot product: q · k̂ = Σ q_c (Q_c s_c + z_c)
+                    #   = Σ q_c Q_c s_c  +  Σ q_c z_c
+                    # The +z_c term is the paper §5.2 L575 correction.
+                    k_fp = k_tile * ch_scale[None, :] + ch_zp[None, :]
                     scores += tl.sum(k_fp * q_tile[None, :], axis=1)
 
                 scores = scores * q_scale
@@ -322,6 +328,7 @@ def _multihead_score_certify_kernel(
 def fused_score_certify_multihead(
     K_int8_packed: torch.Tensor,   # [num_kv_heads, N, head_dim] int8
     K_scale: torch.Tensor,         # [num_kv_heads, num_blocks, head_dim] float32
+    K_zero_points: torch.Tensor,   # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
     q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
     correction: torch.Tensor,      # [num_kv_heads, num_blocks] float32
     gqa_group: int,
@@ -353,7 +360,8 @@ def fused_score_certify_multihead(
     n_programs = num_q_heads * chunks_per_head
 
     _multihead_score_certify_kernel[(n_programs,)](
-        K_flat, K_scale.contiguous(), q_all.contiguous(), correction.contiguous(),
+        K_flat, K_scale.contiguous(), K_zero_points.contiguous(),
+        q_all.contiguous(), correction.contiguous(),
         skip_i32, m_b, S_b, counter,
         N=N,
         stride_k_n=head_dim,

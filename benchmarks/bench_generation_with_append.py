@@ -77,6 +77,7 @@ def run_generation_comparison(model, adapter, tokenizer, ctx_len, gen_steps=32):
         tiered_caches=tiered_caches,
         layer_epsilons=LAYER_EPS,
         default_epsilon=1e-4,
+        v_tolerance=0.5,
         collect_stats=True,
         append_kv=True,  # Enable KV append
     )

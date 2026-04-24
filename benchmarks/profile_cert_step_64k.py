@@ -74,6 +74,7 @@ def main() -> int:
 
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered, layer_epsilons={},
+        v_tolerance=0.5,
         collect_stats=False, append_kv=True, top_k_fp16_keys=4,
         tau_cov=0.995, k_min=2, k_max=128,
         ranking_fallback=True, ranking_r=1,

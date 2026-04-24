@@ -316,14 +316,21 @@ def compute_fp16_block_scores(
     num_scoring_blocks: int,       # upper bound on valid block id (fully-quantized blocks)
     gqa_group: int,
     q_scale: float,
-) -> torch.Tensor:
-    """Compute per-head per-block FP16 max-logit for the given block set.
+    return_log_mass: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Compute per-head per-block FP16 scores for the given block set.
 
     Mirrors Phase-1's m_b (the per-block max pre-softmax logit) but uses the
     FP16 keys from the tiered cache's GPU mirror (or CPU if no mirror). Only
     blocks in [0, num_scoring_blocks) are valid; others receive -inf.
 
-    Returns: [num_q_heads, K] float32 block scores suitable for ranking.
+    Args:
+        return_log_mass: when True, also returns per-block log-mass
+            (paper §6.1 ℓ_b^fp16 = m_b^fp16 + log Σ_t exp(s_b,t - m_b^fp16))
+            for use by the Eq. 30 boundary verification.
+
+    Returns: [num_q_heads, K] float32 block max-logits, suitable for ranking.
+        If return_log_mass: (max_logits, log_masses) — both [num_q_heads, K].
     """
     num_q_heads, head_dim = q_all.shape
     _, K = block_indices.shape
@@ -335,6 +342,8 @@ def compute_fp16_block_scores(
 
     neg_inf = torch.full((num_q_heads, K), float("-inf"), dtype=torch.float32, device=device)
     if nt == 0 or K == 0:
+        if return_log_mass:
+            return neg_inf, neg_inf.clone()
         return neg_inf
 
     if cache.keys_fp16_gpu is not None:
@@ -365,6 +374,11 @@ def compute_fp16_block_scores(
     neg_inf_tok = torch.full_like(logits, float("-inf"))
     logits = torch.where(valid, logits, neg_inf_tok)
     scores = logits.amax(dim=-1)                                               # [H, K]
+    if return_log_mass:
+        # Per-block log-mass via numerically-stable log-sum-exp. Blocks with
+        # no valid tokens (all -inf logits) get -inf log-mass.
+        log_masses = torch.logsumexp(logits, dim=-1)                            # [H, K]
+        return scores, log_masses
     return scores
 
 
@@ -590,7 +604,8 @@ def certified_attention_layer(
     q_scale: float = None,
     block_epsilon: float = 0.001,
     collect_stats: bool = True,
-    v_tolerance: float = DEFAULT_V_TOLERANCE,
+    *,
+    v_tolerance: float,
     top_k_fp16_keys: int = 0,
     concentration_threshold: float = 0.0,
     ranking_fallback: bool = False,
@@ -601,7 +616,7 @@ def certified_attention_layer(
     k_max: int | None = DEFAULT_K_MAX,
     rung1_threshold: float = DEFAULT_RUNG1_THRESHOLD,
     rung1_multiplier: float = DEFAULT_RUNG1_MULTIPLIER,
-    score_consistency_check: bool = False,
+    score_consistency_check: bool = True,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     exploration_generator: torch.Generator | None = None,
@@ -664,6 +679,7 @@ def certified_attention_layer(
             m_b, S_b, skip_mask = fused_score_certify_multihead(
                 K_int8_packed=cache.keys_int8[:, :n_qblocks * bs, :],
                 K_scale=cache.keys_scale[:, :n_qblocks, :],
+                K_zero_points=cache.keys_zero_points[:, :n_qblocks, :],
                 q_all=q_all,
                 correction=cache.correction[:, :n_qblocks],
                 gqa_group=gqa_group,
@@ -798,11 +814,22 @@ def certified_attention_layer(
     ranking_disagree_r3_heads = 0
     ranking_disagree_mask: torch.Tensor | None = None
     fp16_block_scores: torch.Tensor | None = None
+    fp16_block_log_masses: torch.Tensor | None = None
     top_block_indices: torch.Tensor | None = None
     ranking_k = 0
     score_consistency_violation_heads = 0
     score_consistency_violation_mask: torch.Tensor | None = None
     delta_bound_mean = 0.0
+    # Per-head Δ bound (paper Eq. 4). Shared across boundary check (§6.1),
+    # score-consistency check (§6), and E_key telemetry (§4.5). Computed
+    # once per step in whichever consumer fires first.
+    delta_per_head: torch.Tensor | None = None
+    # Eq. 30 boundary verification (paper §6.1): for each tail block b not in
+    # the promoted top-K set, check ℓ_b^int8 + Δ > ℓ^fp16_(r). When any
+    # tail block fails, the ranking certificate cannot be issued for that
+    # head — escalate to Rung-3 alongside ranking-disagreement.
+    boundary_triggered_heads = 0
+    boundary_triggered_mask: torch.Tensor | None = None
     # The FP16 block re-scoring is needed for either Rung-3 ranking check or
     # the score-consistency check. Compute it once when either is enabled.
     need_fp16_scores = (ranking_fallback or score_consistency_check) and n_qblocks > 0
@@ -827,8 +854,11 @@ def certified_attention_layer(
                 fp16_cache_misses_step += _rm
                 fp16_cache_evictions_step += _re
                 fp16_cache_needed_blocks += len(_ranking_needed)
-            fp16_block_scores = compute_fp16_block_scores(
+            # Compute both max-logit (for score-consistency / ranking) and
+            # log-mass (for Eq. 30 boundary check) — one fused FP16 rescore.
+            fp16_block_scores, fp16_block_log_masses = compute_fp16_block_scores(
                 cache, q_all, top_block_indices, n_qblocks, gqa_group, q_scale,
+                return_log_mass=True,
             )
         if ranking_fallback:
             # Single pair of argsorts covers r=1, r=3, and r=ranking_r — no
@@ -849,14 +879,66 @@ def certified_attention_layer(
                 ranking_disagree_mask = torch.zeros(
                     num_q_heads, dtype=torch.bool, device=q_all.device,
                 )
+
+            # Eq. 30 boundary verification (paper §6.1, eq:boundary_check).
+            # For each head, flag if any tail block's INT8 log-mass + Δ
+            # exceeds the r-th highest FP16 log-mass among promoted blocks.
+            # The check closes the residual blind spot of the ranking-only
+            # check: a tail block could outrank promoted blocks under FP16
+            # without us seeing it. Triggers should be 0 in practice
+            # (paper §8.6) when the adaptive selector's τ_cov coverage
+            # margin is healthy. The check is a hard merge gate — not a
+            # silent telemetry-only assertion.
+            if k_for_rank > 0 and n_qblocks > 0:
+                # Δ per head from the same per-channel scale used in scoring.
+                # Shared with score-consistency and E_key — compute once.
+                if delta_per_head is None:
+                    delta_per_head = compute_delta_bound(
+                        q_all, cache.keys_scale[:, :n_qblocks, :], gqa_group, q_scale,
+                    )                                                   # [H]
+                _delta_for_boundary = delta_per_head
+                # ℓ_b^int8 for ALL fully-quantized blocks: m_b + log(S_b).
+                ell_int8_all = (
+                    m_b[:, :n_qblocks].float()
+                    + torch.log(S_b[:, :n_qblocks].float().clamp(min=1e-30))
+                )                                                       # [H, n_qblocks]
+                # Per head: r-th highest FP16 log-mass in the promoted set.
+                k_for_boundary = min(int(ranking_r), k_for_rank)
+                ell_fp16_top = fp16_block_log_masses.topk(
+                    k_for_boundary, dim=1,
+                ).values                                                # [H, r]
+                ell_fp16_r_per_head = ell_fp16_top[:, -1]               # [H]
+                # Build the tail-block mask: True for blocks NOT in the
+                # promoted top-K set. promoted membership is per-head
+                # (top_block_indices is [H, K]).
+                promoted_mask = torch.zeros(
+                    num_q_heads, n_qblocks, dtype=torch.bool, device=q_all.device,
+                )
+                promoted_mask.scatter_(1, top_block_indices.long(), True)
+                tail_mask = ~promoted_mask                              # [H, n_qblocks]
+                # LHS: ℓ_b^int8 + Δ; RHS: ℓ^fp16_(r). Only consider tail blocks.
+                ub = ell_int8_all + _delta_for_boundary.unsqueeze(1)    # [H, n_qblocks]
+                trigger_per_block = (
+                    (ub > ell_fp16_r_per_head.unsqueeze(1)) & tail_mask
+                )                                                       # [H, n_qblocks]
+                boundary_triggered_mask = trigger_per_block.any(dim=1)  # [H]
+                boundary_triggered_heads = int(
+                    boundary_triggered_mask.sum().item()
+                )
+                # Merge with ranking disagreement so existing Rung-3
+                # escalation handles boundary triggers identically.
+                ranking_disagree_mask = (
+                    ranking_disagree_mask | boundary_triggered_mask
+                )
         if score_consistency_check:
             # Paper §6 instability-detection: |FP16 - INT8| per block bounded
             # by Δ + eps_guard. Any violation means Theorem 2 was empirically
             # broken on this step — a canary for stale metadata / cache
             # corruption, expected 0-count on well-behaved runs.
-            delta_per_head = compute_delta_bound(
-                q_all, cache.keys_scale[:, :n_qblocks, :], gqa_group, q_scale,
-            )
+            if delta_per_head is None:
+                delta_per_head = compute_delta_bound(
+                    q_all, cache.keys_scale[:, :n_qblocks, :], gqa_group, q_scale,
+                )
             delta_bound_mean = float(delta_per_head.mean().item())
             score_consistency_violation_mask = score_consistency_violations(
                 top_int8_scores, fp16_block_scores, delta_per_head, eps_guard,
@@ -923,6 +1005,10 @@ def certified_attention_layer(
                 "rung3_fired": False,  # Rung-4 subsumes Rung-3; no separate ranking recompute runs
                 "rung4_fired": True,
                 "rung4_violating_heads": score_consistency_violation_heads,
+                # Eq. 30 boundary: even on Rung-4, expose the boundary check
+                # detection for telemetry continuity (paper §8.6 expects 0).
+                "boundary_check_triggered_heads": int(boundary_triggered_heads),
+                "boundary_check_fired": bool(boundary_triggered_heads > 0),
             }
         else:
             stats = {}
@@ -979,6 +1065,10 @@ def certified_attention_layer(
             # INT8 tile × scale path produces zeros regardless of int8 data,
             # and tl.where selects FP16 cleanly.
             cache.keys_scale[:, cache.trailing_block_idx, :].zero_()
+            # Same for asymmetric zero points — kernel reads (q - z)*s; if z is
+            # uninit and s is zero, the product is zero regardless. Belt-and-
+            # braces zeroing of z keeps the dequant numerically clean.
+            cache.keys_zero_points[:, cache.trailing_block_idx, :].zero_()
             keys_scale_active = cache.keys_scale[:, :n_active_blocks_hybrid, :]
             last_block_valid = cache.num_tokens - n_qblocks * bs
             assert 1 <= last_block_valid < bs, last_block_valid
@@ -1046,6 +1136,7 @@ def certified_attention_layer(
                 output = selective_attend_multihead_hybrid_split_k(
                     keys_int8=cache.keys_int8[:, :nt_hybrid, :],
                     keys_scale=keys_scale_active,
+                    keys_zero_points=cache.keys_zero_points[:, :n_active_blocks_hybrid, :],
                     keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :],
                     topk_mask=hybrid_topk,
                     values_fp16=cache.values_fp16[:, :nt_hybrid, :],
@@ -1061,6 +1152,7 @@ def certified_attention_layer(
                 output = selective_attend_multihead_hybrid(
                     keys_int8=cache.keys_int8[:, :nt_hybrid, :].contiguous(),
                     keys_scale=keys_scale_active.contiguous(),
+                    keys_zero_points=cache.keys_zero_points[:, :n_active_blocks_hybrid, :].contiguous(),
                     keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :].contiguous(),
                     topk_mask=hybrid_topk,
                     values_fp16=cache.values_fp16[:, :nt_hybrid, :].contiguous(),
@@ -1126,12 +1218,17 @@ def certified_attention_layer(
 
         if v_format == "int4":
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
+                # Slice INT4 buffers to the same active-tokens window as
+                # keys_int8_active() so the kernel's reshape sees consistent
+                # dims after decode-time append_token has grown the cache.
+                _nt_active = cache.aligned_tokens
                 output = selective_attend_multihead_int8k_int4v(
                     keys_int8=cache.keys_int8_active(),
                     keys_scale=cache.keys_scale_active(),
-                    values_int4_packed=cache.values_int4_packed,
-                    values_int4_scales=cache.values_int4_scales,
-                    values_int4_zeros=cache.values_int4_zeros,
+                    keys_zero_points=cache.keys_zero_points_active(),
+                    values_int4_packed=cache.values_int4_packed[:, :_nt_active, :],
+                    values_int4_scales=cache.values_int4_scales[:, :_nt_active, :],
+                    values_int4_zeros=cache.values_int4_zeros[:, :_nt_active, :],
                     q_all=q_all,
                     skip_mask_i32=skip_mask.to(torch.int32),
                     gqa_group=gqa_group,
@@ -1143,9 +1240,14 @@ def certified_attention_layer(
             # Rung-2 (paper §3.4): INT4 values unsafe (ρ·η > v_tolerance) —
             # page in FP16 values from the Tier-2 CPU pinned mirror.
             rung2_fired = True
+            _nt_active = cache.aligned_tokens
             if cache.values_fp16_cpu is not None:
                 with _PhaseTimer(phase_timings, "h2d_pagein"):
-                    values_fp16 = cache.values_fp16_cpu.to(
+                    # Slice to active tokens — the CPU mirror is sized to
+                    # capacity (= prefill + max_new_tokens) so the kernel
+                    # would otherwise see far more tokens than the keys it
+                    # has, breaking the reshape.
+                    values_fp16 = cache.values_fp16_cpu[:, :_nt_active, :].to(
                         device=cache.keys_int8.device, non_blocking=True,
                     )
                 nt_v = cache.num_tokens
@@ -1153,13 +1255,14 @@ def certified_attention_layer(
                 h2d_value_bytes += kv_v * nt_v * dv_v * cache.values_fp16_cpu.element_size()
                 h2d_value_blocks += (nt_v + bs - 1) // bs
             elif cache.values_fp16 is not None:
-                values_fp16 = cache.values_fp16
+                values_fp16 = cache.values_fp16[:, :_nt_active, :]
             else:
                 raise ValueError("INT4 unsafe and no FP16 fallback available")
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
                 output = selective_attend_multihead_int8(
                     keys_int8=cache.keys_int8_active(),
                     keys_scale=cache.keys_scale_active(),
+                    keys_zero_points=cache.keys_zero_points_active(),
                     values_fp16=values_fp16,
                     q_all=q_all,
                     skip_mask_i32=skip_mask.to(torch.int32),
@@ -1283,6 +1386,24 @@ def certified_attention_layer(
             # certified bound; purely for monitoring.
             stats["exploration_rate"] = float(exploration_rate)
             stats["exploration_blocks"] = int(explored_blocks_count)
+            # Paper §4.5 E_key contract: E_key = 2·V_max·e^{2Δ}·ᾱ_T·(e^{2Δ}−1).
+            # Per-head computation, then mean/max for telemetry. Only assembled
+            # when Δ is available (ranking_fallback or score_consistency_check
+            # enabled). V_max comes from the cache's per-block ν_b annotation
+            # (paper §2.3), tail mass ᾱ_T from the adaptive selector after
+            # Rung-1 expansion. The audit's Mismatch 4 ("E_key not computed,
+            # V_max not tracked") is closed by this block + the
+            # values_norm_max_per_block field on the cache.
+            v_max_layer = cache.v_max_global()
+            stats["v_max_layer"] = float(v_max_layer)
+            if delta_per_head is not None and v_max_layer > 0.0:
+                exp_2delta = torch.exp(2.0 * delta_per_head.float())
+                e_key_per_head = (
+                    2.0 * v_max_layer * exp_2delta
+                    * tail_mass_est.float() * (exp_2delta - 1.0)
+                )                                                       # [H]
+                stats["e_key_step_mean"] = float(e_key_per_head.mean().item())
+                stats["e_key_step_max"] = float(e_key_per_head.max().item())
         # Score-consistency violation counters (paper §6). Always emitted
         # when the feature is enabled so runs can confirm the 0-count baseline.
         if score_consistency_check:
@@ -1307,6 +1428,11 @@ def certified_attention_layer(
             stats["ranking_r"] = int(ranking_r)
             stats["ranking_k"] = int(ranking_k)
             stats["ranking_fallback_mode"] = ranking_fallback_mode
+            # Eq. 30 boundary verification telemetry (paper §6.1, §8.6).
+            # The §8.6 "0 boundary triggers" claim is now empirically
+            # verifiable, not aspirational.
+            stats["boundary_check_triggered_heads"] = int(boundary_triggered_heads)
+            stats["boundary_check_fired"] = bool(boundary_triggered_heads > 0)
             # Score-gap diagnostics (spec §5) — only emitted when we actually
             # computed FP16 scores for at least one block per head.
             if fp16_block_scores is not None and fp16_block_scores.shape[1] > 0:
@@ -1351,7 +1477,10 @@ def benchmark_certified_vs_full(
 
     # Warmup
     for _ in range(10):
-        certified_attention_layer(cache, q_all, gqa_group, q_scale, block_epsilon)
+        certified_attention_layer(
+            cache, q_all, gqa_group, q_scale, block_epsilon,
+            v_tolerance=DEFAULT_V_TOLERANCE,
+        )
         for qh in range(num_q_heads):
             kv = qh // gqa_group
             s = torch.matmul(keys_fp32[kv], q_all[qh]) * q_scale
@@ -1377,6 +1506,7 @@ def benchmark_certified_vs_full(
     for _ in range(iters):
         output, stats = certified_attention_layer(
             cache, q_all, gqa_group, q_scale, block_epsilon,
+            v_tolerance=DEFAULT_V_TOLERANCE,
         )
     torch.cuda.synchronize()
     t_cert = (time.perf_counter() - t0) / iters * 1e6
@@ -1384,6 +1514,7 @@ def benchmark_certified_vs_full(
     # Correctness
     output_cert, stats = certified_attention_layer(
         cache, q_all, gqa_group, q_scale, block_epsilon,
+        v_tolerance=DEFAULT_V_TOLERANCE,
     )
     output_full = torch.empty_like(output_cert)
     for qh in range(num_q_heads):
