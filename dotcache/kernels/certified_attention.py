@@ -1194,17 +1194,16 @@ def certified_attention_layer(
             rung2_fired = True
             assert value_unsafe_mask is not None
             unsafe_block_ids = value_unsafe_mask.any(dim=0).nonzero().flatten()
-            if cache.values_fp16_cpu is None and cache.values_fp16 is None:
+            if (
+                cache.values_fp16_gpu is None
+                and cache.values_fp16_cpu is None
+                and cache.values_fp16 is None
+            ):
                 raise ValueError("INT4 unsafe and no FP16 fallback available")
             n_value_slots = int(unsafe_block_ids.numel())
             value_block_slots = torch.full(
                 (n_active_blocks_hybrid,),
                 -1,
-                dtype=torch.int32,
-                device=q_all.device,
-            )
-            value_block_slots[unsafe_block_ids] = torch.arange(
-                n_value_slots,
                 dtype=torch.int32,
                 device=q_all.device,
             )
@@ -1215,36 +1214,45 @@ def certified_attention_layer(
                 device=q_all.device,
             )
             value_fp16_mask[:, :n_qblocks] = value_unsafe_mask.to(torch.int32)
-            value_dtype = (
-                cache.values_fp16_cpu.dtype
-                if cache.values_fp16_cpu is not None
-                else cache.values_fp16.dtype
-            )
-            values_fp16_scratch = torch.empty(
-                cache.kv_heads,
-                max(n_value_slots, 1) * bs,
-                cache.d_v,
-                dtype=value_dtype,
-                device=q_all.device,
-            )
-            unsafe_block_list = [int(b) for b in unsafe_block_ids.tolist()]
-            with _PhaseTimer(phase_timings, "h2d_pagein"):
-                for slot, bid in enumerate(unsafe_block_list):
-                    start = bid * bs
-                    end = min(start + bs, cache.num_tokens)
-                    dst_start = slot * bs
-                    dst_end = dst_start + (end - start)
-                    if cache.values_fp16_cpu is not None:
-                        src = cache.values_fp16_cpu[:, start:end, :]
-                        values_fp16_scratch[:, dst_start:dst_end, :] = src.to(
-                            device=q_all.device,
-                            non_blocking=True,
-                        )
-                        kv_v, _, dv_v = cache.values_fp16_cpu.shape
-                        h2d_value_bytes += kv_v * (end - start) * dv_v * cache.values_fp16_cpu.element_size()
-                    else:
-                        values_fp16_scratch[:, dst_start:dst_end, :] = cache.values_fp16[:, start:end, :]
-                    h2d_value_blocks += 1
+            if cache.values_fp16_gpu is not None:
+                values_fp16_scratch = cache.values_fp16_gpu[:, :nt_hybrid, :]
+                value_block_slots[unsafe_block_ids] = unsafe_block_ids.to(torch.int32)
+            else:
+                value_block_slots[unsafe_block_ids] = torch.arange(
+                    n_value_slots,
+                    dtype=torch.int32,
+                    device=q_all.device,
+                )
+                value_dtype = (
+                    cache.values_fp16_cpu.dtype
+                    if cache.values_fp16_cpu is not None
+                    else cache.values_fp16.dtype
+                )
+                values_fp16_scratch = torch.empty(
+                    cache.kv_heads,
+                    max(n_value_slots, 1) * bs,
+                    cache.d_v,
+                    dtype=value_dtype,
+                    device=q_all.device,
+                )
+                unsafe_block_list = [int(b) for b in unsafe_block_ids.tolist()]
+                with _PhaseTimer(phase_timings, "h2d_pagein"):
+                    for slot, bid in enumerate(unsafe_block_list):
+                        start = bid * bs
+                        end = min(start + bs, cache.num_tokens)
+                        dst_start = slot * bs
+                        dst_end = dst_start + (end - start)
+                        if cache.values_fp16_cpu is not None:
+                            src = cache.values_fp16_cpu[:, start:end, :]
+                            values_fp16_scratch[:, dst_start:dst_end, :] = src.to(
+                                device=q_all.device,
+                                non_blocking=True,
+                            )
+                            kv_v, _, dv_v = cache.values_fp16_cpu.shape
+                            h2d_value_bytes += kv_v * (end - start) * dv_v * cache.values_fp16_cpu.element_size()
+                        else:
+                            values_fp16_scratch[:, dst_start:dst_end, :] = cache.values_fp16[:, start:end, :]
+                        h2d_value_blocks += 1
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
                 output = selective_attend_multihead_hybrid_mixedv(
                     keys_int8=cache.keys_int8[:, :nt_hybrid, :],

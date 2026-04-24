@@ -77,6 +77,9 @@ class TestInt4G16:
         assert cache.values_int4_zeros.shape == (kv_heads, capacity, expected_groups)
         assert cache.values_int4_scales.dtype == torch.float16
         assert cache.values_int4_zeros.dtype == torch.float16
+        assert cache.values_fp16 is None
+        assert cache.values_fp16_gpu is not None
+        assert cache.values_fp16_gpu.shape == (kv_heads, capacity, d_v)
 
     def test_eta_b_is_relative_reconstruction_error(self):
         """Paper v_tol=0.05 is dimensionless; scaling V by a constant should
@@ -132,6 +135,7 @@ class TestInt4G16:
         ).unsqueeze(0)  # [1, 1, d_v]
         k_pad = torch.zeros(kv_heads, 1, head_dim, dtype=torch.float16, device="cuda")
         cache.append_token(k_pad, spiky)
+        torch.testing.assert_close(cache.values_fp16_gpu[:, N, :], spiky[:, 0, :])
         eta_after_one = cache.values_int4_errors[0, next_block_idx].item()
         assert eta_after_one > 0.0, (
             "η_b must update on the first appended token; got 0 — "

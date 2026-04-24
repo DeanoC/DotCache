@@ -77,6 +77,10 @@ class TieredKeyCacheLayer:
 
     # CPU warm tier — FP16 values for fallback when INT4 error too high
     values_fp16_cpu: torch.Tensor | None = None  # [kv_heads, N, d_v] float16, pinned CPU
+    # Optional VRAM mirror/cache for Rung-2 FP16 values. In the INT4 paper
+    # path this is fallback-only: values_fp16 remains None, so the fast path
+    # still consumes INT4 values unless Rung-2 explicitly selects a block.
+    values_fp16_gpu: torch.Tensor | None = None  # [kv_heads, N, d_v] float16, cuda
 
     # VRAM-side FP16 key buffer. Two modes:
     #   - Full mirror (keys_fp16_gpu non-None, fp16_key_cache_capacity is None):
@@ -342,7 +346,14 @@ class TieredKeyCacheLayer:
         values_fp16_cpu_buf[:, :N, :] = base.values_fp16[:, :N, :].cpu()
         base.values_fp16_cpu = values_fp16_cpu_buf
 
-        # Free FP16 values from VRAM — INT4 replaces them
+        # Keep a fallback-only FP16 value mirror in VRAM. This is not the
+        # normal value path (`values_fp16` is cleared below); the mixed-value
+        # kernel reads it only for Rung-2 promoted blocks. It eliminates the
+        # repeated CPU-to-GPU page-in that made certificate-correct runs too
+        # slow on a single large GPU.
+        base.values_fp16_gpu = base.values_fp16
+
+        # Clear the normal FP16 value path; INT4 replaces it for Phase 2.
         base.values_fp16 = None
 
         return base
@@ -519,6 +530,8 @@ class TieredKeyCacheLayer:
 
         if self.values_fp16_cpu is not None:
             self.values_fp16_cpu[:, pos, :].copy_(new_v, non_blocking=True)
+        if self.values_fp16_gpu is not None:
+            self.values_fp16_gpu[:, pos, :] = new_v.to(device=device, dtype=kv_dtype)
 
         # Write exact key→float32 into dequant buffer (for hybrid attend path)
         new_k_f32 = new_k.to(device=device, dtype=torch.float32)
@@ -673,6 +686,8 @@ class TieredKeyCacheLayer:
                 total += self.values_int4_error_sums.nelement() * 4
             if self.values_int4_error_counts is not None:
                 total += self.values_int4_error_counts.nelement() * 4
+        if self.values_fp16_gpu is not None:
+            total += self.values_fp16_gpu.nelement() * self.values_fp16_gpu.element_size()
         return total
 
     def cpu_bytes(self) -> int:
