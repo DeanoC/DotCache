@@ -87,6 +87,69 @@ def per_chunk_bpt_stats(
     }
 
 
+def per_chunk_ppl_delta_stats(
+    dense_per_chunk: list[dict],
+    cert_per_chunk: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict:
+    """Paired per-chunk perplexity deltas for paper table generation.
+
+    Each chunk contributes dense ppl, certified ppl, Δppl, and ratio. The
+    reported CI is a bootstrap percentile interval over chunk-level Δppl.
+    """
+    dense_by_idx = {int(c["chunk_idx"]): c for c in dense_per_chunk if "chunk_idx" in c}
+    rows: list[dict] = []
+    for cert in cert_per_chunk:
+        if "chunk_idx" not in cert:
+            continue
+        idx = int(cert["chunk_idx"])
+        dense = dense_by_idx.get(idx)
+        if dense is None:
+            continue
+        dense_tokens = int(dense.get("tokens") or 0)
+        cert_tokens = int(cert.get("tokens") or 0)
+        if dense_tokens <= 0 or cert_tokens <= 0:
+            continue
+        dense_ppl = math.exp(float(dense["nll"]) / dense_tokens)
+        cert_ppl = math.exp(float(cert["nll"]) / cert_tokens)
+        rows.append({
+            "chunk_idx": idx,
+            "book_idx": cert.get("book_idx", dense.get("book_idx")),
+            "dense_ppl": dense_ppl,
+            "certified_ppl": cert_ppl,
+            "delta_ppl": cert_ppl - dense_ppl,
+            "ratio": cert_ppl / dense_ppl if dense_ppl else None,
+            "dense_tokens": dense_tokens,
+            "certified_tokens": cert_tokens,
+        })
+
+    n = len(rows)
+    if n == 0:
+        return {"n_chunks": 0, "per_chunk": []}
+    deltas = np.asarray([r["delta_ppl"] for r in rows], dtype=np.float64)
+    ratios = np.asarray([r["ratio"] for r in rows if r["ratio"] is not None], dtype=np.float64)
+    mean_delta = float(deltas.mean())
+    if n > 1 and bootstrap_iters > 0:
+        rng = np.random.default_rng(seed)
+        boot = deltas[rng.integers(0, n, size=(int(bootstrap_iters), n))].mean(axis=1)
+        ci_lo = float(np.quantile(boot, 0.025))
+        ci_hi = float(np.quantile(boot, 0.975))
+    else:
+        ci_lo = ci_hi = mean_delta
+    return {
+        "n_chunks": n,
+        "mean_delta_ppl": mean_delta,
+        "delta_ppl_ci_lo": ci_lo,
+        "delta_ppl_ci_hi": ci_hi,
+        "mean_ratio": float(ratios.mean()) if ratios.size else None,
+        "bootstrap_iters": int(bootstrap_iters),
+        "bootstrap_seed": int(seed),
+        "per_chunk": rows,
+    }
+
+
 def load_pg19_chunks(tokenizer, context_length: int, num_chunks: int,
                      stride: int = None) -> tuple[list[torch.Tensor], list[int]]:
     """Load PG-19 test set and chunk into fixed-length token sequences.
@@ -881,6 +944,18 @@ def main():
         print(f"Certified perplexity: {cert_result['perplexity']:.4f}")
         print(f"Ratio (cert/dense):   {ratio:.6f}")
         print(f"Delta:                {delta:+.4f}")
+        paired_delta = per_chunk_ppl_delta_stats(
+            dense_result["per_chunk"], cert_result["per_chunk"],
+        )
+        cert_result["paired_delta_stats"] = paired_delta
+        if paired_delta.get("n_chunks", 0):
+            print(
+                "Per-chunk Δppl:       "
+                f"{paired_delta['mean_delta_ppl']:+.4f} "
+                f"(95% CI [{paired_delta['delta_ppl_ci_lo']:+.4f}, "
+                f"{paired_delta['delta_ppl_ci_hi']:+.4f}], "
+                f"n={paired_delta['n_chunks']})"
+            )
 
     # Save results
     output = {

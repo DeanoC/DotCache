@@ -259,3 +259,41 @@ class TestPerChunkBptStats:
         out = per_chunk_bpt_stats(per_chunk, bootstrap_iters=500, seed=0)
         assert out["n_chunks"] == 2
         assert out["bpt_mean"] == pytest.approx(1.0, abs=1e-9)
+
+
+class TestPg19DeltaStats:
+    def test_per_chunk_delta_stats_reports_mean_ci_and_ratios(self):
+        from benchmarks.paper.pg19_perplexity import per_chunk_ppl_delta_stats
+
+        dense = [
+            {"chunk_idx": 0, "nll": math.log(10.0) * 100, "tokens": 100},
+            {"chunk_idx": 1, "nll": math.log(20.0) * 100, "tokens": 100},
+        ]
+        cert = [
+            {"chunk_idx": 0, "nll": math.log(11.0) * 100, "tokens": 100},
+            {"chunk_idx": 1, "nll": math.log(18.0) * 100, "tokens": 100},
+        ]
+        stats = per_chunk_ppl_delta_stats(dense, cert, bootstrap_iters=0)
+
+        assert stats["n_chunks"] == 2
+        assert stats["mean_delta_ppl"] == pytest.approx((1.0 - 2.0) / 2.0)
+        assert stats["mean_ratio"] == pytest.approx(((11 / 10) + (18 / 20)) / 2)
+        assert [r["delta_ppl"] for r in stats["per_chunk"]] == pytest.approx([1.0, -2.0])
+
+
+class TestRulerPairedStats:
+    def test_ruler_stats_bootstrap_paired_score_delta(self):
+        from benchmarks.paper.ruler import paired_ruler_stats
+
+        rows = [
+            {"dense_score": 1.0, "cert_score": 1.0},
+            {"dense_score": 1.0, "cert_score": 0.5},
+            {"dense_score": 0.0, "cert_score": 1.0},
+        ]
+        stats = paired_ruler_stats(rows, bootstrap_iters=500, seed=0)
+
+        assert stats["n"] == 3
+        assert stats["dense_mean"] == pytest.approx(2 / 3)
+        assert stats["certified_mean"] == pytest.approx(2.5 / 3)
+        assert stats["delta"] == pytest.approx((0.0 - 0.5 + 1.0) / 3)
+        assert stats["delta_ci_lo"] <= stats["delta"] <= stats["delta_ci_hi"]

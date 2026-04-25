@@ -35,6 +35,7 @@ import time
 import warnings
 from pathlib import Path
 
+import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -345,6 +346,72 @@ def score_string_match_all(generated: str, references: list[str]) -> float:
     return hits / len(references)
 
 
+def paired_ruler_stats(
+    results: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict:
+    """Paired RULER score delta summary for paper table generation.
+
+    Scores are continuous in [0, 1]. The CI is a bootstrap percentile interval
+    over per-sample (cert_score - dense_score), preserving the paired design.
+    """
+    n = len(results)
+    if n == 0:
+        return {
+            "n": 0,
+            "dense_mean": None,
+            "certified_mean": None,
+            "delta": None,
+            "delta_ci_lo": None,
+            "delta_ci_hi": None,
+        }
+    dense = np.asarray([float(r["dense_score"]) for r in results], dtype=np.float64)
+    cert = np.asarray([float(r["cert_score"]) for r in results], dtype=np.float64)
+    diffs = cert - dense
+    delta = float(diffs.mean())
+    if n > 1 and bootstrap_iters > 0:
+        rng = np.random.default_rng(seed)
+        boot = diffs[rng.integers(0, n, size=(int(bootstrap_iters), n))].mean(axis=1)
+        ci_lo = float(np.quantile(boot, 0.025))
+        ci_hi = float(np.quantile(boot, 0.975))
+    else:
+        ci_lo = ci_hi = delta
+    return {
+        "n": int(n),
+        "dense_mean": float(dense.mean()),
+        "certified_mean": float(cert.mean()),
+        "delta": delta,
+        "delta_ci_lo": ci_lo,
+        "delta_ci_hi": ci_hi,
+        "bootstrap_iters": int(bootstrap_iters),
+        "bootstrap_seed": int(seed),
+    }
+
+
+def paired_ruler_stats_by_context(results: list[dict]) -> dict[str, dict]:
+    contexts = sorted({int(r["ctx_tokens"]) for r in results})
+    return {
+        f"{ctx // 1024}K": paired_ruler_stats(
+            [r for r in results if int(r["ctx_tokens"]) == ctx],
+            seed=20260425 + idx,
+        )
+        for idx, ctx in enumerate(contexts)
+    }
+
+
+def paired_ruler_stats_by_task_context(results: list[dict]) -> dict[str, dict]:
+    keys = sorted({(str(r["subtask"]), int(r["ctx_tokens"])) for r in results})
+    return {
+        f"{task}_{ctx // 1024}K": paired_ruler_stats(
+            [r for r in results if str(r["subtask"]) == task and int(r["ctx_tokens"]) == ctx],
+            seed=20260425 + idx,
+        )
+        for idx, (task, ctx) in enumerate(keys)
+    }
+
+
 # ---------------------------------------------------------------------------
 # Generation paths — mirror niah.py run_niah_cell
 # ---------------------------------------------------------------------------
@@ -597,7 +664,13 @@ def run_ruler(
             "critical": agg["crit"],
             "n": len(agg["dense"]),
         }
-    return {"results": results, "summary": summary}
+    return {
+        "results": results,
+        "summary": summary,
+        "paired_stats": paired_ruler_stats(results),
+        "paired_stats_by_context": paired_ruler_stats_by_context(results),
+        "paired_stats_by_task_context": paired_ruler_stats_by_task_context(results),
+    }
 
 
 def main():
@@ -728,6 +801,14 @@ def main():
     overall_c = sum(cmean) / len(cmean)
     print(f"\nOverall: dense={overall_d:.3f} cert={overall_c:.3f} "
           f"Δ={overall_c-overall_d:+.3f} critical={critical}/{len(dmean)}")
+    paired = out.get("paired_stats", {})
+    if paired.get("n"):
+        print(
+            "Paired Δ CI: "
+            f"{paired['delta']:+.3f} "
+            f"[{paired['delta_ci_lo']:+.3f}, {paired['delta_ci_hi']:+.3f}] "
+            f"n={paired['n']}"
+        )
 
     payload = {
         "benchmark": "ruler_subset",
@@ -741,6 +822,9 @@ def main():
         "overall_dense": overall_d,
         "overall_cert": overall_c,
         "critical_failures": critical,
+        "paired_stats": out["paired_stats"],
+        "paired_stats_by_context": out["paired_stats_by_context"],
+        "paired_stats_by_task_context": out["paired_stats_by_task_context"],
         "summary": out["summary"],
         "results": out["results"],
         "cache_config": cache_config_dict(args),
