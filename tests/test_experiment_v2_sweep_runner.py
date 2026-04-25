@@ -69,3 +69,25 @@ def test_v2_pg19_wrapped_summary_uses_paired_delta_stats():
     telemetry = sweep._native_telemetry("pg19", native)
     assert telemetry["e_key_max"] == 0.04
     assert telemetry["e_val_max"] == 0.01
+
+
+def test_v2_estimates_match_experiment_spec_tier_totals():
+    cells = sweep.build_cells(include_tier2=True, include_tier3=False, include_tier4=False)
+    tier1 = [c for c in cells if c["tier"] == 1]
+    tier2 = [c for c in cells if c["tier"] <= 2]
+
+    # Quality cells only: Tier 1 excludes the separate 2h performance block;
+    # Tier 2 adds PG-19 128K but excludes the separate ablation sweeps.
+    assert sum(sweep.estimate_cell_hours(c) for c in tier1) == 66.0
+    assert sum(sweep.estimate_cell_hours(c) for c in tier2) == 96.0
+    assert sweep.estimate_non_cell_hours(1) == 2.0
+    assert sweep.estimate_non_cell_hours(2) == 7.0
+
+
+def test_v2_greedy_schedule_balances_long_cells():
+    cells = sweep.build_cells(include_tier2=True, include_tier3=False, include_tier4=False)
+    slots = sweep.schedule_cells(cells, machines=2)
+
+    assert len(slots) == 2
+    assert sum(len(slot["cells"]) for slot in slots) == len(cells)
+    assert max(slot["hours"] for slot in slots) < sum(sweep.estimate_cell_hours(c) for c in cells)

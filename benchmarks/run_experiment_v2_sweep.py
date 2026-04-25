@@ -42,6 +42,29 @@ CERT_FLAGS: dict[str, str] = {
     "fp16_value_cache_blocks": "64",
 }
 
+CELL_ESTIMATE_HOURS: dict[tuple[str, int], float] = {
+    ("pg19", 8192): 1.0,
+    ("pg19", 32768): 4.0,
+    ("pg19", 65536): 10.0,
+    ("pg19", 131072): 30.0,
+    ("niah", 8192): 2.0,
+    ("niah", 32768): 6.0,
+    ("niah", 65536): 14.0,
+    ("niah", 131072): 15.0,  # reduced 50-trial optional cell.
+    ("ruler", 8192): 3.0,
+    ("ruler", 32768): 8.0,
+    ("ruler", 65536): 18.0,
+    ("ruler", 131072): 16.0,  # reduced 20-sample optional cell.
+}
+
+NON_CELL_ESTIMATE_HOURS: dict[str, dict[str, Any]] = {
+    "performance_profiling": {"tier": 1, "hours": 2.0},
+    "value_group_size_sweep": {"tier": 2, "hours": 1.0},
+    "niah_precision_ablation": {"tier": 2, "hours": 4.0},
+    "tau_cov_sweep_8k": {"tier": 3, "hours": 6.0},
+    "tau_cov_sweep_32k": {"tier": 4, "hours": 18.0},
+}
+
 
 def build_cells(*, include_tier2: bool = True, include_tier3: bool = False,
                 include_tier4: bool = False) -> list[dict[str, Any]]:
@@ -72,6 +95,31 @@ def build_cells(*, include_tier2: bool = True, include_tier3: bool = False,
         add("ruler", 131072, 4, samples=20)
 
     return cells
+
+
+def estimate_cell_hours(cell: dict[str, Any]) -> float:
+    return float(CELL_ESTIMATE_HOURS.get((str(cell["bench"]), int(cell["ctx"])), 0.0))
+
+
+def estimate_non_cell_hours(max_tier: int) -> float:
+    return float(
+        sum(float(v["hours"]) for v in NON_CELL_ESTIMATE_HOURS.values() if int(v["tier"]) <= max_tier)
+    )
+
+
+def schedule_cells(cells: list[dict[str, Any]], machines: int) -> list[dict[str, Any]]:
+    machines = max(1, int(machines))
+    slots = [{"machine": i + 1, "hours": 0.0, "cells": []} for i in range(machines)]
+    for cell in sorted(cells, key=estimate_cell_hours, reverse=True):
+        slot = min(slots, key=lambda s: float(s["hours"]))
+        hours = estimate_cell_hours(cell)
+        slot["cells"].append(cell)
+        slot["hours"] = float(slot["hours"]) + hours
+    return slots
+
+
+def format_hours(hours: float) -> str:
+    return f"{hours:.1f}h ({hours / 24.0:.1f}d)"
 
 
 def _common_cert_args(group_size: int = 16) -> list[str]:
@@ -317,6 +365,7 @@ def run_cell(cell: dict[str, Any], *, smoke: bool, dry_run: bool) -> dict[str, A
         "tier": cell["tier"],
         "benchmark": bench,
         "context_length": ctx,
+        "eta_hours": estimate_cell_hours(cell),
         "cmd": " ".join(shlex.quote(c) for c in cli),
         "out": str(cell_json),
     }
@@ -353,6 +402,7 @@ def run_cell(cell: dict[str, Any], *, smoke: bool, dry_run: bool) -> dict[str, A
             "timestamp": ended,
             "started": started,
             "wall_seconds": wall,
+            "eta_hours": estimate_cell_hours(cell),
             "git_sha": git_sha(),
             "branch": current_branch(),
             "exit_code": rc,
@@ -374,6 +424,8 @@ def main() -> int:
                         help="Comma filter, e.g. 'pg19,65536' or '05' or 'ruler'.")
     parser.add_argument("--from", dest="start_from", default=None,
                         help="Resume from cell index, inclusive.")
+    parser.add_argument("--machines", type=int, default=1,
+                        help="Print a greedy ETA split across this many machines/GPUs.")
     args = parser.parse_args()
 
     include_tier2 = args.tier in {"2", "3", "4", "all"}
@@ -398,6 +450,9 @@ def main() -> int:
     if args.start_from:
         cells = [c for c in cells if int(c["idx"]) >= int(args.start_from)]
 
+    selected_quality_hours = sum(estimate_cell_hours(c) for c in cells)
+    max_tier_for_estimate = 4 if args.tier == "all" else int(args.tier)
+    add_on_hours = estimate_non_cell_hours(max_tier_for_estimate)
     print(f"Plan: {len(cells)} cell(s), tier<={args.tier}, smoke={args.smoke}")
     for cell in cells:
         detail = ""
@@ -407,7 +462,30 @@ def main() -> int:
             detail = f"needles={cell['needles']}"
         elif "samples" in cell:
             detail = f"samples={cell['samples']}"
-        print(f"  {cell['idx']}  T{cell['tier']} {cell['bench']:<5} {cell['ctx']//1024:>3}K  {detail}")
+        print(
+            f"  {cell['idx']}  T{cell['tier']} {cell['bench']:<5} "
+            f"{cell['ctx']//1024:>3}K  {detail:<12} eta={estimate_cell_hours(cell):>4.1f}h"
+        )
+
+    print(f"Quality-cell ETA, one GPU: {format_hours(selected_quality_hours)}")
+    if add_on_hours:
+        print(
+            f"Spec add-on ETA through tier {args.tier}: +{format_hours(add_on_hours)} "
+            "(performance/ablations not run by this quality runner)"
+        )
+        print(f"Recommended-plan ETA incl. add-ons: {format_hours(selected_quality_hours + add_on_hours)}")
+    if int(args.machines) > 1 and cells:
+        slots = schedule_cells(cells, int(args.machines))
+        print(f"Greedy quality-cell split across {int(args.machines)} machines:")
+        for slot in slots:
+            labels = ", ".join(
+                f"{c['idx']}:{c['bench']}{c['ctx']//1024}K" for c in slot["cells"]
+            )
+            print(f"  machine {slot['machine']}: {format_hours(float(slot['hours']))}  {labels}")
+        print(
+            f"Greedy quality-cell wall ETA: "
+            f"{format_hours(max(float(s['hours']) for s in slots))}"
+        )
 
     if args.dry_run:
         for cell in cells:
