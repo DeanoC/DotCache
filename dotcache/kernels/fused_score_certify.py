@@ -212,6 +212,7 @@ def _multihead_score_certify_kernel(
     Skip_ptr,        # [num_q_heads, num_blocks] int32
     M_b_ptr,         # [num_q_heads, num_blocks] float32
     S_b_ptr,         # [num_q_heads, num_blocks] float32
+    Scores_ptr,      # [num_q_heads, num_blocks, block_size] float32 scratch
     # Sync
     Counter_ptr,     # [1] int32
     # Layout
@@ -228,6 +229,7 @@ def _multihead_score_certify_kernel(
     block_epsilon: tl.constexpr,
     TILE_D: tl.constexpr,
     TILE_N: tl.constexpr,
+    STORE_SCORES: tl.constexpr,
 ):
     """Score + certify ALL heads in one kernel launch.
 
@@ -285,6 +287,9 @@ def _multihead_score_certify_kernel(
                 out_idx = q_head_idx * num_blocks + bid
                 tl.store(M_b_ptr + out_idx, m_b)
                 tl.store(S_b_ptr + out_idx, s_b)
+                if STORE_SCORES:
+                    score_base = out_idx * block_size
+                    tl.store(Scores_ptr + score_base + t_offs, scores)
 
     # Barrier: last program does certify for ALL heads
     old_count = tl.atomic_add(Counter_ptr, 1)
@@ -335,10 +340,12 @@ def _fused_score_certify_multihead_triton(
     block_size: int = 16,
     q_scale: float = 1.0,
     block_epsilon: float = 0.001,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_token_scores: bool = False,
+) -> tuple[torch.Tensor, ...]:
     """Score + certify ALL heads in one kernel launch.
 
-    Returns (m_b, S_b, skip_mask) each [num_q_heads, num_blocks].
+    Returns (m_b, S_b, skip_mask), and optionally token_scores
+    [num_q_heads, num_blocks, block_size].
     """
     num_kv_heads, N, head_dim = K_int8_packed.shape
     num_q_heads = q_all.shape[0]
@@ -351,6 +358,11 @@ def _fused_score_certify_multihead_triton(
     m_b = torch.empty(num_q_heads, num_blocks, dtype=torch.float32, device=device)
     S_b = torch.empty(num_q_heads, num_blocks, dtype=torch.float32, device=device)
     skip_i32 = torch.empty(num_q_heads, num_blocks, dtype=torch.int32, device=device)
+    token_scores = (
+        torch.empty(num_q_heads, num_blocks, block_size, dtype=torch.float32, device=device)
+        if return_token_scores
+        else torch.empty(0, dtype=torch.float32, device=device)
+    )
     counter = torch.zeros(1, dtype=torch.int32, device=device)
 
     TILE_D = triton.next_power_of_2(head_dim)
@@ -362,7 +374,7 @@ def _fused_score_certify_multihead_triton(
     _multihead_score_certify_kernel[(n_programs,)](
         K_flat, K_scale.contiguous(), K_zero_points.contiguous(),
         q_all.contiguous(), correction.contiguous(),
-        skip_i32, m_b, S_b, counter,
+        skip_i32, m_b, S_b, token_scores, counter,
         N=N,
         stride_k_n=head_dim,
         head_dim=head_dim,
@@ -376,7 +388,10 @@ def _fused_score_certify_multihead_triton(
         block_epsilon=block_epsilon,
         TILE_D=TILE_D,
         TILE_N=TILE_N,
+        STORE_SCORES=return_token_scores,
     )
+    if return_token_scores:
+        return m_b, S_b, skip_i32.bool(), token_scores
     return m_b, S_b, skip_i32.bool()
 
 
@@ -390,7 +405,8 @@ def fused_score_certify_multihead(
     block_size: int = 16,
     q_scale: float = 1.0,
     block_epsilon: float = 0.001,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_token_scores: bool = False,
+) -> tuple[torch.Tensor, ...]:
     """Score + certify ALL heads.
 
     `DOTCACHE_SCORE_BACKEND=cutlass_sm120` probes the future tensor-core
@@ -401,7 +417,7 @@ def fused_score_certify_multihead(
     import os as _os
 
     backend = _os.environ.get("DOTCACHE_SCORE_BACKEND", "triton").strip().lower()
-    if backend == "cutlass_sm120":
+    if backend == "cutlass_sm120" and not return_token_scores:
         try:
             from dotcache.backends.cutlass_sm120 import (
                 cutlass_sm120_available,
@@ -436,6 +452,7 @@ def fused_score_certify_multihead(
         block_size=block_size,
         q_scale=q_scale,
         block_epsilon=block_epsilon,
+        return_token_scores=return_token_scores,
     )
 
 

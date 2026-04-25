@@ -31,7 +31,6 @@ PAPER_FLAGS = [
     "--ranking-fallback",
     "--ranking-r", "1",
     "--ranking-fallback-mode", "full",
-    "--score-consistency-check",
     "--eps-guard", "0.01",
     "--exploration-rate", "0.02",
     "--rung1-threshold", "0.02",
@@ -117,7 +116,7 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("DOTCACHE_FP16_BLOCK_SCORE_TRITON", "1")
     env.setdefault("DOTCACHE_SCORE_BACKEND", "cutlass_sm120")
-    env.setdefault("DOTCACHE_CERTIFIED_BACKEND", "cutlass_sm120")
+    env.setdefault("DOTCACHE_CERTIFIED_BACKEND", "native_blackwell")
 
     report: dict[str, Any] = {
         "device": _device_info(),
@@ -133,6 +132,7 @@ def main() -> int:
             "attention_backend": env["DOTCACHE_CERTIFIED_BACKEND"],
             "cutlass_score_enabled": env.get("DOTCACHE_CUTLASS_SM120_ENABLE_SCORE", "0"),
             "cutlass_attention_enabled": env.get("DOTCACHE_CUTLASS_SM120_ENABLE_KERNELS", "0"),
+            "native_attention_enabled": env.get("DOTCACHE_CERTIFIED_BACKEND") == "native_blackwell",
         },
     }
 
@@ -182,6 +182,7 @@ def main() -> int:
             ]
             pg19_env = env.copy()
             pg19_env["DOTCACHE_PHASE_TIMING"] = "1"
+            pg19_env["DOTCACHE_RUNTIME_PROFILE"] = "1"
             report["pg19"].append(_run(pg19_cmd, env=pg19_env))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

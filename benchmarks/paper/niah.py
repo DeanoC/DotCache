@@ -265,8 +265,8 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
     top_k_fp16_keys: int = 4,
     use_int4_values: bool = False,
     group_size: int = 16,
-    fp16_key_cache_blocks: int | None = None,
-    fp16_value_cache_blocks: int | None = None,
+    fp16_key_cache_blocks: int | str | None = None,
+    fp16_value_cache_blocks: int | str | None = None,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -276,6 +276,7 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
     rung1_threshold: float = 0.02,
     rung1_multiplier: float = 2.0,
     score_consistency_check: bool = False,
+    score_consistency_interval: int = 1,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     telemetry_collector=None,
@@ -322,24 +323,15 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         first_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         del outputs
 
-        # Build tiered cache. Honor DOTCACHE_FP16_CACHE_BLOCKS so the paper's
-        # bounded transparent VRAM cache can be enabled without plumbing a
-        # new kwarg through every harness signature. Unset (or 0) → legacy
-        # full-mirror behaviour.
+        # Build tiered cache. Value fallback defaults to bounded scratch so
+        # paper runs do not allocate a persistent full FP16 value mirror.
         _ensure_certified_imports()
         layer_ids = list(range(model.config.num_hidden_layers))
         _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
         _env_value_cap = os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS")
-        _key_cap = (
-            fp16_key_cache_blocks
-            if fp16_key_cache_blocks is not None
-            else None if _env_key_cap is None or _env_key_cap == "" else int(_env_key_cap)
-        )
-        _value_cap = (
-            fp16_value_cache_blocks
-            if fp16_value_cache_blocks is not None
-            else None if _env_value_cap is None or _env_value_cap == "" else int(_env_value_cap)
-        )
+        from _provenance import resolve_fp16_key_cache_blocks, resolve_fp16_value_cache_blocks
+        _key_cap = resolve_fp16_key_cache_blocks(fp16_key_cache_blocks, _env_key_cap)
+        _value_cap = resolve_fp16_value_cache_blocks(fp16_value_cache_blocks, _env_value_cap)
         if use_int4_values:
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_kv, layer_ids, group_size=group_size,
@@ -350,7 +342,7 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         else:
             tiered_caches = create_tiered_cache_from_model(
                 past_kv, layer_ids, max_new_tokens=max_new_tokens + 8,
-                fp16_key_cache_capacity=_key_cap,
+                fp16_key_cache_capacity=None,
             )
         del past_kv
         gc.collect()
@@ -381,6 +373,7 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
             rung1_threshold=rung1_threshold,
             rung1_multiplier=rung1_multiplier,
             score_consistency_check=score_consistency_check,
+            score_consistency_interval=score_consistency_interval,
             eps_guard=eps_guard,
             exploration_rate=exploration_rate,
         )
@@ -403,7 +396,7 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
             tid = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
             gen_token_tensors.append(tid)
             current_input = tid
-            cache_position = cache_position + 1
+            cache_position.add_(1)
 
         gen_ids = torch.cat(gen_token_tensors, dim=1)[0].tolist()
         if tokenizer.eos_token_id is not None and tokenizer.eos_token_id in gen_ids:
@@ -476,8 +469,8 @@ def run_niah_sweep(
     top_k_fp16_keys: int = 4,
     use_int4_values: bool = False,
     group_size: int = 16,
-    fp16_key_cache_blocks: int | None = None,
-    fp16_value_cache_blocks: int | None = None,
+    fp16_key_cache_blocks: int | str | None = None,
+    fp16_value_cache_blocks: int | str | None = None,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -487,6 +480,7 @@ def run_niah_sweep(
     rung1_threshold: float = 0.02,
     rung1_multiplier: float = 2.0,
     score_consistency_check: bool = False,
+    score_consistency_interval: int = 1,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     telemetry_collector=None,
@@ -523,6 +517,7 @@ def run_niah_sweep(
                         rung1_threshold=rung1_threshold,
                         rung1_multiplier=rung1_multiplier,
                         score_consistency_check=score_consistency_check,
+                        score_consistency_interval=score_consistency_interval,
                         eps_guard=eps_guard,
                         exploration_rate=exploration_rate,
                         telemetry_collector=telemetry_collector if mode == "certified" else None,
@@ -641,6 +636,8 @@ def main():
                         help="Rung 1 (expand K*): k_max multiplier on trigger (default 2.0)")
     parser.add_argument("--score-consistency-check", action="store_true",
                         help="Paper §6 defence-in-depth: compare FP16 vs INT8 block scores on promoted blocks; expected 0 violations")
+    parser.add_argument("--score-consistency-interval", type=int, default=1,
+                        help="Run score-consistency canary every N decode steps (1 = exact every step).")
     parser.add_argument("--eps-guard", type=float, default=0.01,
                         help="Score-consistency tolerance above the theoretical Δ bound (default 0.01)")
     parser.add_argument("--exploration-rate", type=float, default=0.0,
@@ -651,9 +648,14 @@ def main():
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
     import sys as _sys, os as _os
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    from _provenance import add_paper_cache_args, cache_config_dict
+    from _provenance import (
+        add_paper_cache_args,
+        cache_config_dict,
+        configure_paper_runtime_defaults,
+    )
     add_paper_cache_args(parser)
     args = parser.parse_args()
+    configure_paper_runtime_defaults()
 
     token = os.environ.get("HF_TOKEN") or None
     warnings.filterwarnings(
@@ -709,6 +711,7 @@ def main():
         rung1_threshold=args.rung1_threshold,
         rung1_multiplier=args.rung1_multiplier,
         score_consistency_check=args.score_consistency_check,
+        score_consistency_interval=args.score_consistency_interval,
         eps_guard=args.eps_guard,
         exploration_rate=args.exploration_rate,
         telemetry_collector=telemetry_collector,

@@ -437,8 +437,8 @@ def compute_certified_perplexity(
     device: str = "cuda",
     use_int4_values: bool = False,
     group_size: int = 16,
-    fp16_key_cache_blocks: int | None = None,
-    fp16_value_cache_blocks: int | None = None,
+    fp16_key_cache_blocks: int | str | None = None,
+    fp16_value_cache_blocks: int | str | None = None,
     # Paper-alignment features (T4/T7/Rung1/T9/T10).
     tau_cov: float | None = None,
     k_min: int = 2,
@@ -447,6 +447,7 @@ def compute_certified_perplexity(
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
     score_consistency_check: bool = False,
+    score_consistency_interval: int = 1,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     rung1_threshold: float = 0.02,
@@ -454,6 +455,7 @@ def compute_certified_perplexity(
     telemetry_collector=None,
     book_indices: list[int] | None = None,
     telemetry_mode: str = "summary",
+    collect_step_stats: bool = False,
     max_certified_steps: int | None = None,
     certified_warmup_steps: int = 128,
 ) -> dict:
@@ -487,6 +489,34 @@ def compute_certified_perplexity(
     all_step_aggs_accumulator: list[dict] = []
     if telemetry_mode not in {"debug", "summary", "off"}:
         raise ValueError("telemetry_mode must be one of: debug, summary, off")
+    collect_step_stats = bool(collect_step_stats or telemetry_mode == "debug")
+
+    def _cache_runtime_summary(tiered_caches: dict) -> dict:
+        caches = list(tiered_caches.values())
+        if not caches:
+            return {}
+        return {
+            "static_resident_key_cache": bool(all(
+                bool(getattr(c, "static_resident_key_cache", False)) for c in caches
+            )),
+            "static_resident_value_cache": bool(all(
+                bool(getattr(c, "static_resident_value_cache", False)) for c in caches
+            )),
+            "static_resident_key_prepare_bytes": int(sum(
+                int(getattr(c, "static_resident_key_prepare_bytes", 0)) for c in caches
+            )),
+            "static_resident_value_prepare_bytes": int(sum(
+                int(getattr(c, "static_resident_value_prepare_bytes", 0)) for c in caches
+            )),
+            "vram_fp16_key_cache_bytes": int(sum(
+                c.keys_fp16_gpu.nelement() * c.keys_fp16_gpu.element_size()
+                for c in caches if getattr(c, "keys_fp16_gpu", None) is not None
+            )),
+            "vram_fp16_value_cache_bytes": int(sum(
+                c.values_fp16_gpu.nelement() * c.values_fp16_gpu.element_size()
+                for c in caches if getattr(c, "values_fp16_gpu", None) is not None
+            )),
+        }
 
     for i, chunk in enumerate(chunks):
         seq_len = chunk.shape[0]
@@ -535,16 +565,9 @@ def compute_certified_perplexity(
         layer_ids = list(range(model.config.num_hidden_layers))
         _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
         _env_value_cap = os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS")
-        _key_cap = (
-            fp16_key_cache_blocks
-            if fp16_key_cache_blocks is not None
-            else None if _env_key_cap is None or _env_key_cap == "" else int(_env_key_cap)
-        )
-        _value_cap = (
-            fp16_value_cache_blocks
-            if fp16_value_cache_blocks is not None
-            else None if _env_value_cap is None or _env_value_cap == "" else int(_env_value_cap)
-        )
+        from _provenance import resolve_fp16_key_cache_blocks, resolve_fp16_value_cache_blocks
+        _key_cap = resolve_fp16_key_cache_blocks(fp16_key_cache_blocks, _env_key_cap)
+        _value_cap = resolve_fp16_value_cache_blocks(fp16_value_cache_blocks, _env_value_cap)
 
         def _build_tiered_caches():
             if use_int4_values:
@@ -556,7 +579,7 @@ def compute_certified_perplexity(
                 )
             return create_tiered_cache_from_model(
                 past_kv, layer_ids, max_new_tokens=decode_limit + 16,
-                fp16_key_cache_capacity=_key_cap,
+                fp16_key_cache_capacity=None,
             )
 
         top_k = top_k_override if top_k_override is not None else 4
@@ -575,6 +598,7 @@ def compute_certified_perplexity(
                 ranking_r=ranking_r,
                 ranking_fallback_mode=ranking_fallback_mode,
                 score_consistency_check=score_consistency_check,
+                score_consistency_interval=score_consistency_interval,
                 eps_guard=eps_guard,
                 exploration_rate=exploration_rate,
                 rung1_threshold=rung1_threshold,
@@ -593,14 +617,14 @@ def compute_certified_perplexity(
             warm_cache_position = torch.tensor([prefix_len], dtype=torch.long, device=device)
             with torch.inference_mode():
                 for wt in range(warm_steps):
-                    warm_token_id = input_ids[:, prefix_len + wt]
+                    warm_token_id = input_ids[:, prefix_len + wt:prefix_len + wt + 1]
                     warm_out = model(
-                        input_ids=warm_token_id.unsqueeze(0),
+                        input_ids=warm_token_id,
                         use_cache=False,
                         cache_position=warm_cache_position,
                         position_ids=warm_cache_position.unsqueeze(0),
                     )
-                    warm_cache_position = warm_cache_position + 1
+                    warm_cache_position.add_(1)
                     del warm_out
             torch.cuda.synchronize()
             adapter.certified_state = None
@@ -616,6 +640,7 @@ def compute_certified_perplexity(
 
         cache_t0 = time.perf_counter()
         tiered_caches = _build_tiered_caches()
+        cache_runtime = _cache_runtime_summary(tiered_caches)
         print(
             f"  Certified [{i+1}/{len(chunks)}] cache_build_ms={(time.perf_counter() - cache_t0) * 1000.0:.1f}",
             flush=True,
@@ -629,7 +654,7 @@ def compute_certified_perplexity(
         )
 
         adapter.certified_state = _make_certified_state(
-            tiered_caches, collect_stats=(telemetry_mode != "off"),
+            tiered_caches, collect_stats=collect_step_stats,
         )
         if os.environ.get("DOTCACHE_PHASE_TIMING") == "1":
             adapter.certified_state.phase_timings = {}
@@ -652,10 +677,10 @@ def compute_certified_perplexity(
         progress_stats_cursor = 0
 
         for t in range(decode_limit):
-            token_id = input_ids[:, prefix_len + t]
+            token_id = input_ids[:, prefix_len + t:prefix_len + t + 1]
             with torch.inference_mode():
                 out = model(
-                    input_ids=token_id.unsqueeze(0),
+                    input_ids=token_id,
                     use_cache=False,
                     cache_position=cache_position,
                     position_ids=cache_position.unsqueeze(0),
@@ -667,7 +692,7 @@ def compute_certified_perplexity(
             target = input_ids[:, prefix_len + t + 1]
             nll = F.cross_entropy(logits, target, reduction="sum")
             suffix_nll_tensor = suffix_nll_tensor + nll
-            cache_position = cache_position + 1
+            cache_position.add_(1)
 
             if telemetry_mode == "debug":
                 # Drain per-step aggregated stats — keep the FULL dict, not just
@@ -705,8 +730,10 @@ def compute_certified_perplexity(
                         for k, v in sorted(phase_timings.items())
                     )
                     print(f"    certified phases {phase_msg}", flush=True)
-                progress_entries = adapter.certified_state.step_stats[progress_stats_cursor:]
-                progress_stats_cursor += len(progress_entries)
+                progress_entries = []
+                if collect_step_stats:
+                    progress_entries = adapter.certified_state.step_stats[progress_stats_cursor:]
+                    progress_stats_cursor += len(progress_entries)
                 if progress_entries:
                     rung2_layers = sum(bool(s.get("rung2_fired")) for s in progress_entries)
                     int4_layers = sum(s.get("v_format") == "int4" for s in progress_entries)
@@ -740,12 +767,12 @@ def compute_certified_perplexity(
         chunk_runtime_profile = adapter.runtime_profile_summary(
             model_forward_ms_total=(time.perf_counter() - chunk_cert_t0) * 1000.0,
         )
-        if telemetry_mode == "summary":
+        if telemetry_mode == "summary" and collect_step_stats:
             layer_entries = adapter.certified_state.clear_step_stats()
             chunk_step_aggs = _layer_entries_to_step_aggs(layer_entries, len(layer_ids))
             chunk_blocks = sum(s.get("total_blocks", 0) for s in chunk_step_aggs)
             chunk_skipped = sum(s.get("skipped_blocks", 0) for s in chunk_step_aggs)
-        elif telemetry_mode == "off":
+        elif telemetry_mode in {"summary", "off"}:
             chunk_step_aggs = []
 
         adapter.certified_state = None
@@ -777,6 +804,7 @@ def compute_certified_perplexity(
             "skipped_blocks": int(chunk_skipped),
             "total_blocks": int(chunk_blocks),
             "telemetry": chunk_telemetry,
+            "cache_runtime": cache_runtime,
             "runtime_profile": chunk_runtime_profile,
         })
         # Accumulate for overall summary (all chunks reduced together).
@@ -816,6 +844,8 @@ def compute_certified_perplexity(
         "decode_steps": total_steps,
         "max_certified_steps": max_certified_steps,
         "truncated_certified_decode": max_certified_steps is not None,
+        "collect_step_stats": collect_step_stats,
+        "score_consistency_interval": int(score_consistency_interval),
         # Reduced telemetry across all certified decode steps — THIS is
         # where the §8.6 hard-STOP signals and paper §4.5 bound scalars
         # actually live. See docs/paper_v1_run_handoff.md §5.
@@ -854,6 +884,8 @@ def main():
     parser.add_argument("--ranking-r", type=int, default=1)
     parser.add_argument("--ranking-fallback-mode", default="full", choices=["full", "measure"])
     parser.add_argument("--score-consistency-check", action="store_true")
+    parser.add_argument("--score-consistency-interval", type=int, default=1,
+                        help="Run score-consistency canary every N decode steps (1 = exact every step).")
     parser.add_argument("--eps-guard", type=float, default=0.01)
     parser.add_argument("--exploration-rate", type=float, default=0.0)
     parser.add_argument("--rung1-threshold", type=float, default=0.02)
@@ -864,16 +896,23 @@ def main():
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
     parser.add_argument("--telemetry-mode", default="summary",
                         choices=["debug", "summary", "off"],
-                        help="debug drains telemetry every token; summary drains once per chunk; off disables stats")
+                        help="debug drains telemetry every token; summary keeps hot-path stats off unless --collect-step-stats is set; off disables stats")
+    parser.add_argument("--collect-step-stats", action="store_true",
+                        help="Collect full per-layer certified telemetry in summary mode. Slow; use for diagnostic sweeps, not throughput timing.")
     parser.add_argument("--max-certified-steps", type=int, default=None,
                         help="Calibration only: limit certified suffix decode steps. Do not use for paper tables.")
     parser.add_argument("--certified-warmup-steps", type=int, default=128,
                         help="Run untimed certified decode steps on a throwaway cache before timing (0 disables).")
     import sys as _sys, os as _os
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    from _provenance import add_paper_cache_args, cache_config_dict
+    from _provenance import (
+        add_paper_cache_args,
+        cache_config_dict,
+        configure_paper_runtime_defaults,
+    )
     add_paper_cache_args(parser)
     args = parser.parse_args()
+    configure_paper_runtime_defaults()
 
     token = os.environ.get("HF_TOKEN") or None
     warnings.filterwarnings(
@@ -948,6 +987,7 @@ def main():
             ranking_r=args.ranking_r,
             ranking_fallback_mode=args.ranking_fallback_mode,
             score_consistency_check=args.score_consistency_check,
+            score_consistency_interval=args.score_consistency_interval,
             eps_guard=args.eps_guard,
             exploration_rate=args.exploration_rate,
             rung1_threshold=args.rung1_threshold,
@@ -955,6 +995,7 @@ def main():
             telemetry_collector=telemetry_collector,
             book_indices=book_indices,
             telemetry_mode=args.telemetry_mode,
+            collect_step_stats=args.collect_step_stats,
             max_certified_steps=args.max_certified_steps,
             certified_warmup_steps=args.certified_warmup_steps,
         )
@@ -1023,6 +1064,9 @@ def main():
         "top_k_override": args.top_k_override,
         "max_certified_steps": args.max_certified_steps,
         "truncated_certified_decode": args.max_certified_steps is not None,
+        "telemetry_mode": args.telemetry_mode,
+        "collect_step_stats": args.collect_step_stats,
+        "score_consistency_interval": args.score_consistency_interval,
         "cache_config": cache_config_dict(args),
         "dense": dense_result,
         "certified": cert_result,

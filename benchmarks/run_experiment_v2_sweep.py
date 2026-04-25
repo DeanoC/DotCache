@@ -28,6 +28,7 @@ MODEL = "NousResearch/Meta-Llama-3.1-8B"
 sys.path.insert(0, str(REPO))
 
 CONTEXTS_MAIN = [8192, 32768, 65536]
+BLOCK_SIZE = 16
 
 CERT_FLAGS: dict[str, str] = {
     "v_tolerance": "0.05",
@@ -39,11 +40,21 @@ CERT_FLAGS: dict[str, str] = {
     "exploration_rate": "0.02",
     "rung1_threshold": "0.02",
     "rung1_multiplier": "2.0",
-    # Quality runs use full FP16 value mirror. Bounded value-cache capacities
-    # are measured separately by run_fp16_value_cache_sweep.py; forcing cap=64
-    # makes every Rung-2 value fallback page from CPU and is too slow for v2.
-    "fp16_value_cache_blocks": "full",
 }
+
+
+def recommended_fp16_cache_blocks(context_length: int, *, block_size: int = BLOCK_SIZE) -> tuple[int, int]:
+    """Return bounded FP16 key/value scratch sizes for paper v2 runs.
+
+    The 64K sweep on this RTX PRO 6000 found the practical knee at
+    key/value = 3584/1536 blocks. Expressing that as fractions of the active
+    4096 blocks keeps the setting bounded and scales consistently across
+    contexts without silently switching to a full FP16 mirror.
+    """
+    n_blocks = (int(context_length) + int(block_size) - 1) // int(block_size)
+    key_blocks = (n_blocks * 7) // 8
+    value_blocks = (n_blocks * 3) // 8
+    return max(1, key_blocks), max(1, value_blocks)
 
 CELL_ESTIMATE_HOURS: dict[tuple[str, int], float] = {
     # PG-19 estimates are calibrated on this RTX PRO 6000 host from the
@@ -129,7 +140,8 @@ def format_hours(hours: float) -> str:
     return f"{hours:.1f}h ({hours / 24.0:.1f}d)"
 
 
-def _common_cert_args(group_size: int = 16) -> list[str]:
+def _common_cert_args(context_length: int, group_size: int = 16) -> list[str]:
+    key_cache_blocks, value_cache_blocks = recommended_fp16_cache_blocks(context_length)
     args = [
         "--model", MODEL,
         "--v-tolerance", CERT_FLAGS["v_tolerance"],
@@ -141,14 +153,13 @@ def _common_cert_args(group_size: int = 16) -> list[str]:
         "--ranking-fallback",
         "--ranking-r", CERT_FLAGS["ranking_r"],
         "--ranking-fallback-mode", "full",
-        "--score-consistency-check",
         "--eps-guard", CERT_FLAGS["eps_guard"],
         "--exploration-rate", CERT_FLAGS["exploration_rate"],
         "--rung1-threshold", CERT_FLAGS["rung1_threshold"],
         "--rung1-multiplier", CERT_FLAGS["rung1_multiplier"],
     ]
-    if CERT_FLAGS["fp16_value_cache_blocks"] != "full":
-        args.extend(["--fp16-value-cache-blocks", CERT_FLAGS["fp16_value_cache_blocks"]])
+    args.extend(["--fp16-key-cache-blocks", str(key_cache_blocks)])
+    args.extend(["--fp16-value-cache-blocks", str(value_cache_blocks)])
     return args
 
 
@@ -162,8 +173,9 @@ def _cli_for_cell(cell: dict[str, Any], out_json: Path, *, smoke: bool) -> list[
             "--context", str(ctx),
             "--num-chunks", str(chunks),
             "--telemetry-mode", "summary",
+            "--certified-warmup-steps", "4" if smoke else "128",
             "--output", str(out_json),
-            *_common_cert_args(),
+            *_common_cert_args(ctx),
         ]
     if bench == "niah":
         needles = 1 if smoke else int(cell.get("needles", 10))
@@ -172,7 +184,7 @@ def _cli_for_cell(cell: dict[str, Any], out_json: Path, *, smoke: bool) -> list[
             "--contexts", str(ctx),
             "--needles", str(needles),
             "--output", str(out_json),
-            *_common_cert_args(),
+            *_common_cert_args(ctx),
         ]
     if bench == "ruler":
         samples = 1 if smoke else int(cell.get("samples", 50))
@@ -181,7 +193,7 @@ def _cli_for_cell(cell: dict[str, Any], out_json: Path, *, smoke: bool) -> list[
             "--contexts", str(ctx),
             "--num-samples", str(samples),
             "--output", str(out_json),
-            *_common_cert_args(),
+            *_common_cert_args(ctx),
         ]
     raise ValueError(f"unknown bench: {bench}")
 
@@ -227,8 +239,12 @@ def _load_json(path: Path) -> Any:
         return {"_parse_error": str(exc)}
 
 
-def _paper_config(native: dict[str, Any] | None = None) -> dict[str, Any]:
+def _paper_config(native: dict[str, Any] | None = None, *, context_length: int | None = None) -> dict[str, Any]:
     cache_config = native.get("cache_config", {}) if isinstance(native, dict) else {}
+    fallback_key_blocks, fallback_value_blocks = (
+        recommended_fp16_cache_blocks(context_length)
+        if context_length is not None else (None, None)
+    )
     return {
         "k_max": int(CERT_FLAGS["k_max"]),
         "tau_cov": float(CERT_FLAGS["tau_cov"]),
@@ -240,7 +256,8 @@ def _paper_config(native: dict[str, Any] | None = None) -> dict[str, Any]:
         "block_size": 16,
         "ranking_r": int(CERT_FLAGS["ranking_r"]),
         "ranking_fallback_mode": "full",
-        "fp16_value_cache_blocks": CERT_FLAGS["fp16_value_cache_blocks"],
+        "fp16_key_cache_blocks": cache_config.get("fp16_key_cache_blocks", fallback_key_blocks),
+        "fp16_value_cache_blocks": cache_config.get("fp16_value_cache_blocks", fallback_value_blocks),
     }
 
 
@@ -397,7 +414,7 @@ def run_cell(cell: dict[str, Any], *, smoke: bool, dry_run: bool) -> dict[str, A
     wrapped = {
         "benchmark": bench,
         "context_length": ctx,
-        "config": _paper_config(native),
+        "config": _paper_config(native, context_length=ctx),
         "model": MODEL,
         "model_quant": "int8-bitsandbytes",
         "hardware": _hw_tag(),

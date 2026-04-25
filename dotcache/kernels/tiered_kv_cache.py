@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+import os
 from typing import Any
 
 import torch
@@ -56,8 +57,8 @@ class TieredKeyCacheLayer:
     # Pre-allocated VRAM buffer for page-in (avoid allocation on critical path)
     _pagein_buffer: torch.Tensor | None = None  # [max_pagein_blocks * block_size, head_dim] fp16 cuda
 
-    # Pre-computed dequantised keys and float32 values (avoid per-call allocation)
-    # For quantised blocks: dequantised INT8.  For trailing partial block: exact FP16→f32.
+    # Optional debug/precompute buffers. The paper path leaves these unset; a
+    # persistent full reconstructed-key buffer would erase the INT8 VRAM savings.
     _keys_deq_f32: torch.Tensor | None = None   # [kv_heads, N, head_dim] float32, cuda
     _values_f32: torch.Tensor | None = None      # [kv_heads, N, d_v] float32, cuda
 
@@ -87,10 +88,13 @@ class TieredKeyCacheLayer:
     fp16_value_cache_capacity: int | None = None  # None = full mirror; int = bounded cache (# blocks)
     _fp16_value_resident: "OrderedDict[int, int]" = field(default_factory=OrderedDict)
     _fp16_value_free_slots: list[int] = field(default_factory=list)
+    _fp16_value_block_slots_gpu: torch.Tensor | None = None  # [max_blocks] int32, block id -> compact slot
     _fp16_value_cache_hits: int = 0
     _fp16_value_cache_misses: int = 0
     _fp16_value_cache_h2d_bytes: int = 0
     _fp16_value_cache_evictions: int = 0
+    static_resident_value_cache: bool = False
+    static_resident_value_prepare_bytes: int = 0
 
     # VRAM-side FP16 key buffer. Two modes:
     #   - Full mirror (keys_fp16_gpu non-None, fp16_key_cache_capacity is None):
@@ -101,7 +105,7 @@ class TieredKeyCacheLayer:
     #     eviction. This IS the paper's tiered architecture — FP16 lives on
     #     CPU pinned RAM (keys_fp16_cpu), the VRAM buffer is a transparent
     #     cache that reduces H2D via locality.
-    keys_fp16_gpu: torch.Tensor | None = None    # [kv_heads, N, head_dim] model dtype, cuda
+    keys_fp16_gpu: torch.Tensor | None = None    # full mirror or compact [kv_heads, cap * B, head_dim]
     fp16_key_cache_capacity: int | None = None   # None = full mirror; int = bounded cache (# blocks)
     # OrderedDict serves double duty as both the residency set (membership
     # test via `bid in od`) and the LRU order (tail = most recently used;
@@ -113,11 +117,19 @@ class TieredKeyCacheLayer:
     # eviction: insert low-priority blocks first (they land toward the
     # LRU-front and get evicted first); insert high-priority blocks last
     # (they stay at the MRU-tail and survive longer).
-    _fp16_key_resident: "OrderedDict[int, bool]" = field(default_factory=OrderedDict)
+    _fp16_key_resident: "OrderedDict[int, int]" = field(default_factory=OrderedDict)
+    _fp16_key_free_slots: list[int] = field(default_factory=list)
+    _fp16_key_block_slots_gpu: torch.Tensor | None = None  # [max_blocks] int32, block id -> compact slot
     _fp16_key_cache_hits: int = 0
     _fp16_key_cache_misses: int = 0
     _fp16_key_cache_h2d_bytes: int = 0
     _fp16_key_cache_evictions: int = 0
+    static_resident_key_cache: bool = False
+    static_resident_key_prepare_bytes: int = 0
+    _native_pagein_failed: bool = False
+    # Per-layer temporary GPU tensors reused by certified decode. Scratch
+    # only: never stores persistent full-context FP16 mirrors.
+    _certified_workspace: dict[str, torch.Tensor] = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_fp16_cache(
@@ -229,22 +241,17 @@ class TieredKeyCacheLayer:
         #   - fp16_key_cache_capacity is None → legacy full mirror: pre-populated
         #     with every prefill block, zero H2D during decode.
         #   - fp16_key_cache_capacity = K → paper-matching bounded cache: the
-        #     scratch is allocated but NOT pre-populated; ensure_fp16_keys_resident
+        #     compact scratch is allocated but NOT pre-populated; ensure_fp16_keys_resident
         #     fetches blocks from keys_fp16_cpu on demand via H2D, evicting LRU
         #     once K blocks are resident.
-        keys_fp16_gpu_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=kv_dtype, device=device)
         if fp16_key_cache_capacity is None:
+            keys_fp16_gpu_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=kv_dtype, device=device)
             keys_fp16_gpu_buf[:, :N, :] = keys_fp16.to(dtype=kv_dtype, device=device)
-
-        # Pre-compute dequant into buffer (paper §2.3: k̂ = q · s + z)
-        # Per-channel: k_scale and k_zero_points are [kv_heads, num_blocks, head_dim],
-        # broadcast over token dim.
-        keys_deq_buf = torch.zeros(kv_heads, capacity, head_dim, dtype=torch.float32, device=device)
-        keys_deq_buf[:, :N, :] = (
-            keys_int8.to(torch.float32).reshape(kv_heads, num_blocks, block_size, head_dim)
-            * k_scale.to(torch.float32)[:, :, None, :]
-            + k_zero_points.to(torch.float32)[:, :, None, :]
-        ).reshape(kv_heads, N, head_dim)
+        else:
+            cap = max(int(fp16_key_cache_capacity), 0)
+            keys_fp16_gpu_buf = torch.empty(
+                kv_heads, cap * block_size, head_dim, dtype=kv_dtype, device=device,
+            )
 
         result = cls(
             keys_int8=keys_int8_buf,
@@ -262,14 +269,20 @@ class TieredKeyCacheLayer:
             num_blocks=num_blocks,
             num_quantized_blocks=num_blocks,  # all prefill blocks are complete
             _pagein_buffer=pagein_buffer,
-            _keys_deq_f32=keys_deq_buf,
+            _keys_deq_f32=None,
             keys_fp16_gpu=keys_fp16_gpu_buf,
             fp16_key_cache_capacity=fp16_key_cache_capacity,
         )
         # Legacy full-mirror mode: mark every prefill block as resident so
         # ensure_fp16_keys_resident short-circuits to all-hit.
         if fp16_key_cache_capacity is None:
-            result._fp16_key_resident = OrderedDict((i, True) for i in range(num_blocks))
+            result._fp16_key_resident = OrderedDict((i, i) for i in range(num_blocks))
+        else:
+            result._fp16_key_free_slots = list(range(max(int(fp16_key_cache_capacity), 0)))
+            if os.environ.get("DOTCACHE_STATIC_RESIDENT_CACHE", "1").strip().lower() not in {
+                "0", "false", "no", "off",
+            }:
+                result.maybe_enable_static_resident_key_cache()
         return result
 
     @classmethod
@@ -381,6 +394,10 @@ class TieredKeyCacheLayer:
             )
             base.fp16_value_cache_capacity = cap
             base._fp16_value_free_slots = list(range(cap))
+            if os.environ.get("DOTCACHE_STATIC_RESIDENT_CACHE", "1").strip().lower() not in {
+                "0", "false", "no", "off",
+            }:
+                base.maybe_enable_static_resident_value_cache()
 
         # Clear the normal FP16 value path; INT4 replaces it for Phase 2.
         base.values_fp16 = None
@@ -395,7 +412,13 @@ class TieredKeyCacheLayer:
         end = start + self.block_size
         if end > self.num_tokens + 1:
             return
-        if self.values_fp16_gpu is not None and self.fp16_value_cache_capacity is None:
+        if (
+            self.values_fp16_gpu is not None
+            and (
+                self.fp16_value_cache_capacity is None
+                or self.static_resident_value_cache
+            )
+        ):
             values_block = self.values_fp16_gpu[:, start:end, :]
         elif self.values_fp16 is not None:
             values_block = self.values_fp16[:, start:end, :]
@@ -465,11 +488,18 @@ class TieredKeyCacheLayer:
         end = start + self.block_size
         device = self.keys_int8.device
 
-        # In full-mirror mode the appended FP16 keys are already resident on
-        # GPU, so quantise completed decode blocks from that mirror and avoid
-        # forcing the hot path through pinned CPU. Bounded-cache mode still
-        # uses the CPU tier because evicted blocks must be pageable later.
-        if self.keys_fp16_gpu is not None and self.fp16_key_cache_capacity is None:
+        # In full-mirror and static-resident bounded-cache modes, appended
+        # FP16 keys are already resident on GPU. Quantise completed decode
+        # blocks from that mirror to avoid forcing the hot path through pinned
+        # CPU. Non-static bounded-cache mode still uses the CPU tier because
+        # evicted blocks must remain pageable later.
+        if (
+            self.keys_fp16_gpu is not None
+            and (
+                self.fp16_key_cache_capacity is None
+                or self.static_resident_key_cache
+            )
+        ):
             keys_block = self.keys_fp16_gpu[:, start:end, :].to(dtype=torch.float32)
         else:
             keys_block = self.keys_fp16_cpu[:, start:end, :].to(
@@ -502,19 +532,6 @@ class TieredKeyCacheLayer:
         k_scale_l2 = k_scale.norm(dim=-1)  # [kv_heads]
         delta = k_scale_l2 / 127.0
         self.correction[:, block_idx] = torch.exp(2.0 * delta)
-
-        # Register the newly-completed block in the FP16 VRAM cache. Its
-        # FP16 data was already written to keys_fp16_gpu at the right
-        # offset during append_token; we just need to mark it resident and
-        # (in bounded-capacity mode) evict an LRU victim to make room.
-        if self.fp16_key_cache_capacity is not None and block_idx not in self._fp16_key_resident:
-            if len(self._fp16_key_resident) >= int(self.fp16_key_cache_capacity):
-                if self._fp16_key_resident:
-                    self._fp16_key_resident.popitem(last=False)  # LRU = front
-                    self._fp16_key_cache_evictions += 1
-            # New block lands at MRU (tail). It's semantically "most recent"
-            # since we just wrote its INT8+FP16 data.
-            self._fp16_key_resident[int(block_idx)] = True
 
         # Update dequant buffer with INT8-dequantised values (replaces the exact FP16)
         # Paper §2.3: k̂ = q · s + z
@@ -580,7 +597,10 @@ class TieredKeyCacheLayer:
         defer_int4 = (
             self.defer_int4_append_quantization
             and self.values_fp16_gpu is not None
-            and self.fp16_value_cache_capacity is None
+            and (
+                self.fp16_value_cache_capacity is None
+                or self.static_resident_value_cache
+            )
         )
         if self.values_int4_packed is not None and not defer_int4:
             from dotcache.kernels.int4_group_quantise import quantise_int4_grouped
@@ -613,19 +633,34 @@ class TieredKeyCacheLayer:
         # blocks from that mirror.
         if not (
             self.keys_fp16_gpu is not None
-            and self.fp16_key_cache_capacity is None
+            and (
+                self.fp16_key_cache_capacity is None
+                or self.static_resident_key_cache
+            )
         ):
             self.keys_fp16_cpu[:, pos, :].copy_(new_k, non_blocking=True)
 
-        # Mirror into GPU key buffer so decode-time attend avoids a CPU→GPU copy
-        if self.keys_fp16_gpu is not None:
+        # Mirror into GPU key buffer only in legacy full-mirror mode. Bounded
+        # paper mode pages complete FP16 key blocks into compact scratch slots.
+        if self.keys_fp16_gpu is not None and self.fp16_key_cache_capacity is None:
             self.keys_fp16_gpu[:, pos, :] = new_k.to(device=device, dtype=kv_dtype)
+        elif (
+            self.keys_fp16_gpu is not None
+            and self.fp16_key_cache_capacity is not None
+            and block_idx in self._fp16_key_resident
+        ):
+            slot = self._fp16_key_resident[block_idx]
+            dst = slot * self.block_size + pos_in_block
+            self.keys_fp16_gpu[:, dst, :] = new_k.to(device=device, dtype=kv_dtype)
 
         if (
             self.values_fp16_cpu is not None
             and not (
                 self.values_fp16_gpu is not None
-                and self.fp16_value_cache_capacity is None
+                and (
+                    self.fp16_value_cache_capacity is None
+                    or self.static_resident_value_cache
+                )
             )
         ):
             self.values_fp16_cpu[:, pos, :].copy_(new_v, non_blocking=True)
@@ -761,10 +796,11 @@ class TieredKeyCacheLayer:
             ).reshape(self.kv_heads, qt, self.head_dim)
         # Trailing partial block: exact FP16
         if qt < self.num_tokens:
-            self._keys_deq_f32[:, qt:self.num_tokens, :] = (
-                self.keys_fp16_cpu[:, qt:self.num_tokens, :]
-                .to(device=device, dtype=torch.float32)
-            )
+            if self.keys_fp16_gpu is not None and self.fp16_key_cache_capacity is None:
+                trailing = self.keys_fp16_gpu[:, qt:self.num_tokens, :]
+            else:
+                trailing = self.keys_fp16_cpu[:, qt:self.num_tokens, :].to(device=device)
+            self._keys_deq_f32[:, qt:self.num_tokens, :] = trailing.to(dtype=torch.float32)
         if self.values_fp16 is not None:
             self._values_f32 = self.values_fp16.to(torch.float32).contiguous()
 
@@ -803,21 +839,393 @@ class TieredKeyCacheLayer:
             total += self.values_fp16_cpu.nelement() * 2
         return total
 
+    def _max_block_slots(self) -> int:
+        return int(self.keys_scale.shape[1])
+
+    def _ensure_key_slot_table(self) -> torch.Tensor | None:
+        if self.keys_fp16_gpu is None:
+            return None
+        device = self.keys_fp16_gpu.device
+        n = self._max_block_slots()
+        table = self._fp16_key_block_slots_gpu
+        if table is None or table.device != device or int(table.numel()) < n:
+            table = torch.full((n,), -1, dtype=torch.int32, device=device)
+            self._fp16_key_block_slots_gpu = table
+            if self.fp16_key_cache_capacity is None:
+                table.copy_(torch.arange(n, dtype=torch.int32, device=device))
+            elif self._fp16_key_resident:
+                ids = torch.as_tensor(list(self._fp16_key_resident.keys()), dtype=torch.long, device=device)
+                slots = torch.as_tensor(list(self._fp16_key_resident.values()), dtype=torch.int32, device=device)
+                table[ids] = slots
+        return table
+
+    def _ensure_value_slot_table(self) -> torch.Tensor | None:
+        if self.values_fp16_gpu is None:
+            return None
+        device = self.values_fp16_gpu.device
+        n = self._max_block_slots()
+        table = self._fp16_value_block_slots_gpu
+        if table is None or table.device != device or int(table.numel()) < n:
+            table = torch.full((n,), -1, dtype=torch.int32, device=device)
+            self._fp16_value_block_slots_gpu = table
+            if self.fp16_value_cache_capacity is None:
+                table.copy_(torch.arange(n, dtype=torch.int32, device=device))
+            elif self._fp16_value_resident:
+                ids = torch.as_tensor(list(self._fp16_value_resident.keys()), dtype=torch.long, device=device)
+                slots = torch.as_tensor(list(self._fp16_value_resident.values()), dtype=torch.int32, device=device)
+                table[ids] = slots
+        return table
+
+    def maybe_enable_static_resident_key_cache(self) -> int:
+        """Pre-page all current keys and identity-map future bounded slots.
+
+        This is still a bounded scratch cache: it is only enabled when the
+        configured capacity can cover the cache's full reserved block budget.
+        Future decode blocks are marked resident now so append_token writes
+        directly into their identity slots as tokens arrive.
+        """
+        if self.keys_fp16_gpu is None or self.fp16_key_cache_capacity is None:
+            return 0
+        if self.static_resident_key_cache:
+            return 0
+        max_blocks = self._max_block_slots()
+        cap = int(self.fp16_key_cache_capacity)
+        if cap < max_blocks:
+            return 0
+
+        slot_table = self._ensure_key_slot_table()
+        loaded_blocks = list(range(int(self.num_blocks)))
+        bytes_ = self._page_in_fp16_blocks(
+            src_cpu=self.keys_fp16_cpu,
+            dst_gpu=self.keys_fp16_gpu,
+            loaded_blocks=loaded_blocks,
+            loaded_slots=loaded_blocks,
+            evicted_blocks=[],
+            slot_table=slot_table,
+            feature_dim=self.head_dim,
+        )
+        if slot_table is not None:
+            n = min(max_blocks, int(slot_table.numel()))
+            slot_table[:n].copy_(torch.arange(n, dtype=torch.int32, device=slot_table.device))
+        self._fp16_key_resident = OrderedDict((i, i) for i in range(max_blocks))
+        self._fp16_key_free_slots = list(range(max_blocks, cap))
+        self.static_resident_key_cache = True
+        self.static_resident_key_prepare_bytes += int(bytes_)
+        return int(bytes_)
+
+    def maybe_enable_static_resident_value_cache(self) -> int:
+        """Pre-page all current FP16 fallback values into identity slots."""
+        if (
+            self.values_fp16_gpu is None
+            or self.values_fp16_cpu is None
+            or self.fp16_value_cache_capacity is None
+        ):
+            return 0
+        if self.static_resident_value_cache:
+            return 0
+        max_blocks = self._max_block_slots()
+        cap = int(self.fp16_value_cache_capacity)
+        if cap < max_blocks:
+            return 0
+
+        slot_table = self._ensure_value_slot_table()
+        loaded_blocks = list(range(int(self.num_blocks)))
+        bytes_ = self._page_in_fp16_blocks(
+            src_cpu=self.values_fp16_cpu,
+            dst_gpu=self.values_fp16_gpu,
+            loaded_blocks=loaded_blocks,
+            loaded_slots=loaded_blocks,
+            evicted_blocks=[],
+            slot_table=slot_table,
+            feature_dim=self.d_v,
+        )
+        if slot_table is not None:
+            n = min(max_blocks, int(slot_table.numel()))
+            slot_table[:n].copy_(torch.arange(n, dtype=torch.int32, device=slot_table.device))
+        self._fp16_value_resident = OrderedDict((i, i) for i in range(max_blocks))
+        self._fp16_value_free_slots = list(range(max_blocks, cap))
+        self.static_resident_value_cache = True
+        # The trailing partial decode block is always served from this exact
+        # FP16 scratch. Quantise appended INT4 values only when a block becomes
+        # complete, preserving the paper INT4 block contents while removing
+        # per-token INT4 quantisation from the hot path.
+        self.defer_int4_append_quantization = True
+        self.static_resident_value_prepare_bytes += int(bytes_)
+        return int(bytes_)
+
+    def fp16_key_block_slots_gpu(self, n_blocks: int) -> torch.Tensor:
+        table = self._ensure_key_slot_table()
+        if table is None:
+            raise RuntimeError("FP16 key slot table requested without a GPU FP16 key cache")
+        return table[: int(n_blocks)]
+
+    def fp16_value_block_slots_gpu(self, n_blocks: int) -> torch.Tensor:
+        table = self._ensure_value_slot_table()
+        if table is None:
+            raise RuntimeError("FP16 value slot table requested without a GPU FP16 value cache")
+        return table[: int(n_blocks)]
+
+    @staticmethod
+    def _update_slot_table(
+        table: torch.Tensor | None,
+        *,
+        evicted_blocks: list[int],
+        loaded_blocks: list[int],
+        loaded_slots: list[int],
+    ) -> None:
+        if table is None:
+            return
+        device = table.device
+        if evicted_blocks:
+            table[torch.as_tensor(evicted_blocks, dtype=torch.long, device=device)] = -1
+        if loaded_blocks:
+            ids = torch.as_tensor(loaded_blocks, dtype=torch.long, device=device)
+            slots = torch.as_tensor(loaded_slots, dtype=torch.int32, device=device)
+            table[ids] = slots
+
+    def _page_in_fp16_blocks(
+        self,
+        *,
+        src_cpu: torch.Tensor | None,
+        dst_gpu: torch.Tensor | None,
+        loaded_blocks: list[int],
+        loaded_slots: list[int],
+        evicted_blocks: list[int],
+        slot_table: torch.Tensor | None,
+        feature_dim: int,
+    ) -> int:
+        if dst_gpu is None or not loaded_blocks:
+            self._update_slot_table(
+                slot_table,
+                evicted_blocks=evicted_blocks,
+                loaded_blocks=loaded_blocks,
+                loaded_slots=loaded_slots,
+            )
+            return 0
+
+        native_enabled = (
+            os.environ.get("DOTCACHE_NATIVE_PAGEIN", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+        if (
+            src_cpu is not None
+            and slot_table is not None
+            and native_enabled
+            and not self._native_pagein_failed
+        ):
+            try:
+                from dotcache.backends.cuda_pagein import (
+                    page_in_fp16_blocks_cuda,
+                    page_in_fp16_blocks_packed_cuda,
+                )
+
+                packed_threshold = int(os.environ.get("DOTCACHE_NATIVE_PAGEIN_PACKED_MIN_BLOCKS", "2"))
+                use_packed = (
+                    os.environ.get("DOTCACHE_NATIVE_PAGEIN_PACKED", "0").strip().lower()
+                    not in {"0", "false", "no", "off"}
+                    and len(loaded_blocks) >= packed_threshold
+                )
+                loaded_blocks_cpu = self._pinned_index_tensor(
+                    "pagein_loaded_blocks_i64",
+                    loaded_blocks,
+                    dtype=torch.long,
+                )
+                loaded_slots_cpu = self._pinned_index_tensor(
+                    "pagein_loaded_slots_i32",
+                    loaded_slots,
+                    dtype=torch.int32,
+                )
+                evicted_blocks_cpu = self._pinned_index_tensor(
+                    "pagein_evicted_blocks_i64",
+                    evicted_blocks,
+                    dtype=torch.long,
+                )
+                loaded_blocks_gpu = self._device_index_tensor(
+                    "pagein_loaded_blocks_i64_gpu",
+                    len(loaded_blocks),
+                    dtype=torch.long,
+                    device=dst_gpu.device,
+                )
+                loaded_slots_gpu = self._device_index_tensor(
+                    "pagein_loaded_slots_i32_gpu",
+                    len(loaded_slots),
+                    dtype=torch.int32,
+                    device=dst_gpu.device,
+                )
+                evicted_blocks_gpu = self._device_index_tensor(
+                    "pagein_evicted_blocks_i64_gpu",
+                    len(evicted_blocks),
+                    dtype=torch.long,
+                    device=dst_gpu.device,
+                )
+                if use_packed:
+                    stage_tokens = max(len(loaded_blocks), 1) * self.block_size
+                    stage_cpu = self._pagein_stage_tensor(
+                        "pagein_stage_cpu",
+                        stage_tokens,
+                        feature_dim,
+                        dtype=src_cpu.dtype,
+                        device=torch.device("cpu"),
+                        pinned=True,
+                    )
+                    stage_gpu = self._pagein_stage_tensor(
+                        "pagein_stage_gpu",
+                        stage_tokens,
+                        feature_dim,
+                        dtype=dst_gpu.dtype,
+                        device=dst_gpu.device,
+                        pinned=False,
+                    )
+                    return page_in_fp16_blocks_packed_cuda(
+                        src_cpu=src_cpu,
+                        dst_gpu=dst_gpu,
+                        stage_cpu=stage_cpu,
+                        stage_gpu=stage_gpu,
+                        loaded_blocks_cpu=loaded_blocks_cpu,
+                        loaded_slots_cpu=loaded_slots_cpu,
+                        evicted_blocks_cpu=evicted_blocks_cpu,
+                        loaded_blocks_gpu=loaded_blocks_gpu,
+                        loaded_slots_gpu=loaded_slots_gpu,
+                        evicted_blocks_gpu=evicted_blocks_gpu,
+                        slot_table_gpu=slot_table,
+                        block_size=self.block_size,
+                        active_tokens=self.num_tokens,
+                    )
+
+                return page_in_fp16_blocks_cuda(
+                    src_cpu=src_cpu,
+                    dst_gpu=dst_gpu,
+                    loaded_blocks_cpu=loaded_blocks_cpu,
+                    loaded_slots_cpu=loaded_slots_cpu,
+                    evicted_blocks_cpu=evicted_blocks_cpu,
+                    loaded_blocks_gpu=loaded_blocks_gpu,
+                    loaded_slots_gpu=loaded_slots_gpu,
+                    evicted_blocks_gpu=evicted_blocks_gpu,
+                    slot_table_gpu=slot_table,
+                    block_size=self.block_size,
+                    active_tokens=self.num_tokens,
+                )
+            except Exception:
+                if os.environ.get("DOTCACHE_NATIVE_PAGEIN_STRICT", "0") == "1":
+                    raise
+                self._native_pagein_failed = True
+
+        h2d_bytes = 0
+        if src_cpu is not None:
+            bs = self.block_size
+            device = dst_gpu.device
+            el = dst_gpu.element_size()
+            for bid, slot in zip(loaded_blocks, loaded_slots, strict=True):
+                start = int(bid) * bs
+                end = min(start + bs, self.num_tokens)
+                if end <= start:
+                    continue
+                dst_start = int(slot) * bs
+                dst_end = dst_start + (end - start)
+                dst_gpu[:, dst_start:dst_end, :] = src_cpu[:, start:end, :].to(
+                    device=device,
+                    non_blocking=True,
+                )
+                h2d_bytes += self.kv_heads * (end - start) * feature_dim * el
+                if end - start < bs:
+                    dst_gpu[:, dst_end:dst_start + bs, :].zero_()
+
+        self._update_slot_table(
+            slot_table,
+            evicted_blocks=evicted_blocks,
+            loaded_blocks=loaded_blocks,
+            loaded_slots=loaded_slots,
+        )
+        return h2d_bytes
+
+    def _pagein_stage_tensor(
+        self,
+        name: str,
+        tokens: int,
+        feature_dim: int,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+        pinned: bool,
+    ) -> torch.Tensor:
+        shape = (self.kv_heads, int(tokens), int(feature_dim))
+        key = f"{name}:{dtype}:{device}:{feature_dim}:{'pinned' if pinned else 'device'}"
+        workspace = self._certified_workspace
+        current = workspace.get(key)
+        needs_alloc = (
+            current is None
+            or current.dtype != dtype
+            or current.device != device
+            or current.ndim != 3
+            or int(current.shape[0]) != self.kv_heads
+            or int(current.shape[1]) != int(tokens)
+            or int(current.shape[2]) != int(feature_dim)
+            or (pinned and not current.is_pinned())
+        )
+        if needs_alloc:
+            if pinned:
+                current = torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
+            else:
+                current = torch.empty(shape, dtype=dtype, device=device)
+            workspace[key] = current
+        return current[:, : int(tokens), :]
+
+    def _pinned_index_tensor(
+        self,
+        name: str,
+        values: list[int],
+        *,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        n = len(values)
+        workspace = self._certified_workspace
+        current = workspace.get(name)
+        if (
+            current is None
+            or current.dtype != dtype
+            or current.device.type != "cpu"
+            or int(current.numel()) < n
+            or not current.is_pinned()
+        ):
+            current = torch.empty(max(n, 1), dtype=dtype, device="cpu", pin_memory=True)
+            workspace[name] = current
+        out = current[:n]
+        if n:
+            out.copy_(torch.as_tensor(values, dtype=dtype))
+        return out
+
+    def _device_index_tensor(
+        self,
+        name: str,
+        length: int,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        n = max(int(length), 1)
+        workspace = self._certified_workspace
+        current = workspace.get(name)
+        if (
+            current is None
+            or current.dtype != dtype
+            or current.device != device
+            or int(current.numel()) < n
+        ):
+            current = torch.empty(n, dtype=dtype, device=device)
+            workspace[name] = current
+        return current[: int(length)]
+
     def ensure_fp16_keys_resident(
         self,
         block_ids,  # iterable of int block indices needing FP16 data
     ) -> tuple[int, int, int, int]:
         """Bring `block_ids` into the bounded FP16 VRAM key cache.
 
-        No-op when `fp16_key_cache_capacity is None` (full mirror mode): all
-        blocks are already in `keys_fp16_gpu`.
+        No-op when `fp16_key_cache_capacity is None` (legacy full mirror).
 
-        Cache mode: per-block check residency.
-          - hit:  the block's FP16 data is already at the correct offset in
-                  keys_fp16_gpu; bump LRU.
-          - miss: H2D copy from keys_fp16_cpu[:, b*bs : (b+1)*bs, :] into
-                  keys_fp16_gpu at the same offset. Evict LRU victim if the
-                  cache is at capacity. Record bytes transferred.
+        Cache mode: per-block check residency. The compact scratch stores each
+        resident block at slot*block_size; callers pass a block->slot map to
+        kernels so the FP16 reads do not require full-context VRAM layout.
 
         Returns (hits, misses, bytes, evictions) for this call so the
         attention path can roll per-step telemetry.
@@ -834,6 +1242,10 @@ class TieredKeyCacheLayer:
         misses = 0
         h2d_bytes = 0
         evictions = 0
+        evicted_blocks: list[int] = []
+        loaded_blocks: list[int] = []
+        loaded_slots: list[int] = []
+        slot_table = self._ensure_key_slot_table()
 
         # Dedup while preserving order of first occurrence.
         seen: set = set()
@@ -847,28 +1259,8 @@ class TieredKeyCacheLayer:
 
         capacity = int(self.fp16_key_cache_capacity)
 
-        # Special case: capacity == 0 is the "no cache" floor used for the
-        # capacity sweep. Every access is a miss, data is H2D'd into the
-        # scratch at the right offset so the kernel reads correct bytes this
-        # step, and nothing is retained — next step re-pages the same blocks.
-        if capacity == 0:
-            for bid in ordered_ids:
-                start = bid * bs
-                end = start + bs
-                if end > self.num_tokens:
-                    end = self.num_tokens
-                if end > start and self.keys_fp16_cpu is not None:
-                    src = self.keys_fp16_cpu[:, start:end, :]
-                    self.keys_fp16_gpu[:, start:end, :] = src.to(
-                        device=device, non_blocking=True
-                    )
-                    h2d_bytes += self.kv_heads * (end - start) * self.head_dim * el
-                    misses += 1
-            self._fp16_key_cache_hits += hits
-            self._fp16_key_cache_misses += misses
-            self._fp16_key_cache_h2d_bytes += h2d_bytes
-            self._fp16_key_cache_evictions += evictions
-            return (hits, misses, h2d_bytes, evictions)
+        if capacity <= 0 or len(ordered_ids) > capacity:
+            return (0, len(ordered_ids), 0, 0)
 
         for bid in ordered_ids:
             if bid in self._fp16_key_resident:
@@ -877,36 +1269,120 @@ class TieredKeyCacheLayer:
                 self._fp16_key_resident.move_to_end(bid, last=True)
                 continue
 
-            # Miss — evict LRU victim if cache is full.
-            if len(self._fp16_key_resident) >= capacity:
+            # Miss — choose a compact slot, evicting the LRU victim if needed.
+            if self._fp16_key_free_slots:
+                slot = self._fp16_key_free_slots.pop(0)
+            else:
                 if self._fp16_key_resident:
-                    self._fp16_key_resident.popitem(last=False)  # LRU = front
+                    evicted_bid, slot = self._fp16_key_resident.popitem(last=False)  # LRU = front
+                    evicted_blocks.append(int(evicted_bid))
                     evictions += 1
+                else:
+                    slot = 0
 
-            # H2D copy: CPU pinned → GPU scratch at the block's offset. The
-            # offset is (bid*bs : (bid+1)*bs) along the token dim, for all
-            # kv_heads and head_dim channels.
-            start = bid * bs
-            end = start + bs
-            if end > self.num_tokens:
-                end = self.num_tokens  # trailing partial block guard
-            if end > start and self.keys_fp16_cpu is not None:
-                src = self.keys_fp16_cpu[:, start:end, :]
-                self.keys_fp16_gpu[:, start:end, :] = src.to(
-                    device=device, non_blocking=True
-                )
-                h2d_bytes += self.kv_heads * (end - start) * self.head_dim * el
-                misses += 1
-                # Newly loaded block lands at MRU. Caller-controlled ordering
-                # means high-priority ids arrive last → end up at tail → survive
-                # longer; low-priority ids arrive first → evicted sooner.
-                self._fp16_key_resident[bid] = True
+            misses += 1
+            # Newly loaded block lands at MRU. Caller-controlled ordering means
+            # high-priority ids arrive last → end up at tail → survive longer.
+            self._fp16_key_resident[bid] = slot
+            loaded_blocks.append(int(bid))
+            loaded_slots.append(int(slot))
+
+        h2d_bytes = self._page_in_fp16_blocks(
+            src_cpu=self.keys_fp16_cpu,
+            dst_gpu=self.keys_fp16_gpu,
+            loaded_blocks=loaded_blocks,
+            loaded_slots=loaded_slots,
+            evicted_blocks=evicted_blocks,
+            slot_table=slot_table,
+            feature_dim=self.head_dim,
+        )
 
         self._fp16_key_cache_hits += hits
         self._fp16_key_cache_misses += misses
         self._fp16_key_cache_h2d_bytes += h2d_bytes
         self._fp16_key_cache_evictions += evictions
         return (hits, misses, h2d_bytes, evictions)
+
+    def ensure_fp16_keys_resident_batched(
+        self,
+        block_ids,  # iterable of int block indices needing FP16 data
+    ) -> tuple[dict[int, int] | None, int, int, int, int]:
+        """Batched version of ensure_fp16_keys_resident.
+
+        The LRU bookkeeping is still Python-side, but all CPU->GPU payload
+        movement for misses is grouped into one gather and one device scatter.
+        This avoids thousands of tiny copies in the bounded paper path.
+        """
+        if self.fp16_key_cache_capacity is None or self.keys_fp16_gpu is None:
+            return (None, 0, 0, 0, 0)
+
+        seen: set[int] = set()
+        ordered_ids: list[int] = []
+        for b in block_ids:
+            bi = int(b)
+            if bi in seen:
+                continue
+            seen.add(bi)
+            ordered_ids.append(bi)
+
+        capacity = int(self.fp16_key_cache_capacity)
+        if capacity <= 0 or len(ordered_ids) > capacity:
+            return (None, 0, len(ordered_ids), 0, 0)
+
+        miss_candidates = [bid for bid in ordered_ids if bid not in self._fp16_key_resident]
+        batch_limit = int(os.environ.get("DOTCACHE_BATCHED_PAGEIN_MAX_BLOCKS", "0"))
+        if len(miss_candidates) > batch_limit:
+            hits, misses, h2d_bytes, evictions = self.ensure_fp16_keys_resident(ordered_ids)
+            return (dict(self._fp16_key_resident), hits, misses, h2d_bytes, evictions)
+        if miss_candidates and self.keys_fp16_cpu is not None:
+            full_blocks = self.keys_fp16_cpu.shape[1] // self.block_size
+            if any(bid >= full_blocks for bid in miss_candidates):
+                hits, misses, h2d_bytes, evictions = self.ensure_fp16_keys_resident(ordered_ids)
+                return (dict(self._fp16_key_resident), hits, misses, h2d_bytes, evictions)
+
+        hits = 0
+        misses = 0
+        evictions = 0
+        miss_blocks: list[int] = []
+        miss_slots: list[int] = []
+        evicted_blocks: list[int] = []
+        slot_table = self._ensure_key_slot_table()
+
+        for bid in ordered_ids:
+            if bid in self._fp16_key_resident:
+                hits += 1
+                self._fp16_key_resident.move_to_end(bid, last=True)
+                continue
+
+            if self._fp16_key_free_slots:
+                slot = self._fp16_key_free_slots.pop(0)
+            else:
+                if self._fp16_key_resident:
+                    evicted_bid, slot = self._fp16_key_resident.popitem(last=False)
+                    evicted_blocks.append(int(evicted_bid))
+                    evictions += 1
+                else:
+                    slot = 0
+            self._fp16_key_resident[bid] = slot
+            miss_blocks.append(bid)
+            miss_slots.append(slot)
+            misses += 1
+
+        h2d_bytes = self._page_in_fp16_blocks(
+            src_cpu=self.keys_fp16_cpu,
+            dst_gpu=self.keys_fp16_gpu,
+            loaded_blocks=miss_blocks,
+            loaded_slots=miss_slots,
+            evicted_blocks=evicted_blocks,
+            slot_table=slot_table,
+            feature_dim=self.head_dim,
+        )
+
+        self._fp16_key_cache_hits += hits
+        self._fp16_key_cache_misses += misses
+        self._fp16_key_cache_h2d_bytes += h2d_bytes
+        self._fp16_key_cache_evictions += evictions
+        return (dict(self._fp16_key_resident), hits, misses, h2d_bytes, evictions)
 
     def ensure_fp16_values_resident(
         self,
@@ -947,6 +1423,10 @@ class TieredKeyCacheLayer:
         misses = 0
         h2d_bytes = 0
         evictions = 0
+        evicted_blocks: list[int] = []
+        loaded_blocks: list[int] = []
+        loaded_slots: list[int] = []
+        slot_table = self._ensure_value_slot_table()
 
         for bid in ordered_ids:
             if bid in self._fp16_value_resident:
@@ -957,22 +1437,98 @@ class TieredKeyCacheLayer:
             if self._fp16_value_free_slots:
                 slot = self._fp16_value_free_slots.pop(0)
             else:
-                _, slot = self._fp16_value_resident.popitem(last=False)
+                evicted_bid, slot = self._fp16_value_resident.popitem(last=False)
+                evicted_blocks.append(int(evicted_bid))
                 evictions += 1
 
-            start = bid * bs
-            end = min(start + bs, self.num_tokens)
-            if end > start and self.values_fp16_cpu is not None:
-                dst_start = slot * bs
-                dst_end = dst_start + (end - start)
-                src = self.values_fp16_cpu[:, start:end, :]
-                self.values_fp16_gpu[:, dst_start:dst_end, :] = src.to(
-                    device=device,
-                    non_blocking=True,
-                )
-                h2d_bytes += self.kv_heads * (end - start) * self.d_v * el
             misses += 1
             self._fp16_value_resident[bid] = slot
+            loaded_blocks.append(int(bid))
+            loaded_slots.append(int(slot))
+
+        h2d_bytes = self._page_in_fp16_blocks(
+            src_cpu=self.values_fp16_cpu,
+            dst_gpu=self.values_fp16_gpu,
+            loaded_blocks=loaded_blocks,
+            loaded_slots=loaded_slots,
+            evicted_blocks=evicted_blocks,
+            slot_table=slot_table,
+            feature_dim=self.d_v,
+        )
+
+        self._fp16_value_cache_hits += hits
+        self._fp16_value_cache_misses += misses
+        self._fp16_value_cache_h2d_bytes += h2d_bytes
+        self._fp16_value_cache_evictions += evictions
+        return (dict(self._fp16_value_resident), hits, misses, h2d_bytes, evictions)
+
+    def ensure_fp16_values_resident_batched(
+        self,
+        block_ids,  # iterable of int block indices needing FP16 value data
+    ) -> tuple[dict[int, int] | None, int, int, int, int]:
+        """Bring value blocks into the bounded compact FP16 cache in batches."""
+        if self.values_fp16_gpu is None:
+            return (None, 0, 0, 0, 0)
+
+        seen: set[int] = set()
+        ordered_ids: list[int] = []
+        for b in block_ids:
+            bi = int(b)
+            if bi in seen:
+                continue
+            seen.add(bi)
+            ordered_ids.append(bi)
+
+        if self.fp16_value_cache_capacity is None:
+            return ({bid: bid for bid in ordered_ids}, 0, 0, 0, 0)
+
+        capacity = int(self.fp16_value_cache_capacity)
+        if capacity <= 0 or len(ordered_ids) > capacity:
+            return (None, 0, 0, 0, 0)
+
+        miss_candidates = [bid for bid in ordered_ids if bid not in self._fp16_value_resident]
+        batch_limit = int(os.environ.get("DOTCACHE_BATCHED_PAGEIN_MAX_BLOCKS", "0"))
+        if len(miss_candidates) > batch_limit:
+            return self.ensure_fp16_values_resident(ordered_ids)
+        if miss_candidates and self.values_fp16_cpu is not None:
+            full_blocks = self.values_fp16_cpu.shape[1] // self.block_size
+            if any(bid >= full_blocks for bid in miss_candidates):
+                return self.ensure_fp16_values_resident(ordered_ids)
+
+        hits = 0
+        misses = 0
+        evictions = 0
+        miss_blocks: list[int] = []
+        miss_slots: list[int] = []
+        evicted_blocks: list[int] = []
+        slot_table = self._ensure_value_slot_table()
+
+        for bid in ordered_ids:
+            if bid in self._fp16_value_resident:
+                hits += 1
+                self._fp16_value_resident.move_to_end(bid, last=True)
+                continue
+
+            if self._fp16_value_free_slots:
+                slot = self._fp16_value_free_slots.pop(0)
+            else:
+                evicted_bid, slot = self._fp16_value_resident.popitem(last=False)
+                evicted_blocks.append(int(evicted_bid))
+                evictions += 1
+            self._fp16_value_resident[bid] = slot
+            miss_blocks.append(bid)
+            miss_slots.append(slot)
+            misses += 1
+
+        h2d_bytes = self._page_in_fp16_blocks(
+            src_cpu=self.values_fp16_cpu,
+            dst_gpu=self.values_fp16_gpu,
+            loaded_blocks=miss_blocks,
+            loaded_slots=miss_slots,
+            evicted_blocks=evicted_blocks,
+            slot_table=slot_table,
+            feature_dim=self.d_v,
+        )
 
         self._fp16_value_cache_hits += hits
         self._fp16_value_cache_misses += misses

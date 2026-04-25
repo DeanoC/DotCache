@@ -10,11 +10,13 @@ def _fp16_block_scores_kernel(
     keys_ptr,
     q_ptr,
     block_idx_ptr,
+    block_slot_ptr,
     scores_ptr,
     logmass_ptr,
     num_heads: tl.constexpr,
     k_count: tl.constexpr,
-    num_tokens: tl.constexpr,
+    num_scoring_tokens: tl.constexpr,
+    key_scratch_tokens: tl.constexpr,
     gqa_group: tl.constexpr,
     q_scale: tl.constexpr,
     keys_s0: tl.constexpr,
@@ -35,8 +37,15 @@ def _fp16_block_scores_kernel(
     tok = tl.arange(0, BLOCK_SIZE)
     d = tl.arange(0, BLOCK_D)
     block_id = tl.load(block_idx_ptr + h * idx_s0 + kk * idx_s1).to(tl.int64)
-    token_idx = block_id * BLOCK_SIZE + tok
-    valid_tok = (block_id >= 0) & (token_idx < num_tokens)
+    valid_block_id = (block_id >= 0) & ((block_id * BLOCK_SIZE) < num_scoring_tokens)
+    slot = tl.load(block_slot_ptr + block_id, mask=valid_block_id, other=-1).to(tl.int64)
+    token_idx = slot * BLOCK_SIZE + tok
+    valid_tok = (
+        valid_block_id
+        & ((block_id * BLOCK_SIZE + tok) < num_scoring_tokens)
+        & (slot >= 0)
+        & (token_idx < key_scratch_tokens)
+    )
     kv = h // gqa_group
     acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
     for d0 in range(0, HEAD_DIM, BLOCK_D):
@@ -70,6 +79,7 @@ def fp16_block_scores_triton(
     gqa_group: int,
     block_size: int,
     q_scale: float,
+    key_block_slots: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """FP16 selected-block max score and log-mass for ranking checks."""
     if keys.device.type != "cuda" or q_all.device.type != "cuda":
@@ -94,15 +104,30 @@ def fp16_block_scores_triton(
     keys_c = keys.contiguous()
     q_c = q_all.contiguous()
     idx_c = block_indices.to(dtype=torch.int64).contiguous()
+    if key_block_slots is None:
+        key_block_slots = torch.arange(
+            int(num_scoring_blocks), dtype=torch.int32, device=q_all.device,
+        )
+    elif int(key_block_slots.numel()) < int(num_scoring_blocks):
+        padded_slots = torch.full(
+            (int(num_scoring_blocks),), -1, dtype=torch.int32, device=q_all.device,
+        )
+        padded_slots[: int(key_block_slots.numel())] = key_block_slots.to(
+            dtype=torch.int32, device=q_all.device,
+        )
+        key_block_slots = padded_slots
+    slots_c = key_block_slots.to(dtype=torch.int64).contiguous()
     _fp16_block_scores_kernel[(num_heads, k_count)](
         keys_c,
         q_c,
         idx_c,
+        slots_c,
         scores,
         logmass,
         num_heads,
         k_count,
         int(num_scoring_blocks) * int(block_size),
+        int(keys_c.shape[1]),
         int(gqa_group),
         float(q_scale),
         keys_c.stride(0),

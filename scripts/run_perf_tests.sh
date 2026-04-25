@@ -30,7 +30,7 @@ if [[ ! -f "$OUT_DIR/test3_niah_8k_paper.pagein.json" ]]; then
     --output "$OUT_DIR/test3_niah_8k_paper.json" \
     --tau-cov 0.995 --k-min 2 --k-max 128 \
     --ranking-fallback --ranking-r 1 \
-    --score-consistency-check --eps-guard 0.01 \
+    --eps-guard 0.01 \
     --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 \
     --pagein-telemetry
   git add "$OUT_DIR/test3_niah_8k_paper.json" "$OUT_DIR/test3_niah_8k_paper.pagein.json" 2>/dev/null || true
@@ -45,7 +45,7 @@ if [[ ! -f "$OUT_DIR/test3_pg19_8k_paper.pagein.json" ]]; then
     --output "$OUT_DIR/test3_pg19_8k_paper.json" \
     --tau-cov 0.995 --k-min 2 --k-max 128 \
     --ranking-fallback --ranking-r 1 \
-    --score-consistency-check --eps-guard 0.01 \
+    --eps-guard 0.01 \
     --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 \
     --pagein-telemetry
   git add "$OUT_DIR/test3_pg19_8k_paper.json" "$OUT_DIR/test3_pg19_8k_paper.pagein.json" 2>/dev/null || true
@@ -60,7 +60,7 @@ if [[ ! -f "$OUT_DIR/test3_ruler_8k_paper.pagein.json" ]]; then
     --output "$OUT_DIR/test3_ruler_8k_paper.json" \
     --tau-cov 0.995 --k-min 2 --k-max 128 \
     --ranking-fallback --ranking-r 1 \
-    --score-consistency-check --eps-guard 0.01 \
+    --eps-guard 0.01 \
     --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 \
     --pagein-telemetry
   git add "$OUT_DIR/test3_ruler_8k_paper.json" "$OUT_DIR/test3_ruler_8k_paper.pagein.json" 2>/dev/null || true

@@ -44,12 +44,22 @@ def test_v2_common_cert_flags_match_experiment_spec(tmp_path: Path):
         "--group-size": "16",
         "--tau-cov": "0.995",
         "--k-max": "128",
+        "--fp16-key-cache-blocks": "3584",
+        "--fp16-value-cache-blocks": "1536",
     }
     for flag, value in expected_pairs.items():
         assert args[args.index(flag) + 1] == value
-    assert "--fp16-value-cache-blocks" not in args
-    for flag in ("--use-int4-values", "--ranking-fallback", "--score-consistency-check"):
+    for flag in ("--use-int4-values", "--ranking-fallback"):
         assert flag in args
+    assert "--score-consistency-check" not in args
+    assert "--score-consistency-interval" not in args
+
+
+def test_v2_recommended_cache_blocks_scale_by_context():
+    assert sweep.recommended_fp16_cache_blocks(8192) == (448, 192)
+    assert sweep.recommended_fp16_cache_blocks(32768) == (1792, 768)
+    assert sweep.recommended_fp16_cache_blocks(65536) == (3584, 1536)
+    assert sweep.recommended_fp16_cache_blocks(131072) == (7168, 3072)
 
 
 def test_v2_pg19_wrapped_summary_uses_paired_delta_stats():

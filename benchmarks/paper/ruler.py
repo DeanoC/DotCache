@@ -437,8 +437,8 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
                        device: str = "cuda",
                        use_int4_values: bool = False,
                        group_size: int = 16,
-                       fp16_key_cache_blocks: int | None = None,
-                       fp16_value_cache_blocks: int | None = None,
+                       fp16_key_cache_blocks: int | str | None = None,
+                       fp16_value_cache_blocks: int | str | None = None,
                        # Paper-alignment features (T4/T7/Rung1/T9/T10).
                        tau_cov: float | None = None,
                        k_min: int = 2,
@@ -447,6 +447,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
                        ranking_r: int = 1,
                        ranking_fallback_mode: str = "full",
                        score_consistency_check: bool = False,
+                       score_consistency_interval: int = 1,
                        eps_guard: float = 0.01,
                        exploration_rate: float = 0.0,
                        rung1_threshold: float = 0.02,
@@ -473,16 +474,9 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     layer_ids = list(range(model.config.num_hidden_layers))
     _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
     _env_value_cap = os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS")
-    _key_cap = (
-        fp16_key_cache_blocks
-        if fp16_key_cache_blocks is not None
-        else None if _env_key_cap is None or _env_key_cap == "" else int(_env_key_cap)
-    )
-    _value_cap = (
-        fp16_value_cache_blocks
-        if fp16_value_cache_blocks is not None
-        else None if _env_value_cap is None or _env_value_cap == "" else int(_env_value_cap)
-    )
+    from _provenance import resolve_fp16_key_cache_blocks, resolve_fp16_value_cache_blocks
+    _key_cap = resolve_fp16_key_cache_blocks(fp16_key_cache_blocks, _env_key_cap)
+    _value_cap = resolve_fp16_value_cache_blocks(fp16_value_cache_blocks, _env_value_cap)
     if use_int4_values:
         tiered_caches = create_tiered_cache_int4v_from_model(
             past_kv, layer_ids, group_size=group_size,
@@ -493,7 +487,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     else:
         tiered_caches = create_tiered_cache_from_model(
             past_kv, layer_ids, max_new_tokens=max_new + 8,
-            fp16_key_cache_capacity=_key_cap,
+            fp16_key_cache_capacity=None,
         )
     del past_kv
     gc.collect()
@@ -518,6 +512,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
         ranking_r=ranking_r,
         ranking_fallback_mode=ranking_fallback_mode,
         score_consistency_check=score_consistency_check,
+        score_consistency_interval=score_consistency_interval,
         eps_guard=eps_guard,
         exploration_rate=exploration_rate,
         rung1_threshold=rung1_threshold,
@@ -540,7 +535,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
         tid = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         gen_token_tensors.append(tid)
         current_input = tid
-        cache_position = cache_position + 1
+        cache_position.add_(1)
 
     gen_ids = torch.cat(gen_token_tensors, dim=1)[0].tolist()
     if tokenizer.eos_token_id is not None and tokenizer.eos_token_id in gen_ids:
@@ -569,8 +564,8 @@ def run_ruler(
     seed_base: int = 20260416, device: str = "cuda",
     use_int4_values: bool = False,
     group_size: int = 16,
-    fp16_key_cache_blocks: int | None = None,
-    fp16_value_cache_blocks: int | None = None,
+    fp16_key_cache_blocks: int | str | None = None,
+    fp16_value_cache_blocks: int | str | None = None,
     # Paper-alignment features.
     tau_cov: float | None = None,
     k_min: int = 2,
@@ -579,6 +574,7 @@ def run_ruler(
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
     score_consistency_check: bool = False,
+    score_consistency_interval: int = 1,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     rung1_threshold: float = 0.02,
@@ -623,6 +619,7 @@ def run_ruler(
                     ranking_fallback=ranking_fallback, ranking_r=ranking_r,
                     ranking_fallback_mode=ranking_fallback_mode,
                     score_consistency_check=score_consistency_check,
+                    score_consistency_interval=score_consistency_interval,
                     eps_guard=eps_guard,
                     exploration_rate=exploration_rate,
                     rung1_threshold=rung1_threshold,
@@ -696,6 +693,8 @@ def main():
     parser.add_argument("--ranking-r", type=int, default=1)
     parser.add_argument("--ranking-fallback-mode", default="full", choices=["full", "measure"])
     parser.add_argument("--score-consistency-check", action="store_true")
+    parser.add_argument("--score-consistency-interval", type=int, default=1,
+                        help="Run score-consistency canary every N decode steps (1 = exact every step).")
     parser.add_argument("--eps-guard", type=float, default=0.01)
     parser.add_argument("--exploration-rate", type=float, default=0.0)
     parser.add_argument("--rung1-threshold", type=float, default=0.02)
@@ -706,9 +705,14 @@ def main():
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
     import sys as _sys, os as _os
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    from _provenance import add_paper_cache_args, cache_config_dict
+    from _provenance import (
+        add_paper_cache_args,
+        cache_config_dict,
+        configure_paper_runtime_defaults,
+    )
     add_paper_cache_args(parser)
     args = parser.parse_args()
+    configure_paper_runtime_defaults()
 
     for st in args.subtasks:
         if st not in SUBTASK_BUILDERS:
@@ -766,6 +770,7 @@ def main():
         ranking_r=args.ranking_r,
         ranking_fallback_mode=args.ranking_fallback_mode,
         score_consistency_check=args.score_consistency_check,
+        score_consistency_interval=args.score_consistency_interval,
         eps_guard=args.eps_guard,
         exploration_rate=args.exploration_rate,
         rung1_threshold=args.rung1_threshold,

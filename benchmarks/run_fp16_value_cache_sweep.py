@@ -35,11 +35,11 @@ CERT_ARGS = [
     "--ranking-fallback",
     "--ranking-r", "1",
     "--ranking-fallback-mode", "full",
-    "--score-consistency-check",
     "--eps-guard", "0.01",
     "--exploration-rate", "0.02",
     "--rung1-threshold", "0.02",
     "--rung1-multiplier", "2.0",
+    "--fp16-key-cache-blocks", "3584",
 ]
 
 
@@ -121,8 +121,7 @@ def main() -> int:
             "--output", str(native_json),
             *CERT_ARGS,
         ]
-        if size is not None:
-            cmd += ["--fp16-value-cache-blocks", str(size)]
+        cmd += ["--fp16-value-cache-blocks", "full" if size is None else str(size)]
 
         print(f"[value-cache={label}] {' '.join(shlex.quote(c) for c in cmd)}", flush=True)
         if args.dry_run:

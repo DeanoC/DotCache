@@ -57,8 +57,9 @@ def test_paper_sweep_certified_flags_match_section7(tmp_path: Path):
     }
     for flag, value in expected_pairs.items():
         assert args[args.index(flag) + 1] == value
-    for flag in ("--use-int4-values", "--ranking-fallback", "--score-consistency-check"):
+    for flag in ("--use-int4-values", "--ranking-fallback"):
         assert flag in args
+    assert "--score-consistency-check" not in args
 
 
 def test_paper_sweep_wraps_niah_inferential_stats():

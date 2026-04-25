@@ -71,7 +71,6 @@ def _common_cert_args() -> list[str]:
         "--ranking-fallback",
         "--ranking-r", CERT_FLAGS["ranking_r"],
         "--ranking-fallback-mode", "full",
-        "--score-consistency-check",
         "--eps-guard", CERT_FLAGS["eps_guard"],
         "--exploration-rate", CERT_FLAGS["exploration_rate"],
         "--rung1-threshold", CERT_FLAGS["rung1_threshold"],

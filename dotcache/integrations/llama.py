@@ -113,6 +113,10 @@ class CertifiedAttentionState:
     # Expected trigger rate is exactly 0 on well-behaved runs; non-zero counts
     # indicate Theorem-2 was empirically violated (stale metadata / corruption).
     score_consistency_check: bool = True
+    # 1 = exact every decode step. Larger values run the score-consistency
+    # canary every N decode steps to avoid a CPU synchronisation on every
+    # layer/token during production benchmark sweeps.
+    score_consistency_interval: int = 1
     eps_guard: float = 0.01
     # INT4 value tolerance (paper §3.4 / §7). The runtime decides INT4 vs
     # FP16 values per layer per step by comparing the per-head value-error
@@ -155,6 +159,7 @@ class CertifiedAttentionState:
     # throughput measurements. Accumulates across layers and across steps;
     # the harness should snapshot + reset between steps for per-step series.
     phase_timings: dict | None = None
+    _score_consistency_step: int = 0
 
     def __post_init__(self):
         if self.step_stats is None:
@@ -327,6 +332,17 @@ class CertifiedAttentionState:
         if v_max_layers:
             agg["v_max_global"] = float(max(v_max_layers))
         return agg
+
+    def score_consistency_enabled_for_layer(self, layer_id: int) -> bool:
+        if not self.score_consistency_check:
+            return False
+        interval = max(1, int(self.score_consistency_interval))
+        if interval <= 1:
+            return True
+        first_layer = min(int(x) for x in self.tiered_caches.keys())
+        if int(layer_id) == first_layer:
+            self._score_consistency_step += 1
+        return ((self._score_consistency_step - 1) % interval) == 0
 
 
 @dataclass(slots=True)
@@ -678,30 +694,36 @@ class DotCacheLlamaAttention(nn.Module):
         if cache is None:
             raise ValueError(f"No tiered cache for layer {self.layer_idx}")
 
-        t_qkv0 = time.perf_counter()
+        profile_runtime = self.adapter.runtime_profile_enabled
+        if profile_runtime:
+            t_qkv0 = time.perf_counter()
         # Project Q, K, V with RoPE (need K/V for append)
         (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
-        t_qkv1 = time.perf_counter()
+        if profile_runtime:
+            t_qkv1 = time.perf_counter()
         # query_states: [1, num_q_heads, 1, head_dim]
         # Keep query in model's native dtype (BF16) — SDPA attend matches dense precision
         q_all = query_states[0, :, 0, :]  # [num_q, head_dim]
 
         # Append new K/V to tiered cache (grows context for future steps)
         # Preserve model's native dtype (BF16) — don't force FP16
-        t_append0 = time.perf_counter()
+        if profile_runtime:
+            t_append0 = time.perf_counter()
         if cert_state.append_kv:
             cache.append_token(
                 key_states[0],    # [kv_heads, 1, head_dim]
                 value_states[0],  # [kv_heads, 1, d_v]
             )
-        t_append1 = time.perf_counter()
+        if profile_runtime:
+            t_append1 = time.perf_counter()
 
         # Certified attention: Phase 1 (INT8 score+certify) + Phase 2 (selective attend)
         gqa_group = self.config.num_attention_heads // self.config.num_key_value_heads
         q_scale = float(self.base_attention.scaling)
 
         collect = cert_state.collect_stats
-        t_decode0 = time.perf_counter()
+        if profile_runtime:
+            t_decode0 = time.perf_counter()
         context_states, stats = certified_attention_layer(
             cache, q_all, gqa_group, q_scale,
             collect_stats=collect,
@@ -715,14 +737,15 @@ class DotCacheLlamaAttention(nn.Module):
             k_max=cert_state.k_max,
             rung1_threshold=cert_state.rung1_threshold,
             rung1_multiplier=cert_state.rung1_multiplier,
-            score_consistency_check=cert_state.score_consistency_check,
+            score_consistency_check=cert_state.score_consistency_enabled_for_layer(self.layer_idx),
             eps_guard=cert_state.eps_guard,
             exploration_rate=cert_state.exploration_rate,
             phase_timings=cert_state.phase_timings,
             per_kv_group_topk=cert_state.per_kv_group_topk,
             value_error_mode=cert_state.value_error_mode,
         )
-        t_decode1 = time.perf_counter()
+        if profile_runtime:
+            t_decode1 = time.perf_counter()
 
         # Accumulate stats (only if collection enabled)
         if collect and stats:
@@ -730,16 +753,18 @@ class DotCacheLlamaAttention(nn.Module):
 
         # Output projection
         context_tensor = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
-        t_out0 = time.perf_counter()
+        if profile_runtime:
+            t_out0 = time.perf_counter()
         projected_output = self.base_attention.o_proj(context_tensor.reshape(1, 1, -1).contiguous())
-        t_out1 = time.perf_counter()
-        self.adapter.record_layer_runtime(
-            self.layer_idx,
-            qkv_projection_ms=(t_qkv1 - t_qkv0) * 1000.0,
-            append_ms=(t_append1 - t_append0) * 1000.0,
-            decode_ms=(t_decode1 - t_decode0) * 1000.0,
-            output_projection_ms=(t_out1 - t_out0) * 1000.0,
-        )
+        if profile_runtime:
+            t_out1 = time.perf_counter()
+            self.adapter.record_layer_runtime(
+                self.layer_idx,
+                qkv_projection_ms=(t_qkv1 - t_qkv0) * 1000.0,
+                append_ms=(t_append1 - t_append0) * 1000.0,
+                decode_ms=(t_decode1 - t_decode0) * 1000.0,
+                output_projection_ms=(t_out1 - t_out0) * 1000.0,
+            )
 
         return projected_output, None
 
@@ -924,6 +949,9 @@ class LlamaDotCacheModelAdapter:
         self.qkv_projection_ms_total = 0.0
         self.output_projection_ms_total = 0.0
         self.layer_runtime_profiles = [LlamaLayerRuntimeProfile(layer_id=layer_id) for layer_id in range(model.config.num_hidden_layers)]
+        self.runtime_profile_enabled = os.environ.get(
+            "DOTCACHE_RUNTIME_PROFILE", "0",
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._current_token_index_override: int | None = None
         self.certified_state: CertifiedAttentionState | None = None
         self._install_wrappers()
@@ -952,6 +980,8 @@ class LlamaDotCacheModelAdapter:
         use_int4_values: bool = False,
         group_size: int = 16,
         max_new_tokens: int = 512,
+        fp16_key_cache_capacity: int | None = 512,
+        fp16_value_cache_capacity: int | None = 64,
     ) -> None:
         """Build tiered caches from prefill KV and prepare for certified decode.
 
@@ -967,6 +997,12 @@ class LlamaDotCacheModelAdapter:
             max_new_tokens: decode budget to reserve in the cache buffers so
                 append_token() can quantise additional tokens without
                 overflowing per-block annotation tensors.
+            fp16_key_cache_capacity: bounded FP16 key fallback scratch/cache
+                capacity in blocks. Defaults to 512; pass None only for
+                legacy full-mirror debugging.
+            fp16_value_cache_capacity: bounded FP16 value fallback scratch
+                capacity in blocks. Defaults to 64 for paper-exact bounded
+                scratch; pass None only for legacy full-mirror debugging.
         """
         _ensure_certified_imports()
         layer_ids = list(range(self.model.config.num_hidden_layers))
@@ -976,11 +1012,14 @@ class LlamaDotCacheModelAdapter:
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_key_values, layer_ids, block_size=block_size,
                 group_size=group_size, max_new_tokens=max_new_tokens,
+                fp16_key_cache_capacity=fp16_key_cache_capacity,
+                fp16_value_cache_capacity=fp16_value_cache_capacity,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(
                 past_key_values, layer_ids, block_size=block_size,
                 max_new_tokens=max_new_tokens,
+                fp16_key_cache_capacity=None,
             )
 
         self.certified_state = CertifiedAttentionState(

@@ -5,7 +5,7 @@ Verifies that:
 - When a block fills to block_size tokens, _quantize_block() runs with
   per-channel scales computed from all tokens
 - INT8 data is write-once: never modified after quantisation
-- Dequant buffer is consistent for both INT8 and FP16 regions
+- Optional dequant buffer is consistent for both INT8 and FP16 regions
 """
 import torch
 import pytest
@@ -65,6 +65,7 @@ class TestDeferredPerChannelQuantisation:
         k = torch.randn(2, 1, 64, dtype=torch.float16, device="cuda")
         v = torch.randn(2, 1, 64, dtype=torch.float16, device="cuda")
         cache.append_token(k, v)
+        cache.precompute_dequant()
 
         # The dequant buffer at position 256 should match the original FP16 key
         k_f32 = k.squeeze(1).to(device="cuda", dtype=torch.float32)
