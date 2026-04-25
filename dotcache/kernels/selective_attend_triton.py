@@ -1392,7 +1392,7 @@ def selective_attend_multihead_hybrid_mixedv_split_k(
     v_scratch_tokens = values_fp16_scratch.shape[1]
 
     if num_splits is None:
-        target_blocks_per_split = int(os.environ.get("DOTCACHE_MIXEDV_SPLITK_BLOCKS_PER_SPLIT", "128"))
+        target_blocks_per_split = int(os.environ.get("DOTCACHE_MIXEDV_SPLITK_BLOCKS_PER_SPLIT", "64"))
         ns = max(1, (num_blocks + target_blocks_per_split - 1) // target_blocks_per_split)
         num_splits = 1
         while num_splits < ns:

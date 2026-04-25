@@ -408,7 +408,7 @@ def compute_fp16_block_scores(
     if keys.device.type == "cuda" and q_all.device.type == "cuda" and head_dim <= 256:
         try:
             import os as _os
-            if _os.environ.get("DOTCACHE_FP16_BLOCK_SCORE_TRITON", "0") == "1":
+            if _os.environ.get("DOTCACHE_FP16_BLOCK_SCORE_TRITON", "1") != "0":
                 from dotcache.kernels.fp16_block_scores_triton import fp16_block_scores_triton
                 scores, log_masses = fp16_block_scores_triton(
                     keys,
@@ -997,20 +997,15 @@ def certified_attention_layer(
                     k_for_boundary, dim=1,
                 ).values                                                # [H, r]
                 ell_fp16_r_per_head = ell_fp16_top[:, -1]               # [H]
-                # Build the tail-block mask: True for blocks NOT in the
-                # promoted top-K set. promoted membership is per-head
-                # (top_block_indices is [H, K]).
-                promoted_mask = torch.zeros(
-                    num_q_heads, n_qblocks, dtype=torch.bool, device=q_all.device,
-                )
-                promoted_mask.scatter_(1, top_block_indices.long(), True)
-                tail_mask = ~promoted_mask                              # [H, n_qblocks]
-                # LHS: ℓ_b^int8 + Δ; RHS: ℓ^fp16_(r). Only consider tail blocks.
+                # LHS: ℓ_b^int8 + Δ; RHS: ℓ^fp16_(r). Only consider tail
+                # blocks by masking the promoted set in-place on a scratch
+                # tensor instead of materialising promoted/tail/trigger masks.
                 ub = ell_int8_all + _delta_for_boundary.unsqueeze(1)    # [H, n_qblocks]
-                trigger_per_block = (
-                    (ub > ell_fp16_r_per_head.unsqueeze(1)) & tail_mask
-                )                                                       # [H, n_qblocks]
-                boundary_triggered_mask = trigger_per_block.any(dim=1)  # [H]
+                ub_tail = ub.clone()
+                ub_tail.scatter_(1, top_block_indices.long(), float("-inf"))
+                boundary_triggered_mask = (
+                    ub_tail.amax(dim=1) > ell_fp16_r_per_head
+                )                                                       # [H]
                 if collect_stats:
                     boundary_triggered_heads = int(
                         boundary_triggered_mask.sum().item()
@@ -1211,6 +1206,7 @@ def certified_attention_layer(
             kv_idx = kv_idx.clamp(max=eta_blocks.shape[0] - 1)
             eta_per_qhead = eta_blocks[kv_idx]
             per_block_e_val = mass_frac * eta_per_qhead
+            e_pre = per_block_e_val.sum(dim=1)
             if value_error_mode == "tight":
                 # Promote the largest value-error contributors until the
                 # achieved per-head E_val is within the paper budget. A
@@ -1218,23 +1214,19 @@ def certified_attention_layer(
                 # reported total bound above v_tol; the certificate needs the
                 # post-promotion total, not just individual blocks, under
                 # control.
-                e_pre = per_block_e_val.sum(dim=1)
                 excess = (e_pre - v_tolerance).clamp(min=0.0)
                 sorted_vals, sorted_idx = torch.sort(per_block_e_val, dim=1, descending=True)
                 cumsum_before = torch.cumsum(sorted_vals, dim=1) - sorted_vals
                 promote_sorted = (excess[:, None] > 0.0) & (cumsum_before < excess[:, None])
+                promoted_e_val = (sorted_vals * promote_sorted.to(sorted_vals.dtype)).sum(dim=1)
                 value_unsafe_mask = torch.zeros_like(promote_sorted)
                 value_unsafe_mask.scatter_(1, sorted_idx, promote_sorted)
             else:
                 value_unsafe_mask = eta_per_qhead > v_tolerance
+                promoted_e_val = (per_block_e_val * value_unsafe_mask.to(per_block_e_val.dtype)).sum(dim=1)
             int4_value_mask = ~value_unsafe_mask
-            e_val_head_before_rung2 = per_block_e_val.sum(dim=1)
-            e_val_head = compute_value_error_bound_for_mask(
-                mass_frac=mass_frac,
-                int4_value_mask=int4_value_mask,
-                eta_per_block=eta_blocks,
-                gqa_group=gqa_group,
-            )
+            e_val_head_before_rung2 = e_pre
+            e_val_head = (e_pre - promoted_e_val).clamp(min=0.0)
             if collect_stats:
                 rho = mass_frac.sum(dim=1)
                 eta_int4 = cache.values_int4_errors.max().item()
