@@ -455,6 +455,7 @@ def compute_certified_perplexity(
     book_indices: list[int] | None = None,
     telemetry_mode: str = "summary",
     max_certified_steps: int | None = None,
+    certified_warmup_steps: int = 128,
 ) -> dict:
     """Compute perplexity using certified attention decode.
 
@@ -530,7 +531,6 @@ def compute_certified_perplexity(
         )
 
         # Phase 2: Build tiered cache with enough room for eval tokens
-        cache_t0 = time.perf_counter()
         _ensure_certified_imports()
         layer_ids = list(range(model.config.num_hidden_layers))
         _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
@@ -545,18 +545,77 @@ def compute_certified_perplexity(
             if fp16_value_cache_blocks is not None
             else None if _env_value_cap is None or _env_value_cap == "" else int(_env_value_cap)
         )
-        if use_int4_values:
-            tiered_caches = create_tiered_cache_int4v_from_model(
-                past_kv, layer_ids, group_size=group_size,
-                max_new_tokens=decode_limit + 16,
-                fp16_key_cache_capacity=_key_cap,
-                fp16_value_cache_capacity=_value_cap,
-            )
-        else:
-            tiered_caches = create_tiered_cache_from_model(
+
+        def _build_tiered_caches():
+            if use_int4_values:
+                return create_tiered_cache_int4v_from_model(
+                    past_kv, layer_ids, group_size=group_size,
+                    max_new_tokens=decode_limit + 16,
+                    fp16_key_cache_capacity=_key_cap,
+                    fp16_value_cache_capacity=_value_cap,
+                )
+            return create_tiered_cache_from_model(
                 past_kv, layer_ids, max_new_tokens=decode_limit + 16,
                 fp16_key_cache_capacity=_key_cap,
             )
+
+        top_k = top_k_override if top_k_override is not None else 4
+
+        def _make_certified_state(tiered_caches, *, collect_stats: bool):
+            return CertifiedAttentionState(
+                tiered_caches=tiered_caches,
+                collect_stats=collect_stats,
+                append_kv=True,
+                top_k_fp16_keys=top_k,
+                v_tolerance=v_tolerance,
+                tau_cov=tau_cov,
+                k_min=k_min,
+                k_max=k_max,
+                ranking_fallback=ranking_fallback,
+                ranking_r=ranking_r,
+                ranking_fallback_mode=ranking_fallback_mode,
+                score_consistency_check=score_consistency_check,
+                eps_guard=eps_guard,
+                exploration_rate=exploration_rate,
+                rung1_threshold=rung1_threshold,
+                rung1_multiplier=rung1_multiplier,
+            )
+
+        warm_steps = min(max(0, int(certified_warmup_steps)), max(0, decode_limit))
+        if i == 0 and warm_steps > 0:
+            warm_t0 = time.perf_counter()
+            warm_caches = _build_tiered_caches()
+            adapter.certified_state = _make_certified_state(
+                warm_caches, collect_stats=False,
+            )
+            adapter.set_mode("certified")
+            adapter.reset_runtime_metrics()
+            warm_cache_position = torch.tensor([prefix_len], dtype=torch.long, device=device)
+            with torch.inference_mode():
+                for wt in range(warm_steps):
+                    warm_token_id = input_ids[:, prefix_len + wt]
+                    warm_out = model(
+                        input_ids=warm_token_id.unsqueeze(0),
+                        use_cache=False,
+                        cache_position=warm_cache_position,
+                        position_ids=warm_cache_position.unsqueeze(0),
+                    )
+                    warm_cache_position = warm_cache_position + 1
+                    del warm_out
+            torch.cuda.synchronize()
+            adapter.certified_state = None
+            adapter.set_mode("dense")
+            del warm_caches
+            gc.collect()
+            torch.cuda.empty_cache()
+            print(
+                f"  Certified [{i+1}/{len(chunks)}] warmup_steps={warm_steps} "
+                f"warmup_ms={(time.perf_counter() - warm_t0) * 1000.0:.1f}",
+                flush=True,
+            )
+
+        cache_t0 = time.perf_counter()
+        tiered_caches = _build_tiered_caches()
         print(
             f"  Certified [{i+1}/{len(chunks)}] cache_build_ms={(time.perf_counter() - cache_t0) * 1000.0:.1f}",
             flush=True,
@@ -569,25 +628,8 @@ def compute_certified_perplexity(
             flush=True,
         )
 
-        top_k = top_k_override if top_k_override is not None else 4
-
-        adapter.certified_state = CertifiedAttentionState(
-            tiered_caches=tiered_caches,
-            collect_stats=(telemetry_mode != "off"),
-            append_kv=True,
-            top_k_fp16_keys=top_k,
-            v_tolerance=v_tolerance,
-            tau_cov=tau_cov,
-            k_min=k_min,
-            k_max=k_max,
-            ranking_fallback=ranking_fallback,
-            ranking_r=ranking_r,
-            ranking_fallback_mode=ranking_fallback_mode,
-            score_consistency_check=score_consistency_check,
-            eps_guard=eps_guard,
-            exploration_rate=exploration_rate,
-            rung1_threshold=rung1_threshold,
-            rung1_multiplier=rung1_multiplier,
+        adapter.certified_state = _make_certified_state(
+            tiered_caches, collect_stats=(telemetry_mode != "off"),
         )
         if os.environ.get("DOTCACHE_PHASE_TIMING") == "1":
             adapter.certified_state.phase_timings = {}
@@ -825,6 +867,8 @@ def main():
                         help="debug drains telemetry every token; summary drains once per chunk; off disables stats")
     parser.add_argument("--max-certified-steps", type=int, default=None,
                         help="Calibration only: limit certified suffix decode steps. Do not use for paper tables.")
+    parser.add_argument("--certified-warmup-steps", type=int, default=128,
+                        help="Run untimed certified decode steps on a throwaway cache before timing (0 disables).")
     import sys as _sys, os as _os
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from _provenance import add_paper_cache_args, cache_config_dict
@@ -912,6 +956,7 @@ def main():
             book_indices=book_indices,
             telemetry_mode=args.telemetry_mode,
             max_certified_steps=args.max_certified_steps,
+            certified_warmup_steps=args.certified_warmup_steps,
         )
         t_cert = time.perf_counter() - t0
         print(f"Certified: ppl={cert_result['perplexity']:.2f} "
