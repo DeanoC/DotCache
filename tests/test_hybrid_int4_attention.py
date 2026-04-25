@@ -98,6 +98,7 @@ def test_hybrid_mixed_value_attention_promotes_only_masked_blocks():
     from dotcache.kernels.int4_group_quantise import dequantise_int4_grouped
     from dotcache.kernels.selective_attend_triton import (
         selective_attend_multihead_hybrid_mixedv,
+        selective_attend_multihead_hybrid_mixedv_deqk_split_k,
         selective_attend_multihead_hybrid_mixedv_split_k,
     )
     from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
@@ -112,6 +113,7 @@ def test_hybrid_mixed_value_attention_promotes_only_masked_blocks():
     values = torch.randn(kv_heads, n_tokens, d_v, dtype=torch.float16, device="cuda")
     cache = TieredKeyCacheLayer.from_fp16_cache_int4v(
         keys, values, block_size=block_size, group_size=16, max_new_tokens=0,
+        phase2_fp16_key_mirror=True,
     )
     q = torch.randn(q_heads, head_dim, dtype=torch.float32, device="cuda")
 
@@ -179,6 +181,24 @@ def test_hybrid_mixed_value_attention_promotes_only_masked_blocks():
         q_scale=q_scale,
         num_splits=2,
     )
+    got_deqk_split = selective_attend_multihead_hybrid_mixedv_deqk_split_k(
+        keys_deq_fp16=cache.phase2_keys_fp16_active(),
+        keys_fp16=cache.keys_fp16_gpu[:, :n_tokens, :],
+        topk_mask=topk_mask,
+        values_int4_packed=cache.values_int4_packed[:, :n_tokens, :],
+        values_int4_scales=cache.values_int4_scales[:, :n_tokens, :],
+        values_int4_zeros=cache.values_int4_zeros[:, :n_tokens, :],
+        values_fp16_scratch=values_fp16_scratch,
+        value_fp16_mask=value_fp16_mask,
+        value_block_slots=value_block_slots,
+        q_all=q,
+        skip_mask_i32=no_skip,
+        gqa_group=gqa_group,
+        block_size=block_size,
+        group_size=16,
+        q_scale=q_scale,
+        num_splits=2,
+    )
 
     q_int8 = cache.keys_int8[:, :n_tokens, :].to(torch.float32).reshape(
         kv_heads, n_blocks, block_size, head_dim,
@@ -221,6 +241,7 @@ def test_hybrid_mixed_value_attention_promotes_only_masked_blocks():
 
     torch.testing.assert_close(got, expected, atol=2e-3, rtol=2e-3)
     torch.testing.assert_close(got_split, expected, atol=2e-3, rtol=2e-3)
+    torch.testing.assert_close(got_deqk_split, expected, atol=3e-3, rtol=3e-3)
 
 
 @pytest.mark.skipif(not CUDA, reason="needs CUDA")
