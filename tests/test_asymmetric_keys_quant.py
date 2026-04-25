@@ -106,36 +106,6 @@ class TestAsymmetricEncode:
             f"{violations:.3%} of elements exceed scale/2 reconstruction bound"
         )
 
-    def test_score_fp16_t_mirror_matches_dequant_and_updates_append_block(self):
-        """The opt-in score mirror must stay aligned with quantized blocks."""
-        from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
-
-        keys, values = _make_keys_values(seed=17, n_blocks=2, head_dim=32, d_v=32)
-        cache = TieredKeyCacheLayer.from_fp16_cache(
-            keys.cuda(),
-            values.cuda(),
-            block_size=16,
-            max_new_tokens=16,
-            score_fp16_t_mirror=True,
-        )
-        got = cache.score_keys_fp16_t_active()
-        expected = cache._keys_deq_f32[:, :cache.num_tokens, :].transpose(1, 2).to(torch.float16)
-        assert got is not None
-        torch.testing.assert_close(got, expected)
-
-        torch.manual_seed(18)
-        new_keys = torch.randn(cache.kv_heads, 16, cache.head_dim, device="cuda")
-        new_values = torch.randn(cache.kv_heads, 16, cache.d_v, device="cuda")
-        for t in range(16):
-            cache.append_token(new_keys[:, t:t + 1, :], new_values[:, t:t + 1, :])
-
-        got_after = cache.score_keys_fp16_t_active()
-        expected_after = cache._keys_deq_f32[
-            :, :cache.num_quantized_blocks * cache.block_size, :
-        ].transpose(1, 2).to(torch.float16)
-        assert got_after is not None
-        torch.testing.assert_close(got_after, expected_after)
-
     def test_degenerate_channel_kmin_equals_kmax(self):
         """A constant channel (k_min == k_max) must not crash and dequant to zero error.
 
@@ -262,58 +232,6 @@ class TestAsymmetricKernelParity:
             m_b.cpu().numpy(), ref_m_b.cpu().numpy(),
             atol=5e-3, rtol=1e-3,
         )
-
-    def test_fp16_t_mirror_score_backend_matches_triton(self, monkeypatch):
-        """Experimental mirror backend should preserve score semantics closely."""
-        from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
-        from dotcache.kernels.fused_score_certify import fused_score_certify_multihead
-
-        kv_heads, n_blocks, bs, head_dim = 2, 4, 16, 32
-        N = n_blocks * bs
-        torch.manual_seed(31)
-        keys = torch.randn(kv_heads, N, head_dim, device="cuda")
-        values = torch.randn(kv_heads, N, head_dim, device="cuda")
-        cache = TieredKeyCacheLayer.from_fp16_cache(
-            keys,
-            values,
-            block_size=bs,
-            max_new_tokens=0,
-            score_fp16_t_mirror=True,
-        )
-        q_heads = kv_heads * 2
-        gqa_group = q_heads // kv_heads
-        q = torch.randn(q_heads, head_dim, device="cuda")
-
-        monkeypatch.setenv("DOTCACHE_SCORE_BACKEND", "triton")
-        expected = fused_score_certify_multihead(
-            K_int8_packed=cache.keys_int8[:, :N, :],
-            K_scale=cache.keys_scale[:, :n_blocks, :],
-            K_zero_points=cache.keys_zero_points[:, :n_blocks, :],
-            q_all=q,
-            correction=cache.correction[:, :n_blocks],
-            gqa_group=gqa_group,
-            block_size=bs,
-            q_scale=head_dim ** -0.5,
-            block_epsilon=0.0,
-        )
-
-        monkeypatch.setenv("DOTCACHE_SCORE_BACKEND", "fp16_t_mirror")
-        got = fused_score_certify_multihead(
-            K_int8_packed=cache.keys_int8[:, :N, :],
-            K_scale=cache.keys_scale[:, :n_blocks, :],
-            K_zero_points=cache.keys_zero_points[:, :n_blocks, :],
-            q_all=q,
-            correction=cache.correction[:, :n_blocks],
-            gqa_group=gqa_group,
-            block_size=bs,
-            q_scale=head_dim ** -0.5,
-            block_epsilon=0.0,
-            K_deq_fp16_t=cache.score_keys_fp16_t_active(),
-        )
-
-        torch.testing.assert_close(got[0], expected[0], atol=3e-2, rtol=1e-2)
-        torch.testing.assert_close(got[1], expected[1], atol=5e-2, rtol=2e-2)
-        torch.testing.assert_close(got[2], expected[2])
 
     def test_attend_int8_matches_fp32_reference(self):
         """The selective-attend INT8 kernel's asymmetric dequant must match FP32 ref."""

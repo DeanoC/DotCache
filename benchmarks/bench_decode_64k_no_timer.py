@@ -102,6 +102,7 @@ def run_config(model, adapter, device, tokenizer, ctx_len: int, steps: int, warm
     _per_kv_group = os.environ.get("DOTCACHE_PER_KV_GROUP_TOPK", "0") == "1"
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered,
+        layer_epsilons={},
         v_tolerance=0.5,
         collect_stats=False,  # << off
         append_kv=True,

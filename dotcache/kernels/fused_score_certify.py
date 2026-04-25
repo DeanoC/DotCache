@@ -380,42 +380,6 @@ def _fused_score_certify_multihead_triton(
     return m_b, S_b, skip_i32.bool()
 
 
-def _score_certify_multihead_fp16_t_mirror(
-    K_deq_fp16_t: torch.Tensor,    # [num_kv_heads, head_dim, N] fp16
-    q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
-    correction: torch.Tensor,      # [num_kv_heads, num_blocks] float32
-    gqa_group: int,
-    block_size: int = 16,
-    q_scale: float = 1.0,
-    block_epsilon: float = 0.001,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Experimental tensor-core score path over persistent FP16-T keys.
-
-    This is opt-in only (`DOTCACHE_SCORE_BACKEND=fp16_t_mirror`). It uses the
-    same asymmetric INT8 reconstructed keys, but consumes an FP16 transposed
-    mirror so scoring lowers to batched GEMM instead of scalar dequant+dot.
-    """
-    num_kv_heads, head_dim, N = K_deq_fp16_t.shape
-    num_q_heads = q_all.shape[0]
-    num_blocks = N // block_size
-    q_grouped = q_all.reshape(num_kv_heads, gqa_group, head_dim).to(torch.float16)
-    scores = torch.bmm(q_grouped, K_deq_fp16_t).float() * q_scale
-    scores = scores.reshape(
-        num_kv_heads, gqa_group, num_blocks, block_size,
-    ).reshape(num_q_heads, num_blocks, block_size)
-    m_b = scores.amax(dim=2)
-    S_b = torch.exp(scores - m_b.unsqueeze(2)).sum(dim=2)
-
-    if block_epsilon <= 0.0:
-        return m_b, S_b, torch.zeros_like(m_b, dtype=torch.bool)
-
-    correction_h = correction.repeat_interleave(gqa_group, dim=0)
-    m_global = m_b.amax(dim=1, keepdim=True)
-    mass = S_b * correction_h * torch.exp(m_b - m_global)
-    total = mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
-    return m_b, S_b, (mass / total) < block_epsilon
-
-
 def fused_score_certify_multihead(
     K_int8_packed: torch.Tensor,   # [num_kv_heads, N, head_dim] int8
     K_scale: torch.Tensor,         # [num_kv_heads, num_blocks, head_dim] float32
@@ -426,7 +390,6 @@ def fused_score_certify_multihead(
     block_size: int = 16,
     q_scale: float = 1.0,
     block_epsilon: float = 0.001,
-    K_deq_fp16_t: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Score + certify ALL heads.
 
@@ -438,16 +401,6 @@ def fused_score_certify_multihead(
     import os as _os
 
     backend = _os.environ.get("DOTCACHE_SCORE_BACKEND", "triton").strip().lower()
-    if backend == "fp16_t_mirror" and K_deq_fp16_t is not None:
-        return _score_certify_multihead_fp16_t_mirror(
-            K_deq_fp16_t=K_deq_fp16_t,
-            q_all=q_all,
-            correction=correction,
-            gqa_group=gqa_group,
-            block_size=block_size,
-            q_scale=q_scale,
-            block_epsilon=block_epsilon,
-        )
     if backend == "cutlass_sm120":
         try:
             from dotcache.backends.cutlass_sm120 import (
