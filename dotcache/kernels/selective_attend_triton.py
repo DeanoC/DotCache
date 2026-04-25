@@ -1195,9 +1195,16 @@ def _hybrid_mixedv_split_k_partial_kernel(
     V_fp16_ptr, V_fp16_mask_ptr, V_block_slots_ptr,
     Q_ptr, Skip_ptr,
     M_part_ptr, L_part_ptr, Acc_part_ptr,
-    N: tl.constexpr,
-    V_scratch_tokens: tl.constexpr,
+    stride_kv_k,
+    stride_kv_kfp16,
+    stride_kv_vpack,
+    stride_kv_vscale,
+    stride_kv_vscratch,
+    stride_kv_scale,
     stride_k: tl.constexpr,
+    stride_vpack: tl.constexpr,
+    stride_vscale: tl.constexpr,
+    stride_vscratch: tl.constexpr,
     d_v: tl.constexpr,
     d_v_half: tl.constexpr,
     num_groups: tl.constexpr,
@@ -1221,8 +1228,11 @@ def _hybrid_mixedv_split_k_partial_kernel(
     valid_q = qh < num_q_heads
     if valid_q:
         kvh = qh // gqa_group
-        kv_base = kvh * N
-        v_scratch_base = kvh * V_scratch_tokens
+        k_base_elem = kvh * stride_kv_k
+        kfp16_base_elem = kvh * stride_kv_kfp16
+        vpack_base_elem = kvh * stride_kv_vpack
+        vscale_base_elem = kvh * stride_kv_vscale
+        vscratch_base_elem = kvh * stride_kv_vscratch
 
         block_start = sp * blocks_per_split
         block_end = tl.minimum(block_start + blocks_per_split, num_blocks)
@@ -1239,13 +1249,13 @@ def _hybrid_mixedv_split_k_partial_kernel(
         for bid in range(block_start, block_end):
             skip_val = tl.load(Skip_ptr + qh * num_blocks + bid)
             if skip_val == 0:
-                base_tok = kv_base + bid * block_size
+                base_tok = bid * block_size
                 use_fp16_key = tl.load(TopK_mask_ptr + qh * num_blocks + bid)
                 use_fp16_value = tl.load(V_fp16_mask_ptr + qh * num_blocks + bid)
 
-                scale_base = (kvh * num_blocks + bid) * head_dim
-                int8_row_ptrs = K_int8_ptr + (base_tok + t_offs) * stride_k
-                fp16_row_ptrs = K_fp16_ptr + (base_tok + t_offs) * stride_k
+                scale_base = kvh * stride_kv_scale + bid * head_dim
+                int8_row_ptrs = K_int8_ptr + k_base_elem + (base_tok + t_offs) * stride_k
+                fp16_row_ptrs = K_fp16_ptr + kfp16_base_elem + (base_tok + t_offs) * stride_k
                 scores = tl.zeros((block_size,), dtype=tl.float32)
 
                 for d_start in range(0, head_dim, TILE_D):
@@ -1280,7 +1290,7 @@ def _hybrid_mixedv_split_k_partial_kernel(
 
                 slot = tl.load(V_block_slots_ptr + bid)
                 slot = tl.maximum(slot, 0)
-                v_fp16_tok_base = v_scratch_base + slot * block_size
+                v_fp16_tok_base = slot * block_size
 
                 for v_start in range(0, d_v, TILE_V):
                     v_off = v_start + v_offs
@@ -1288,7 +1298,12 @@ def _hybrid_mixedv_split_k_partial_kernel(
                     packed_idx = v_off // 2
                     is_high = v_off % 2
 
-                    v_packed_ptrs = V_packed_ptr + (base_tok + t_offs[:, None]) * d_v_half + packed_idx[None, :]
+                    v_packed_ptrs = (
+                        V_packed_ptr
+                        + vpack_base_elem
+                        + (base_tok + t_offs[:, None]) * stride_vpack
+                        + packed_idx[None, :]
+                    )
                     packed_bytes = tl.load(
                         v_packed_ptrs,
                         mask=(vm_local[None, :] & (use_fp16_value == 0)),
@@ -1300,8 +1315,18 @@ def _hybrid_mixedv_split_k_partial_kernel(
                     v_int4 = unpacked.to(tl.float32)
 
                     group_idx = v_off // group_size
-                    scale_ptrs = V_scales_ptr + (base_tok + t_offs[:, None]) * num_groups + group_idx[None, :]
-                    zero_ptrs = V_zeros_ptr + (base_tok + t_offs[:, None]) * num_groups + group_idx[None, :]
+                    scale_ptrs = (
+                        V_scales_ptr
+                        + vscale_base_elem
+                        + (base_tok + t_offs[:, None]) * stride_vscale
+                        + group_idx[None, :]
+                    )
+                    zero_ptrs = (
+                        V_zeros_ptr
+                        + vscale_base_elem
+                        + (base_tok + t_offs[:, None]) * stride_vscale
+                        + group_idx[None, :]
+                    )
                     v_scale = tl.load(
                         scale_ptrs,
                         mask=(vm_local[None, :] & (use_fp16_value == 0)),
@@ -1314,7 +1339,12 @@ def _hybrid_mixedv_split_k_partial_kernel(
                     ).to(tl.float32)
                     v_int4_tile = v_int4 * v_scale + v_zero
 
-                    v_fp16_ptrs = V_fp16_ptr + (v_fp16_tok_base + t_offs[:, None]) * d_v + v_off[None, :]
+                    v_fp16_ptrs = (
+                        V_fp16_ptr
+                        + vscratch_base_elem
+                        + (v_fp16_tok_base + t_offs[:, None]) * stride_vscratch
+                        + v_off[None, :]
+                    )
                     v_fp16_tile = tl.load(
                         v_fp16_ptrs,
                         mask=(vm_local[None, :] & (use_fp16_value == 1)),
@@ -1371,12 +1401,21 @@ def selective_attend_multihead_hybrid_mixedv_split_k(
     num_splits = max(1, int(num_splits))
     blocks_per_split = (num_blocks + num_splits - 1) // num_splits
 
-    K_int8_flat = keys_int8.reshape(num_kv_heads * N, head_dim).contiguous()
-    K_fp16_flat = keys_fp16.reshape(num_kv_heads * N, head_dim).contiguous()
-    V_packed_flat = values_int4_packed.reshape(num_kv_heads * N, d_v // 2).contiguous()
-    V_scales_flat = values_int4_scales.reshape(num_kv_heads * N, num_groups).contiguous()
-    V_zeros_flat = values_int4_zeros.reshape(num_kv_heads * N, num_groups).contiguous()
-    V_fp16_flat = values_fp16_scratch.reshape(num_kv_heads * v_scratch_tokens, d_v).contiguous()
+    assert keys_int8.stride(2) == 1 and keys_int8.stride(1) == head_dim
+    assert keys_fp16.stride(2) == 1 and keys_fp16.stride(1) == head_dim
+    assert keys_scale.stride(2) == 1 and keys_scale.stride(1) == head_dim
+    assert keys_zero_points.stride(2) == 1 and keys_zero_points.stride(1) == head_dim
+    assert values_int4_packed.stride(2) == 1 and values_int4_packed.stride(1) == d_v // 2
+    assert values_int4_scales.stride(2) == 1 and values_int4_scales.stride(1) == num_groups
+    assert values_int4_zeros.stride(2) == 1 and values_int4_zeros.stride(1) == num_groups
+    assert values_fp16_scratch.stride(2) == 1 and values_fp16_scratch.stride(1) == d_v
+
+    stride_kv_k = keys_int8.stride(0)
+    stride_kv_kfp16 = keys_fp16.stride(0)
+    stride_kv_vpack = values_int4_packed.stride(0)
+    stride_kv_vscale = values_int4_scales.stride(0)
+    stride_kv_vscratch = values_fp16_scratch.stride(0)
+    stride_kv_scale = keys_scale.stride(0)
 
     m_part = torch.empty(num_q_heads, num_splits, dtype=torch.float32, device=device)
     l_part = torch.empty(num_q_heads, num_splits, dtype=torch.float32, device=device)
@@ -1388,15 +1427,15 @@ def selective_attend_multihead_hybrid_mixedv_split_k(
     lbv = block_size if last_block_valid is None else int(last_block_valid)
 
     _hybrid_mixedv_split_k_partial_kernel[(num_q_heads * num_splits,)](
-        K_int8_flat,
-        keys_scale.contiguous(),
-        keys_zero_points.contiguous(),
-        K_fp16_flat,
+        keys_int8,
+        keys_scale,
+        keys_zero_points,
+        keys_fp16,
         topk_mask.contiguous(),
-        V_packed_flat,
-        V_scales_flat,
-        V_zeros_flat,
-        V_fp16_flat,
+        values_int4_packed,
+        values_int4_scales,
+        values_int4_zeros,
+        values_fp16_scratch,
         value_fp16_mask.contiguous(),
         value_block_slots.contiguous(),
         q_all.contiguous(),
@@ -1404,9 +1443,16 @@ def selective_attend_multihead_hybrid_mixedv_split_k(
         m_part,
         l_part,
         acc_part,
-        N=N,
-        V_scratch_tokens=v_scratch_tokens,
+        stride_kv_k=stride_kv_k,
+        stride_kv_kfp16=stride_kv_kfp16,
+        stride_kv_vpack=stride_kv_vpack,
+        stride_kv_vscale=stride_kv_vscale,
+        stride_kv_vscratch=stride_kv_vscratch,
+        stride_kv_scale=stride_kv_scale,
         stride_k=head_dim,
+        stride_vpack=d_v // 2,
+        stride_vscale=num_groups,
+        stride_vscratch=d_v,
         d_v=d_v,
         d_v_half=d_v // 2,
         num_groups=num_groups,
