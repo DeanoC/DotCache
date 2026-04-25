@@ -125,12 +125,21 @@ def hybrid_mixedv_split_k_cutlass(**kwargs: Any) -> Any:
 def score_certify_cutlass(**kwargs: Any) -> Any:
     """Future tensor-core score/certify entrypoint.
 
-    This will replace the current scalar Triton phase-1 loop once it produces
-    the same `(m_b, S_b, skip_mask)` tensors and meets the score/certify
-    performance gate. It is intentionally separate from mixed attention so we
-    can land and validate the first acceleration target independently.
+    This v0 implementation is an SM120 extension ABI/correctness prototype,
+    not the final tensor-core kernel. It remains opt-in behind
+    DOTCACHE_CUTLASS_SM120_ENABLE_SCORE and must not become the default unless
+    the score gate shows a real speedup.
     """
-    raise NotImplementedError(
-        "cutlass_sm120 score/certify is not implemented yet; "
-        "use the Triton fallback until the tensor-core kernels pass gates"
+    ext = _load_extension()
+    m_b, s_b, skip_i32 = ext.score_certify_sm120(
+        kwargs["K_int8_packed"].contiguous(),
+        kwargs["K_scale"].contiguous(),
+        kwargs["K_zero_points"].contiguous(),
+        kwargs["q_all"].contiguous(),
+        kwargs["correction"].contiguous(),
+        int(kwargs["gqa_group"]),
+        int(kwargs.get("block_size", 16)),
+        float(kwargs.get("q_scale", 1.0)),
+        float(kwargs.get("block_epsilon", 0.001)),
     )
+    return m_b, s_b, skip_i32.bool()
