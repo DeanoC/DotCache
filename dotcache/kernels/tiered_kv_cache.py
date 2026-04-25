@@ -69,6 +69,7 @@ class TieredKeyCacheLayer:
     values_int4_error_sums: torch.Tensor | None = None  # [kv_heads, num_blocks] running sums for append
     values_int4_error_counts: torch.Tensor | None = None  # [kv_heads, num_blocks] running counts for append
     values_int4_group_size: int = 16  # paper §7
+    defer_int4_append_quantization: bool = False
     # Per-block max value-vector ℓ₂ norm: ν_b = max_{t∈b} ‖V_t‖₂ (paper §2.3
     # last paragraph). The Theorem-1 key-error bound uses V_max = max_b ν_b.
     # One float per block per kv-head; written at quant time and updated
@@ -282,6 +283,7 @@ class TieredKeyCacheLayer:
         max_new_tokens: int = 512,
         fp16_key_cache_capacity: int | None = None,
         fp16_value_cache_capacity: int | None = None,
+        defer_int4_append_quantization: bool = False,
     ) -> "TieredKeyCacheLayer":
         """Create tiered cache with INT4 per-group values.
 
@@ -348,6 +350,7 @@ class TieredKeyCacheLayer:
         base.values_int4_error_sums = int4_error_sums_buf
         base.values_int4_error_counts = int4_error_counts_buf
         base.values_int4_group_size = group_size
+        base.defer_int4_append_quantization = bool(defer_int4_append_quantization)
 
         # Pre-allocate CPU pinned FP16 buffer at capacity so append_token can
         # also write the FP16 ground truth (needed for Rung-2 fallback).
@@ -383,6 +386,48 @@ class TieredKeyCacheLayer:
         base.values_fp16 = None
 
         return base
+
+    def _quantize_value_block(self, block_idx: int) -> None:
+        """Quantize one complete value block into the INT4 buffers."""
+        if self.values_int4_packed is None:
+            return
+        start = block_idx * self.block_size
+        end = start + self.block_size
+        if end > self.num_tokens + 1:
+            return
+        if self.values_fp16_gpu is not None and self.fp16_value_cache_capacity is None:
+            values_block = self.values_fp16_gpu[:, start:end, :]
+        elif self.values_fp16 is not None:
+            values_block = self.values_fp16[:, start:end, :]
+        elif self.values_fp16_cpu is not None:
+            values_block = self.values_fp16_cpu[:, start:end, :].to(
+                device=self.keys_int8.device,
+                non_blocking=True,
+            )
+        else:
+            raise ValueError("Cannot quantize value block without FP16 values")
+
+        from dotcache.kernels.int4_group_quantise import quantise_int4_grouped
+
+        kv_heads, _, d_v = values_block.shape
+        flat = values_block.reshape(kv_heads * self.block_size, d_v).to(torch.float16)
+        r = quantise_int4_grouped(flat, group_size=self.values_int4_group_size)
+        self.values_int4_packed[:, start:end, :] = r["data_packed"].reshape(
+            kv_heads, self.block_size, d_v // 2,
+        )
+        self.values_int4_scales[:, start:end, :] = r["scales"].reshape(
+            kv_heads, self.block_size, d_v // self.values_int4_group_size,
+        )
+        self.values_int4_zeros[:, start:end, :] = r["zeros"].reshape(
+            kv_heads, self.block_size, d_v // self.values_int4_group_size,
+        )
+        per_token_error = r["per_token_error"].reshape(kv_heads, self.block_size)
+        block_error_sum = per_token_error.sum(dim=1)
+        self.values_int4_errors[:, block_idx] = block_error_sum / float(self.block_size)
+        if self.values_int4_error_sums is not None:
+            self.values_int4_error_sums[:, block_idx] = block_error_sum
+        if self.values_int4_error_counts is not None:
+            self.values_int4_error_counts[:, block_idx] = self.block_size
 
     def dequantise_int4_values(self) -> torch.Tensor:
         """Dequantise all INT4 values to float32 [kv_heads, N, d_v]."""
@@ -532,7 +577,12 @@ class TieredKeyCacheLayer:
         # (~0.05 at g=16). Without this, decide_v_format_tight
         # silently under-estimates per-block error for blocks containing
         # appended tokens, biasing the Rung-2 decision toward INT4.
-        if self.values_int4_packed is not None:
+        defer_int4 = (
+            self.defer_int4_append_quantization
+            and self.values_fp16_gpu is not None
+            and self.fp16_value_cache_capacity is None
+        )
+        if self.values_int4_packed is not None and not defer_int4:
             from dotcache.kernels.int4_group_quantise import quantise_int4_grouped
             new_v_per_head = new_v.to(device=device)  # [kv_heads, d_v]
             r = quantise_int4_grouped(
@@ -605,6 +655,8 @@ class TieredKeyCacheLayer:
 
         # Check if this token completes a block
         if pos_in_block == self.block_size - 1:
+            if defer_int4:
+                self._quantize_value_block(block_idx)
             # Block is full — compute per-channel scales and quantize all 16 tokens
             self._quantize_block(block_idx)
 
@@ -976,6 +1028,7 @@ def create_tiered_cache_int4v_from_model(
     max_new_tokens: int = 512,
     fp16_key_cache_capacity: int | None = None,
     fp16_value_cache_capacity: int | None = None,
+    defer_int4_append_quantization: bool | None = None,
 ) -> dict[int, TieredKeyCacheLayer]:
     """Create tiered caches with INT4 per-group values from HF past_key_values.
 
@@ -985,6 +1038,9 @@ def create_tiered_cache_int4v_from_model(
     Callers that decode more than the default 512 tokens MUST pass this
     explicitly, matching what they pass to create_tiered_cache_from_model().
     """
+    if defer_int4_append_quantization is None:
+        defer_int4_append_quantization = fp16_value_cache_capacity is None
+
     caches = {}
     for layer_id in layer_ids:
         if hasattr(past_kv, "layers"):
@@ -1012,6 +1068,7 @@ def create_tiered_cache_int4v_from_model(
             max_new_tokens=max_new_tokens + (seq_len - aligned_len),
             fp16_key_cache_capacity=fp16_key_cache_capacity,
             fp16_value_cache_capacity=fp16_value_cache_capacity,
+            defer_int4_append_quantization=bool(defer_int4_append_quantization),
         )
         # num_tokens tracks what the INT4 packed tensor actually covers;
         # the trailing (seq_len - aligned_len) tokens weren't quantised and

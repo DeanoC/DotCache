@@ -237,6 +237,37 @@ class TestInt4G16:
             "— append_token may have skipped INT4 quantise"
         )
 
+    def test_deferred_int4_append_quantizes_completed_block(self):
+        """Full-mirror paper runs can serve the trailing partial block from
+        FP16 and defer INT4 value quantisation until the block is complete."""
+        from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
+
+        kv_heads, n_blocks, bs, head_dim, d_v = 2, 2, 16, 32, 32
+        N = n_blocks * bs
+        torch.manual_seed(20260425)
+        keys = torch.randn(kv_heads, N, head_dim, dtype=torch.float16, device="cuda")
+        values = torch.randn(kv_heads, N, d_v, dtype=torch.float16, device="cuda")
+        cache = TieredKeyCacheLayer.from_fp16_cache_int4v(
+            keys, values, block_size=bs, group_size=16, max_new_tokens=bs,
+            defer_int4_append_quantization=True,
+        )
+
+        next_block = n_blocks
+        first_v = torch.randn(kv_heads, 1, d_v, dtype=torch.float16, device="cuda")
+        first_k = torch.randn(kv_heads, 1, head_dim, dtype=torch.float16, device="cuda")
+        cache.append_token(first_k, first_v)
+        assert cache.values_int4_error_counts[:, next_block].sum().item() == 0
+        torch.testing.assert_close(cache.values_fp16_gpu[:, N, :], first_v[:, 0, :])
+
+        for _ in range(bs - 1):
+            cache.append_token(
+                torch.randn(kv_heads, 1, head_dim, dtype=torch.float16, device="cuda"),
+                torch.randn(kv_heads, 1, d_v, dtype=torch.float16, device="cuda"),
+            )
+
+        assert cache.values_int4_error_counts[:, next_block].tolist() == [bs, bs]
+        assert torch.all(cache.values_int4_errors[:, next_block] > 0)
+
     def test_g16_reconstruction_tighter_than_g32(self):
         """Smaller groups give tighter per-element reconstruction than larger
         groups, on data with intra-vector dynamic range. This is the reason

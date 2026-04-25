@@ -405,6 +405,26 @@ def compute_fp16_block_scores(
     if keys.dtype != q_all.dtype:
         keys = keys.to(dtype=q_all.dtype)
 
+    if keys.device.type == "cuda" and q_all.device.type == "cuda" and head_dim <= 256:
+        try:
+            import os as _os
+            if _os.environ.get("DOTCACHE_FP16_BLOCK_SCORE_TRITON", "0") == "1":
+                from dotcache.kernels.fp16_block_scores_triton import fp16_block_scores_triton
+                scores, log_masses = fp16_block_scores_triton(
+                    keys,
+                    q_all,
+                    block_indices,
+                    num_scoring_blocks=num_scoring_blocks,
+                    gqa_group=gqa_group,
+                    block_size=bs,
+                    q_scale=q_scale,
+                )
+                if return_log_mass:
+                    return scores, log_masses
+                return scores
+        except Exception:
+            pass
+
     # [num_q_heads, K, bs, head_dim] gather: for each (h, k) pick tokens
     # [block*bs, block*bs + bs) from keys[kv_h].
     kv_per_h = torch.arange(num_q_heads, device=device) // gqa_group          # [H]
@@ -479,6 +499,7 @@ def augment_mask_with_exploration(
     topk_mask: torch.Tensor,         # [H, B] bool — top-K* mask from adaptive selector
     exploration_rate: float,
     generator: torch.Generator | None = None,
+    count: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
     """Paper §6 exploration budget: randomly promote `exploration_rate` of
     the non-promoted blocks per head to FP16 for monitoring purposes.
@@ -500,7 +521,8 @@ def augment_mask_with_exploration(
     exploration_mask = non_promoted & draw
     augmented = topk_mask | exploration_mask
     # Running total is on device until the caller decides to item() it.
-    return augmented, exploration_mask, int(exploration_mask.sum().item())
+    explored = int(exploration_mask.sum().item()) if count else 0
+    return augmented, exploration_mask, explored
 
 
 def compute_delta_bound(
@@ -821,11 +843,10 @@ def certified_attention_layer(
             and k_max is not None
         ):
             rung1_trigger_mask = tail_mass_est > rung1_threshold  # [H] bool
-            # One .sum().item() sync covers both "any?" and "how many?" — no
-            # need for a separate .any().item() gate.
-            rung1_triggered_heads = int(rung1_trigger_mask.sum().item())
-            if rung1_triggered_heads > 0:
-                expanded_k_max = min(int(math.ceil(k_max * float(rung1_multiplier))), n_qblocks)
+            if collect_stats:
+                rung1_triggered_heads = int(rung1_trigger_mask.sum().item())
+            expanded_k_max = min(int(math.ceil(k_max * float(rung1_multiplier))), n_qblocks)
+            if expanded_k_max > int(k_max):
                 topk_mask_cert2, k_star2, tail_mass_est2, tau_cov_actual2 = compute_adaptive_topk_mask(
                     m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=expanded_k_max,
                     per_kv_group_topk=per_kv_group_topk, gqa_group=gqa_group,
@@ -852,6 +873,7 @@ def certified_attention_layer(
             topk_mask_cert, exploration_mask_cert, explored_blocks_count = (
                 augment_mask_with_exploration(
                     topk_mask_cert, exploration_rate, exploration_generator,
+                    count=collect_stats,
                 )
             )
 
@@ -1137,6 +1159,12 @@ def certified_attention_layer(
             keys_scale_active = cache.keys_scale[:, :n_active_blocks_hybrid, :]
             last_block_valid = cache.num_tokens - n_qblocks * bs
             assert 1 <= last_block_valid < bs, last_block_valid
+        force_trailing_value_fp16 = (
+            bool(getattr(cache, "defer_int4_append_quantization", False))
+            and cache.has_trailing_partial_block
+            and cache.values_fp16_gpu is not None
+            and cache.fp16_value_cache_capacity is None
+        )
 
         hybrid_topk = adaptive_topk_mask[:, :n_active_blocks_hybrid].to(torch.int32).contiguous()
         no_skip = torch.zeros(
@@ -1212,7 +1240,7 @@ def certified_attention_layer(
                 eta_int4 = cache.values_int4_errors.max().item()
                 value_fallback_head_block_count = int(value_unsafe_mask.sum().item())
                 value_fallback_block_count = int(value_unsafe_mask.any(dim=0).sum().item())
-                v_format = "mixed" if value_fallback_head_block_count else "int4"
+                v_format = "mixed" if (value_fallback_head_block_count or force_trailing_value_fp16) else "int4"
             elif (
                 cache.values_fp16_gpu is not None
                 and cache.fp16_value_cache_capacity is None
@@ -1270,6 +1298,8 @@ def certified_attention_layer(
                 device=q_all.device,
             )
             value_fp16_mask[:, :n_qblocks] = value_unsafe_mask.to(torch.int32)
+            if force_trailing_value_fp16:
+                value_fp16_mask[:, n_qblocks:n_active_blocks_hybrid] = 1
             use_one_step_value_pagein = False
             if (
                 cache.values_fp16_gpu is not None
