@@ -120,3 +120,17 @@ def hybrid_mixedv_split_k_cutlass(**kwargs: Any) -> Any:
         "cutlass_sm120 mixed-value attention is not implemented yet; "
         "use the Triton fallback until the tensor-core kernels pass gates"
     )
+
+
+def score_certify_cutlass(**kwargs: Any) -> Any:
+    """Future tensor-core score/certify entrypoint.
+
+    This will replace the current scalar Triton phase-1 loop once it produces
+    the same `(m_b, S_b, skip_mask)` tensors and meets the score/certify
+    performance gate. It is intentionally separate from mixed attention so we
+    can land and validate the first acceleration target independently.
+    """
+    raise NotImplementedError(
+        "cutlass_sm120 score/certify is not implemented yet; "
+        "use the Triton fallback until the tensor-core kernels pass gates"
+    )

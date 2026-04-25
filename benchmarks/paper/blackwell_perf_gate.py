@@ -116,6 +116,8 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     env.setdefault("DOTCACHE_FP16_BLOCK_SCORE_TRITON", "1")
+    env.setdefault("DOTCACHE_SCORE_BACKEND", "cutlass_sm120")
+    env.setdefault("DOTCACHE_CERTIFIED_BACKEND", "cutlass_sm120")
 
     report: dict[str, Any] = {
         "device": _device_info(),
@@ -126,6 +128,10 @@ def main() -> int:
             "target_pg19_64k_tok_s": 20.0,
             "target_final_pg19_64k_tok_s": 40.0,
             "requires_cutlass_available": True,
+            "score_backend": env["DOTCACHE_SCORE_BACKEND"],
+            "attention_backend": env["DOTCACHE_CERTIFIED_BACKEND"],
+            "cutlass_score_enabled": env.get("DOTCACHE_CUTLASS_SM120_ENABLE_SCORE", "0"),
+            "cutlass_attention_enabled": env.get("DOTCACHE_CUTLASS_SM120_ENABLE_KERNELS", "0"),
         },
     }
 

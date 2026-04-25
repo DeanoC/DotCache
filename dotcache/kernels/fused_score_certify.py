@@ -325,7 +325,7 @@ def _multihead_score_certify_kernel(
                 tl.store(Skip_ptr + m_base + o, tl.where(mk, skip.to(tl.int32), 0), mask=mk)
 
 
-def fused_score_certify_multihead(
+def _fused_score_certify_multihead_triton(
     K_int8_packed: torch.Tensor,   # [num_kv_heads, N, head_dim] int8
     K_scale: torch.Tensor,         # [num_kv_heads, num_blocks, head_dim] float32
     K_zero_points: torch.Tensor,   # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
@@ -378,6 +378,65 @@ def fused_score_certify_multihead(
         TILE_N=TILE_N,
     )
     return m_b, S_b, skip_i32.bool()
+
+
+def fused_score_certify_multihead(
+    K_int8_packed: torch.Tensor,   # [num_kv_heads, N, head_dim] int8
+    K_scale: torch.Tensor,         # [num_kv_heads, num_blocks, head_dim] float32
+    K_zero_points: torch.Tensor,   # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
+    q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
+    correction: torch.Tensor,      # [num_kv_heads, num_blocks] float32
+    gqa_group: int,
+    block_size: int = 16,
+    q_scale: float = 1.0,
+    block_epsilon: float = 0.001,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Score + certify ALL heads.
+
+    `DOTCACHE_SCORE_BACKEND=cutlass_sm120` probes the future tensor-core
+    backend boundary, but the Triton implementation remains the exact fallback
+    until `DOTCACHE_CUTLASS_SM120_ENABLE_SCORE=1` and the CUTLASS kernels pass
+    the phase-1 correctness/performance gates.
+    """
+    import os as _os
+
+    backend = _os.environ.get("DOTCACHE_SCORE_BACKEND", "triton").strip().lower()
+    if backend == "cutlass_sm120":
+        try:
+            from dotcache.backends.cutlass_sm120 import (
+                cutlass_sm120_available,
+                score_certify_cutlass,
+            )
+
+            if (
+                _os.environ.get("DOTCACHE_CUTLASS_SM120_ENABLE_SCORE", "0") == "1"
+                and cutlass_sm120_available()
+            ):
+                return score_certify_cutlass(
+                    K_int8_packed=K_int8_packed,
+                    K_scale=K_scale,
+                    K_zero_points=K_zero_points,
+                    q_all=q_all,
+                    correction=correction,
+                    gqa_group=gqa_group,
+                    block_size=block_size,
+                    q_scale=q_scale,
+                    block_epsilon=block_epsilon,
+                )
+        except Exception:
+            pass
+
+    return _fused_score_certify_multihead_triton(
+        K_int8_packed=K_int8_packed,
+        K_scale=K_scale,
+        K_zero_points=K_zero_points,
+        q_all=q_all,
+        correction=correction,
+        gqa_group=gqa_group,
+        block_size=block_size,
+        q_scale=q_scale,
+        block_epsilon=block_epsilon,
+    )
 
 
 def fused_score_certify(

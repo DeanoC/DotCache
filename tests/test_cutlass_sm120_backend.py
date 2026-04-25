@@ -37,3 +37,39 @@ def test_cutlass_sm120_probe_if_available() -> None:
     torch.cuda.synchronize()
     assert torch.equal(x, y)
     assert "cutlass=4.3.1" in cutlass_sm120_metadata()["metadata"]
+
+
+def test_cutlass_score_backend_falls_back_to_triton(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    from dotcache.kernels.fused_score_certify import fused_score_certify_multihead
+
+    torch.manual_seed(20260425)
+    kv_heads, q_heads, gqa_group = 2, 4, 2
+    n_blocks, block_size, head_dim = 3, 16, 32
+    n_tokens = n_blocks * block_size
+
+    keys_int8 = torch.randint(
+        -127, 128, (kv_heads, n_tokens, head_dim), dtype=torch.int8, device="cuda",
+    )
+    scales = torch.rand(kv_heads, n_blocks, head_dim, dtype=torch.float32, device="cuda") * 0.02
+    zeros = torch.randn(kv_heads, n_blocks, head_dim, dtype=torch.float32, device="cuda") * 0.01
+    q = torch.randn(q_heads, head_dim, dtype=torch.float32, device="cuda")
+    corr = torch.ones(kv_heads, n_blocks, dtype=torch.float32, device="cuda")
+
+    base = fused_score_certify_multihead(
+        keys_int8, scales, zeros, q, corr, gqa_group,
+        block_size=block_size, q_scale=head_dim ** -0.5, block_epsilon=0.0,
+    )
+
+    monkeypatch.setenv("DOTCACHE_SCORE_BACKEND", "cutlass_sm120")
+    monkeypatch.delenv("DOTCACHE_CUTLASS_SM120_ENABLE_SCORE", raising=False)
+    fallback = fused_score_certify_multihead(
+        keys_int8, scales, zeros, q, corr, gqa_group,
+        block_size=block_size, q_scale=head_dim ** -0.5, block_epsilon=0.0,
+    )
+
+    for got, expected in zip(fallback, base, strict=True):
+        torch.testing.assert_close(got, expected)
