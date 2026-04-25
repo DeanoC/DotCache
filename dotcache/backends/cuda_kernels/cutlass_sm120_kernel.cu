@@ -1,5 +1,6 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <torch/extension.h>
 
@@ -8,6 +9,7 @@
 namespace {
 
 constexpr int kBlockSize = 16;
+constexpr int kDequantTileD = 32;
 constexpr int kScoreThreads = 128;
 constexpr int kCertThreads = 256;
 
@@ -15,6 +17,52 @@ __global__ void probe_kernel(const float* __restrict__ input, float* __restrict_
     const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < n) {
         output[idx] = input[idx];
+    }
+}
+
+__global__ void dequant_keys_to_fp16_t_kernel(
+    const int8_t* __restrict__ keys_int8,
+    const float* __restrict__ keys_scale,
+    const float* __restrict__ keys_zp,
+    at::Half* __restrict__ output,
+    int tokens,
+    int head_dim,
+    int num_blocks) {
+    __shared__ __half tile[kBlockSize][kDequantTileD];
+
+    const int bid = blockIdx.x;
+    const int d_base = blockIdx.y * kDequantTileD;
+    const int kvh = blockIdx.z;
+    const int tid = threadIdx.x;
+    const int tile_elems = kBlockSize * kDequantTileD;
+
+    // Load/dequantize in source-contiguous order: token row, then channel.
+    for (int e = tid; e < tile_elems; e += blockDim.x) {
+        const int local_t = e / kDequantTileD;
+        const int local_d = e - local_t * kDequantTileD;
+        const int d = d_base + local_d;
+        const int tok = bid * kBlockSize + local_t;
+        __half v = __float2half(0.0f);
+        if (d < head_dim && tok < tokens) {
+            const int key_idx = (kvh * tokens + tok) * head_dim + d;
+            const int scale_idx = (kvh * num_blocks + bid) * head_dim + d;
+            const float f = static_cast<float>(keys_int8[key_idx]) * keys_scale[scale_idx] + keys_zp[scale_idx];
+            v = __float2half(f);
+        }
+        tile[local_t][local_d] = v;
+    }
+    __syncthreads();
+
+    // Store in destination-contiguous order: channel row, then token.
+    for (int e = tid; e < tile_elems; e += blockDim.x) {
+        const int local_d = e / kBlockSize;
+        const int local_t = e - local_d * kBlockSize;
+        const int d = d_base + local_d;
+        const int tok = bid * kBlockSize + local_t;
+        if (d < head_dim && tok < tokens) {
+            const int out_idx = (kvh * head_dim + d) * tokens + tok;
+            reinterpret_cast<__half*>(output)[out_idx] = tile[local_t][local_d];
+        }
     }
 }
 
@@ -155,6 +203,34 @@ torch::Tensor cutlass_sm120_probe_launcher(torch::Tensor input) {
             input.data_ptr<float>(),
             output.data_ptr<float>(),
             n);
+    }
+    return output;
+}
+
+torch::Tensor dequant_keys_to_fp16_t_launcher(
+    torch::Tensor keys_int8,
+    torch::Tensor keys_scale,
+    torch::Tensor keys_zero_points,
+    int64_t block_size) {
+    const at::cuda::OptionalCUDAGuard device_guard(device_of(keys_int8));
+    const int kv_heads = keys_int8.size(0);
+    const int tokens = keys_int8.size(1);
+    const int head_dim = keys_int8.size(2);
+    const int num_blocks = keys_scale.size(1);
+    auto output = torch::empty(
+        {kv_heads, head_dim, tokens},
+        torch::TensorOptions().device(keys_int8.device()).dtype(torch::kFloat16));
+    const int threads = 256;
+    const dim3 grid(num_blocks, (head_dim + kDequantTileD - 1) / kDequantTileD, kv_heads);
+    if (kv_heads > 0 && tokens > 0 && head_dim > 0) {
+        dequant_keys_to_fp16_t_kernel<<<grid, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+            keys_int8.data_ptr<int8_t>(),
+            keys_scale.data_ptr<float>(),
+            keys_zero_points.data_ptr<float>(),
+            output.data_ptr<at::Half>(),
+            tokens,
+            head_dim,
+            num_blocks);
     }
     return output;
 }

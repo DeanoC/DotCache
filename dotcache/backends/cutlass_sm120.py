@@ -108,6 +108,26 @@ def cutlass_sm120_probe(x: Any) -> Any:
     return _load_extension().cutlass_sm120_probe(x)
 
 
+def dequant_keys_to_fp16_t(
+    keys_int8: Any,
+    keys_scale: Any,
+    keys_zero_points: Any,
+    *,
+    block_size: int = 16,
+) -> Any:
+    """Dequantize asymmetric INT8 keys into tensor-core-friendly layout.
+
+    Returns `[kv_heads, head_dim, tokens]` FP16, matching the B operand layout
+    used by the score-phase batched GEMM feasibility bound.
+    """
+    return _load_extension().dequant_keys_to_fp16_t(
+        keys_int8.contiguous(),
+        keys_scale.contiguous(),
+        keys_zero_points.contiguous(),
+        int(block_size),
+    )
+
+
 def hybrid_mixedv_split_k_cutlass(**kwargs: Any) -> Any:
     """Future tensor-core mixed-value attention entrypoint.
 

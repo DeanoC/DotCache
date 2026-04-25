@@ -20,7 +20,7 @@ from typing import Callable
 import torch
 
 
-def _time_ms(fn: Callable[[], tuple[torch.Tensor, torch.Tensor, torch.Tensor]], *, warmup: int, iters: int) -> list[float]:
+def _time_ms(fn: Callable[[], object], *, warmup: int, iters: int) -> list[float]:
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
@@ -134,8 +134,39 @@ def _dense_gemm_bound_prepare(inp: dict) -> dict:
     }
 
 
-def _dense_gemm_bound_call(bound: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    scores = torch.bmm(bound["q_grouped"], bound["keys_t"]).float() * bound["q_scale"]
+def _native_dequant_gemm_prepare(inp: dict) -> dict:
+    kv_heads = int(inp["K_int8_packed"].shape[0])
+    head_dim = int(inp["K_int8_packed"].shape[2])
+    gqa_group = int(inp["gqa_group"])
+    return {
+        "K_int8_packed": inp["K_int8_packed"],
+        "K_scale": inp["K_scale"],
+        "K_zero_points": inp["K_zero_points"],
+        "q_grouped": inp["q_all"].reshape(kv_heads, gqa_group, head_dim).to(torch.float16),
+        "q_heads": int(inp["q_all"].shape[0]),
+        "kv_heads": kv_heads,
+        "gqa_group": gqa_group,
+        "num_blocks": int(inp["num_blocks"]),
+        "block_size": int(inp["block_size"]),
+        "q_scale": float(inp["q_scale"]),
+        "correction": inp["correction"],
+        "block_epsilon": float(inp["block_epsilon"]),
+    }
+
+
+def _native_dequant_keys_t(bound: dict) -> torch.Tensor:
+    from dotcache.backends.cutlass_sm120 import dequant_keys_to_fp16_t
+
+    return dequant_keys_to_fp16_t(
+        bound["K_int8_packed"],
+        bound["K_scale"],
+        bound["K_zero_points"],
+        block_size=bound["block_size"],
+    )
+
+
+def _dense_gemm_from_keys_t(bound: dict, keys_t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    scores = torch.bmm(bound["q_grouped"], keys_t).float() * bound["q_scale"]
     scores = scores.reshape(
         bound["kv_heads"], bound["gqa_group"], bound["num_blocks"], bound["block_size"],
     ).reshape(bound["q_heads"], bound["num_blocks"], bound["block_size"])
@@ -150,6 +181,15 @@ def _dense_gemm_bound_call(bound: dict) -> tuple[torch.Tensor, torch.Tensor, tor
         total = mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
         skip = (mass / total) < bound["block_epsilon"]
     return m_b, s_b, skip
+
+
+def _native_dequant_gemm_call(bound: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    keys_t = _native_dequant_keys_t(bound)
+    return _dense_gemm_from_keys_t(bound, keys_t)
+
+
+def _dense_gemm_bound_call(bound: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return _dense_gemm_from_keys_t(bound, bound["keys_t"])
 
 
 def _compare(a: tuple[torch.Tensor, torch.Tensor, torch.Tensor], b: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> dict[str, float | int]:
@@ -200,6 +240,18 @@ def main() -> int:
                 warmup=args.warmup,
                 iters=args.iters,
             )
+            native_dequant_bound = _native_dequant_gemm_prepare(inp)
+            native_dequant_out = _native_dequant_gemm_call(native_dequant_bound)
+            native_dequant_ms = _time_ms(
+                lambda: (_native_dequant_keys_t(native_dequant_bound),)[0],
+                warmup=args.warmup,
+                iters=args.iters,
+            )
+            native_dequant_gemm_ms = _time_ms(
+                lambda: _native_dequant_gemm_call(native_dequant_bound),
+                warmup=args.warmup,
+                iters=args.iters,
+            )
 
             os.environ["DOTCACHE_SCORE_BACKEND"] = "cutlass_sm120"
             os.environ.setdefault("DOTCACHE_CUTLASS_SM120_ENABLE_SCORE", "0")
@@ -209,8 +261,11 @@ def main() -> int:
             triton_summary = _summarize(triton_ms)
             cutlass_summary = _summarize(cutlass_ms)
             dense_bound_summary = _summarize(dense_bound_ms)
+            native_dequant_summary = _summarize(native_dequant_ms)
+            native_dequant_gemm_summary = _summarize(native_dequant_gemm_ms)
             speedup = triton_summary["mean_ms"] / max(cutlass_summary["mean_ms"], 1e-9)
             dense_bound_speedup = triton_summary["mean_ms"] / max(dense_bound_summary["mean_ms"], 1e-9)
+            native_dequant_gemm_speedup = triton_summary["mean_ms"] / max(native_dequant_gemm_summary["mean_ms"], 1e-9)
             row = {
                 "context": ctx,
                 "num_blocks": inp["num_blocks"],
@@ -218,6 +273,10 @@ def main() -> int:
                 "predequant_fp16_gemm_bound": dense_bound_summary,
                 "predequant_fp16_gemm_bound_speedup": float(dense_bound_speedup),
                 "predequant_fp16_gemm_bound_comparison": _compare(dense_bound_out, triton_out),
+                "native_dequant_layout": native_dequant_summary,
+                "native_dequant_fp16_gemm": native_dequant_gemm_summary,
+                "native_dequant_fp16_gemm_speedup": float(native_dequant_gemm_speedup),
+                "native_dequant_fp16_gemm_comparison": _compare(native_dequant_out, triton_out),
                 "cutlass_backend": cutlass_summary,
                 "cutlass_speedup": float(speedup),
                 "comparison": _compare(cutlass_out, triton_out),
@@ -228,8 +287,11 @@ def main() -> int:
                 f"{ctx//1024:>4}K blocks={inp['num_blocks']:<5} "
                 f"triton={triton_summary['mean_ms']:.3f}ms "
                 f"fp16_gemm_bound={dense_bound_summary['mean_ms']:.3f}ms "
+                f"dequant={native_dequant_summary['mean_ms']:.3f}ms "
+                f"dequant+gemm={native_dequant_gemm_summary['mean_ms']:.3f}ms "
                 f"cutlass_backend={cutlass_summary['mean_ms']:.3f}ms "
                 f"speedup={speedup:.2f}x bound={dense_bound_speedup:.2f}x "
+                f"deq_gemm={native_dequant_gemm_speedup:.2f}x "
                 f"enabled={row['cutlass_enabled']}"
             )
     finally:

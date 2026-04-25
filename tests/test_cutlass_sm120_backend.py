@@ -39,6 +39,41 @@ def test_cutlass_sm120_probe_if_available() -> None:
     assert "cutlass=4.3.1" in cutlass_sm120_metadata()["metadata"]
 
 
+def test_cutlass_dequant_keys_to_fp16_t_matches_reference() -> None:
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    if torch.cuda.get_device_capability()[0] < 12:
+        pytest.skip("SM120 GPU not available")
+
+    from dotcache.backends.cutlass_sm120 import (
+        cutlass_sm120_available,
+        dequant_keys_to_fp16_t,
+    )
+
+    if not cutlass_sm120_available():
+        pytest.skip("CUTLASS SM120 extension is not buildable in this environment")
+
+    torch.manual_seed(20260427)
+    kv_heads, n_blocks, block_size, head_dim = 2, 5, 16, 32
+    n_tokens = n_blocks * block_size
+    keys_int8 = torch.randint(
+        -128, 128, (kv_heads, n_tokens, head_dim), dtype=torch.int8, device="cuda",
+    )
+    scales = torch.rand(kv_heads, n_blocks, head_dim, dtype=torch.float32, device="cuda") * 0.02
+    zeros = torch.randn(kv_heads, n_blocks, head_dim, dtype=torch.float32, device="cuda") * 0.01
+
+    got = dequant_keys_to_fp16_t(keys_int8, scales, zeros, block_size=block_size)
+    expected = (
+        keys_int8.to(torch.float32).reshape(kv_heads, n_blocks, block_size, head_dim)
+        * scales.unsqueeze(2)
+        + zeros.unsqueeze(2)
+    ).reshape(kv_heads, n_tokens, head_dim).transpose(1, 2).contiguous().to(torch.float16)
+
+    assert got.shape == (kv_heads, head_dim, n_tokens)
+    torch.testing.assert_close(got, expected)
+
+
 def test_cutlass_score_backend_falls_back_to_triton(monkeypatch: pytest.MonkeyPatch) -> None:
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
