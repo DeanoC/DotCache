@@ -249,7 +249,8 @@ def compute_adaptive_topk_mask(
     k_max: int | None = DEFAULT_K_MAX,
     per_kv_group_topk: bool = False,
     gqa_group: int = 1,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_mass_frac: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Paper §3.3 adaptive top-K* selector (cumulative-mass threshold).
 
     Per head: sort blocks by estimated mass, find smallest K such that
@@ -259,6 +260,8 @@ def compute_adaptive_topk_mask(
     - k_star    [H] int32: actual K* selected per head (post-clamp).
     - tail_mass [H] float32: 1 − Σ mass on top-K* (INT8-estimated).
     - tau_cov_actual [H] float32: actual cumulative mass captured at K*.
+    - mass_frac [H, B] float32 when return_mass_frac=True, for downstream
+      paper bounds that use the same normalised block mass distribution.
 
     All computation stays on device; this function has zero CPU syncs.
     """
@@ -268,6 +271,9 @@ def compute_adaptive_topk_mask(
         empty_bool = torch.zeros(num_q_heads, 0, dtype=torch.bool, device=device)
         zeros_int = torch.zeros(num_q_heads, dtype=torch.int32, device=device)
         zeros_f32 = torch.zeros(num_q_heads, dtype=torch.float32, device=device)
+        if return_mass_frac:
+            empty_f32 = torch.zeros(num_q_heads, 0, dtype=torch.float32, device=device)
+            return empty_bool, zeros_int, zeros_f32, zeros_f32, empty_f32
         return empty_bool, zeros_int, zeros_f32, zeros_f32
 
     # Per-head normalised mass, stable via log-sum-exp.
@@ -312,10 +318,22 @@ def compute_adaptive_topk_mask(
         k_star = k_star_group.unsqueeze(1).expand(-1, gqa_group).reshape(num_q_heads).contiguous()
         tail_mass = tail_mass_group.unsqueeze(1).expand(-1, gqa_group).reshape(num_q_heads).contiguous()
         tau_actual = tau_actual_group.unsqueeze(1).expand(-1, gqa_group).reshape(num_q_heads).contiguous()
+        if return_mass_frac:
+            return topk_mask, k_star, tail_mass, tau_actual, mass_frac
         return topk_mask, k_star, tail_mass, tau_actual
 
-    # Sort descending per head; cumulative mass in sorted order.
-    sorted_mass, sorted_idx = mass_frac.sort(dim=1, descending=True)
+    # Sort only the usable prefix when k_max caps K*. Full sorting all blocks
+    # at 32K/64K is unnecessary for the paper config (k_max=128): if tau_cov
+    # is not reached within the cap, K* clamps to k_max and only the top-k_max
+    # set contributes to tau_actual/tail_mass. If tau_cov is reached earlier,
+    # the prefix is exactly the same as a full descending sort.
+    hi = num_blocks if k_max is None else min(int(k_max), num_blocks)
+    if hi < num_blocks:
+        sorted_mass, sorted_idx = mass_frac.topk(hi, dim=1, largest=True, sorted=True)
+        selection_width = hi
+    else:
+        sorted_mass, sorted_idx = mass_frac.sort(dim=1, descending=True)
+        selection_width = num_blocks
     cumsum = sorted_mass.cumsum(dim=1)                             # [H, B]
 
     # K*[h] = smallest k such that cumsum[h, k-1] ≥ tau_cov.
@@ -325,20 +343,21 @@ def compute_adaptive_topk_mask(
     k_star = torch.searchsorted(cumsum, tau_vec).squeeze(1) + 1    # [H]
     # Clamp to [k_min, min(k_max, num_blocks)]. k_max=None means no cap
     # beyond num_blocks — let tau_cov alone dictate K* per head.
-    hi = num_blocks if k_max is None else min(int(k_max), num_blocks)
     lo = min(int(k_min), hi)
     k_star = k_star.clamp(min=lo, max=hi).to(torch.int32)
 
     # Build [H, B] top-K mask: position < k_star[h] in the sorted order.
-    pos = torch.arange(num_blocks, device=device).unsqueeze(0)     # [1, B]
+    pos = torch.arange(selection_width, device=device).unsqueeze(0)  # [1, selection_width]
     keep_sorted = pos < k_star.unsqueeze(1).to(pos.dtype)           # [H, B] bool
     topk_mask = torch.zeros_like(mass_frac, dtype=torch.bool)
     topk_mask.scatter_(1, sorted_idx, keep_sorted)                 # [H, B]
 
     # Tail mass + actual coverage using cumsum at (K*-1).
-    k_idx = (k_star.long() - 1).clamp(min=0, max=num_blocks - 1).unsqueeze(1)
+    k_idx = (k_star.long() - 1).clamp(min=0, max=selection_width - 1).unsqueeze(1)
     tau_actual = cumsum.gather(1, k_idx).squeeze(1).float()
     tail_mass = (1.0 - tau_actual).clamp(min=0.0)
+    if return_mass_frac:
+        return topk_mask, k_star, tail_mass, tau_actual, mass_frac
     return topk_mask, k_star, tail_mass, tau_actual
 
 
@@ -766,6 +785,7 @@ def certified_attention_layer(
     k_star: torch.Tensor | None = None
     tail_mass_est: torch.Tensor | None = None
     tau_cov_actual: torch.Tensor | None = None
+    mass_frac_cert: torch.Tensor | None = None
     rung1_triggered_heads = 0
     explored_blocks_count = 0
     if tau_cov is not None and tau_cov > 0 and n_qblocks > 0:
@@ -776,10 +796,15 @@ def certified_attention_layer(
         m_b_cert = m_b[:, :n_qblocks]
         S_b_cert = S_b[:, :n_qblocks]
         with _PhaseTimer(phase_timings, "adaptive_selection"):
-            topk_mask_cert, k_star, tail_mass_est, tau_cov_actual = compute_adaptive_topk_mask(
+            _topk_result = compute_adaptive_topk_mask(
                 m_b_cert, S_b_cert, tau_cov=tau_cov, k_min=k_min, k_max=k_max,
                 per_kv_group_topk=per_kv_group_topk, gqa_group=gqa_group,
+                return_mass_frac=(cache.values_int4_packed is not None),
             )
+            if len(_topk_result) == 5:
+                topk_mask_cert, k_star, tail_mass_est, tau_cov_actual, mass_frac_cert = _topk_result
+            else:
+                topk_mask_cert, k_star, tail_mass_est, tau_cov_actual = _topk_result
 
         # Rung-1 (paper §3.4): if any head's tail mass exceeded the configured
         # threshold — typically because k_max capped the selection before
@@ -911,11 +936,12 @@ def certified_attention_layer(
                 rank_fp16 = fp16_block_scores.argsort(dim=1, descending=True)
                 rank_diff = rank_int8 != rank_fp16  # [H, K]
                 r_main = min(int(ranking_r), k_for_rank)
-                r1 = min(1, k_for_rank)
-                r3 = min(3, k_for_rank)
                 ranking_disagree_mask = rank_diff[:, :r_main].any(dim=1)
-                ranking_disagree_r1_heads = int(rank_diff[:, :r1].any(dim=1).sum().item())
-                ranking_disagree_r3_heads = int(rank_diff[:, :r3].any(dim=1).sum().item())
+                if collect_stats:
+                    r1 = min(1, k_for_rank)
+                    r3 = min(3, k_for_rank)
+                    ranking_disagree_r1_heads = int(rank_diff[:, :r1].any(dim=1).sum().item())
+                    ranking_disagree_r3_heads = int(rank_diff[:, :r3].any(dim=1).sum().item())
             else:
                 ranking_disagree_mask = torch.zeros(
                     num_q_heads, dtype=torch.bool, device=q_all.device,
@@ -963,9 +989,10 @@ def certified_attention_layer(
                     (ub > ell_fp16_r_per_head.unsqueeze(1)) & tail_mask
                 )                                                       # [H, n_qblocks]
                 boundary_triggered_mask = trigger_per_block.any(dim=1)  # [H]
-                boundary_triggered_heads = int(
-                    boundary_triggered_mask.sum().item()
-                )
+                if collect_stats:
+                    boundary_triggered_heads = int(
+                        boundary_triggered_mask.sum().item()
+                    )
                 # Merge with ranking disagreement so existing Rung-3
                 # escalation handles boundary triggers identically.
                 ranking_disagree_mask = (
@@ -980,7 +1007,8 @@ def certified_attention_layer(
                 delta_per_head = compute_delta_bound(
                     q_all, cache.keys_scale[:, :n_qblocks, :], gqa_group, q_scale,
                 )
-            delta_bound_mean = float(delta_per_head.mean().item())
+            if collect_stats:
+                delta_bound_mean = float(delta_per_head.mean().item())
             score_consistency_violation_mask = score_consistency_violations(
                 top_int8_scores, fp16_block_scores, delta_per_head, eps_guard,
             )
@@ -1142,9 +1170,12 @@ def certified_attention_layer(
             fp16_cache_needed_blocks += len(needed_blocks)
 
         with _PhaseTimer(phase_timings, "value_check"):
-            mass_frac = compute_block_mass_fraction(
-                m_b[:, :n_qblocks], S_b[:, :n_qblocks],
-            )
+            if mass_frac_cert is not None and mass_frac_cert.shape[1] == n_qblocks:
+                mass_frac = mass_frac_cert
+            else:
+                mass_frac = compute_block_mass_fraction(
+                    m_b[:, :n_qblocks], S_b[:, :n_qblocks],
+                )
             # η_b is stored as relative value reconstruction error, matching
             # the paper §7 v_tol=0.05 operating point.
             eta_blocks = cache.values_int4_errors[:, :n_qblocks]
@@ -1176,11 +1207,33 @@ def certified_attention_layer(
                 eta_per_block=eta_blocks,
                 gqa_group=gqa_group,
             )
-            rho = mass_frac.sum(dim=1)
-            eta_int4 = eta_blocks.max().item()
-            value_fallback_head_block_count = int(value_unsafe_mask.sum().item())
-            value_fallback_block_count = int(value_unsafe_mask.any(dim=0).sum().item())
-            v_format = "mixed" if value_fallback_head_block_count else "int4"
+            if collect_stats:
+                rho = mass_frac.sum(dim=1)
+                eta_int4 = cache.values_int4_errors.max().item()
+                value_fallback_head_block_count = int(value_unsafe_mask.sum().item())
+                value_fallback_block_count = int(value_unsafe_mask.any(dim=0).sum().item())
+                v_format = "mixed" if value_fallback_head_block_count else "int4"
+            elif (
+                cache.values_fp16_gpu is not None
+                and cache.fp16_value_cache_capacity is None
+            ):
+                # Paper v2 full-mirror path: keep the value fallback decision
+                # entirely on GPU. If no head/block is unsafe, value_fp16_mask
+                # is all-zero and the mixed kernel reduces to the INT4 kernel.
+                # If some blocks are unsafe, identity slots address the full
+                # FP16 mirror directly. Either way avoids per-layer CPU syncs.
+                rho = None
+                eta_int4 = 0.0
+                v_format = "mixed"
+            else:
+                # Bounded/CPU fallback still needs the compact block list for
+                # cache page-in. This path is used by scratch sweeps, not the
+                # default full-mirror quality run.
+                rho = None
+                eta_int4 = 0.0
+                value_fallback_head_block_count = int(value_unsafe_mask.sum().item())
+                value_fallback_block_count = int(value_unsafe_mask.any(dim=0).sum().item())
+                v_format = "mixed" if value_fallback_head_block_count else "int4"
 
         if v_format == "int4":
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
@@ -1204,20 +1257,12 @@ def certified_attention_layer(
         else:
             rung2_fired = True
             assert value_unsafe_mask is not None
-            unsafe_block_ids = value_unsafe_mask.any(dim=0).nonzero().flatten()
             if (
                 cache.values_fp16_gpu is None
                 and cache.values_fp16_cpu is None
                 and cache.values_fp16 is None
             ):
                 raise ValueError("INT4 unsafe and no FP16 fallback available")
-            n_value_slots = int(unsafe_block_ids.numel())
-            value_block_slots = torch.full(
-                (n_active_blocks_hybrid,),
-                -1,
-                dtype=torch.int32,
-                device=q_all.device,
-            )
             value_fp16_mask = torch.zeros(
                 num_q_heads,
                 n_active_blocks_hybrid,
@@ -1225,94 +1270,113 @@ def certified_attention_layer(
                 device=q_all.device,
             )
             value_fp16_mask[:, :n_qblocks] = value_unsafe_mask.to(torch.int32)
-            unsafe_block_list = [int(b) for b in unsafe_block_ids.tolist()]
             use_one_step_value_pagein = False
             if (
                 cache.values_fp16_gpu is not None
                 and cache.fp16_value_cache_capacity is None
             ):
-                values_fp16_scratch = cache.values_fp16_gpu[:, :nt_hybrid, :]
-                value_block_slots[unsafe_block_ids] = unsafe_block_ids.to(torch.int32)
-            elif (
-                cache.values_fp16_gpu is not None
-                and cache.fp16_value_cache_capacity is not None
-                and n_value_slots <= int(cache.fp16_value_cache_capacity)
-                and int(cache.fp16_value_cache_capacity) > 0
-            ):
-                with _PhaseTimer(phase_timings, "h2d_pagein"):
-                    block_to_slot, v_hits, v_misses, v_bytes, v_evict = (
-                        cache.ensure_fp16_values_resident(unsafe_block_list)
-                )
-                if block_to_slot is None:
-                    fp16_value_cache_overflow_step = 1
-                    use_one_step_value_pagein = True
-                else:
-                    values_fp16_scratch = cache.values_fp16_gpu
-                    slot_tensor = torch.tensor(
-                        [block_to_slot[int(b)] for b in unsafe_block_list],
-                        dtype=torch.int32,
-                        device=q_all.device,
-                    )
-                    value_block_slots[unsafe_block_ids] = slot_tensor
-                    h2d_value_bytes += v_bytes
-                    h2d_value_blocks += v_misses
-                    fp16_value_cache_hits_step += v_hits
-                    fp16_value_cache_misses_step += v_misses
-                    fp16_value_cache_evictions_step += v_evict
-                    fp16_value_cache_needed_blocks += len(unsafe_block_list)
-            else:
-                fp16_value_cache_overflow_step = int(
-                    cache.fp16_value_cache_capacity is not None
-                    and n_value_slots > int(cache.fp16_value_cache_capacity)
-                )
-                use_one_step_value_pagein = True
-
-            if use_one_step_value_pagein:
-                value_block_slots[unsafe_block_ids] = torch.arange(
-                    n_value_slots,
+                value_block_slots = torch.arange(
+                    n_active_blocks_hybrid,
                     dtype=torch.int32,
                     device=q_all.device,
                 )
-                value_dtype = (
-                    cache.values_fp16_cpu.dtype
-                    if cache.values_fp16_cpu is not None
-                    else cache.values_fp16.dtype
-                )
-                values_fp16_scratch = torch.empty(
-                    cache.kv_heads,
-                    max(n_value_slots, 1) * bs,
-                    cache.d_v,
-                    dtype=value_dtype,
+                values_fp16_scratch = cache.values_fp16_gpu[:, :nt_hybrid, :]
+            else:
+                unsafe_block_ids = value_unsafe_mask.any(dim=0).nonzero().flatten()
+                n_value_slots = int(unsafe_block_ids.numel())
+                value_block_slots = torch.full(
+                    (n_active_blocks_hybrid,),
+                    -1,
+                    dtype=torch.int32,
                     device=q_all.device,
                 )
-                with _PhaseTimer(phase_timings, "h2d_pagein"):
-                    for slot, bid in enumerate(unsafe_block_list):
-                        start = bid * bs
-                        end = min(start + bs, cache.num_tokens)
-                        dst_start = slot * bs
-                        dst_end = dst_start + (end - start)
-                        if cache.values_fp16_cpu is not None:
-                            src = cache.values_fp16_cpu[:, start:end, :]
-                            values_fp16_scratch[:, dst_start:dst_end, :] = src.to(
-                                device=q_all.device,
-                                non_blocking=True,
-                            )
-                            kv_v, _, dv_v = cache.values_fp16_cpu.shape
-                            h2d_value_bytes += kv_v * (end - start) * dv_v * cache.values_fp16_cpu.element_size()
-                        else:
-                            values_fp16_scratch[:, dst_start:dst_end, :] = cache.values_fp16[:, start:end, :]
-                        h2d_value_blocks += 1
+                unsafe_block_list = [int(b) for b in unsafe_block_ids.tolist()]
+                if (
+                    cache.values_fp16_gpu is not None
+                    and cache.fp16_value_cache_capacity is not None
+                    and n_value_slots <= int(cache.fp16_value_cache_capacity)
+                    and int(cache.fp16_value_cache_capacity) > 0
+                ):
+                    with _PhaseTimer(phase_timings, "h2d_pagein"):
+                        block_to_slot, v_hits, v_misses, v_bytes, v_evict = (
+                            cache.ensure_fp16_values_resident(unsafe_block_list)
+                    )
+                    if block_to_slot is None:
+                        fp16_value_cache_overflow_step = 1
+                        use_one_step_value_pagein = True
+                    else:
+                        values_fp16_scratch = cache.values_fp16_gpu
+                        slot_tensor = torch.tensor(
+                            [block_to_slot[int(b)] for b in unsafe_block_list],
+                            dtype=torch.int32,
+                            device=q_all.device,
+                        )
+                        value_block_slots[unsafe_block_ids] = slot_tensor
+                        h2d_value_bytes += v_bytes
+                        h2d_value_blocks += v_misses
+                        fp16_value_cache_hits_step += v_hits
+                        fp16_value_cache_misses_step += v_misses
+                        fp16_value_cache_evictions_step += v_evict
+                        fp16_value_cache_needed_blocks += len(unsafe_block_list)
+                else:
+                    fp16_value_cache_overflow_step = int(
+                        cache.fp16_value_cache_capacity is not None
+                        and n_value_slots > int(cache.fp16_value_cache_capacity)
+                    )
+                    use_one_step_value_pagein = True
+
+                if use_one_step_value_pagein:
+                    value_block_slots[unsafe_block_ids] = torch.arange(
+                        n_value_slots,
+                        dtype=torch.int32,
+                        device=q_all.device,
+                    )
+                    value_dtype = (
+                        cache.values_fp16_cpu.dtype
+                        if cache.values_fp16_cpu is not None
+                        else cache.values_fp16.dtype
+                    )
+                    values_fp16_scratch = torch.empty(
+                        cache.kv_heads,
+                        max(n_value_slots, 1) * bs,
+                        cache.d_v,
+                        dtype=value_dtype,
+                        device=q_all.device,
+                    )
+                    with _PhaseTimer(phase_timings, "h2d_pagein"):
+                        for slot, bid in enumerate(unsafe_block_list):
+                            start = bid * bs
+                            end = min(start + bs, cache.num_tokens)
+                            dst_start = slot * bs
+                            dst_end = dst_start + (end - start)
+                            if cache.values_fp16_cpu is not None:
+                                src = cache.values_fp16_cpu[:, start:end, :]
+                                values_fp16_scratch[:, dst_start:dst_end, :] = src.to(
+                                    device=q_all.device,
+                                    non_blocking=True,
+                                )
+                                kv_v, _, dv_v = cache.values_fp16_cpu.shape
+                                h2d_value_bytes += kv_v * (end - start) * dv_v * cache.values_fp16_cpu.element_size()
+                            else:
+                                values_fp16_scratch[:, dst_start:dst_end, :] = cache.values_fp16[:, start:end, :]
+                            h2d_value_blocks += 1
             import os as _os
             _split_threshold = int(_os.environ.get("DOTCACHE_MIXEDV_SPLITK_MIN_BLOCKS", "512"))
-            _use_split_mixed = (
-                _os.environ.get("DOTCACHE_MIXEDV_SPLITK", "1") != "0"
-                and n_active_blocks_hybrid >= _split_threshold
-            )
-            mixed_attend = (
-                selective_attend_multihead_hybrid_mixedv_split_k
-                if _use_split_mixed
-                else selective_attend_multihead_hybrid_mixedv
-            )
+            _use_split_mixed = _os.environ.get("DOTCACHE_MIXEDV_SPLITK", "1") != "0" and n_active_blocks_hybrid >= _split_threshold
+            _backend = _os.environ.get("DOTCACHE_CERTIFIED_BACKEND", "triton").strip().lower()
+            mixed_attend = selective_attend_multihead_hybrid_mixedv
+            if _use_split_mixed:
+                mixed_attend = selective_attend_multihead_hybrid_mixedv_split_k
+            if _backend == "native_blackwell" and _use_split_mixed:
+                try:
+                    from dotcache.backends.certified_blackwell import (
+                        certified_blackwell_available,
+                        hybrid_mixedv_split_k_cuda,
+                    )
+                    if certified_blackwell_available():
+                        mixed_attend = hybrid_mixedv_split_k_cuda
+                except Exception:
+                    mixed_attend = selective_attend_multihead_hybrid_mixedv_split_k
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
                 output = mixed_attend(
                     keys_int8=cache.keys_int8[:, :nt_hybrid, :],

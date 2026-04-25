@@ -206,7 +206,7 @@ def compute_dense_perplexity(
         # (8K × 128K × 4 bytes = 4 GB — too large when sharing GPU)
         logits = outputs.logits[:, :-1, :]  # keep native dtype
         targets = input_ids[:, 1:]
-        chunk_nll = 0.0
+        chunk_nll_tensor = torch.zeros((), dtype=torch.float32, device=device)
         chunk_size = 512  # process 512 positions at a time
         for start in range(0, logits.shape[1], chunk_size):
             end = min(start + chunk_size, logits.shape[1])
@@ -214,8 +214,9 @@ def compute_dense_perplexity(
             chunk_targets = targets[:, start:end]
             nll = F.cross_entropy(chunk_logits.reshape(-1, chunk_logits.size(-1)),
                                   chunk_targets.reshape(-1), reduction="sum")
-            chunk_nll += nll.item()
+            chunk_nll_tensor = chunk_nll_tensor + nll
             del chunk_logits, nll
+        chunk_nll = float(chunk_nll_tensor.item())
         total_nll += chunk_nll
         total_tokens += targets.numel()
 
@@ -511,16 +512,17 @@ def compute_certified_perplexity(
         nll_t0 = time.perf_counter()
         prefix_logits = prefix_out.logits[:, :-1, :]
         prefix_targets = input_ids[:, 1:prefix_len]
-        prefix_nll = 0.0
+        prefix_nll_tensor = torch.zeros((), dtype=torch.float32, device=device)
         pchunk = 512
         for pstart in range(0, prefix_logits.shape[1], pchunk):
             pend = min(pstart + pchunk, prefix_logits.shape[1])
             pl = prefix_logits[:, pstart:pend, :].float()
             pt = prefix_targets[:, pstart:pend]
-            prefix_nll += F.cross_entropy(
+            prefix_nll_tensor = prefix_nll_tensor + F.cross_entropy(
                 pl.reshape(-1, pl.size(-1)), pt.reshape(-1), reduction="sum"
-            ).item()
+            )
             del pl
+        prefix_nll = float(prefix_nll_tensor.item())
         del prefix_out, prefix_logits
         print(
             f"  Certified [{i+1}/{len(chunks)}] prefix_nll_ms={(time.perf_counter() - nll_t0) * 1000.0:.1f}",

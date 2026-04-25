@@ -221,3 +221,77 @@ def test_hybrid_mixed_value_attention_promotes_only_masked_blocks():
 
     torch.testing.assert_close(got, expected, atol=2e-3, rtol=2e-3)
     torch.testing.assert_close(got_split, expected, atol=2e-3, rtol=2e-3)
+
+
+@pytest.mark.skipif(not CUDA, reason="needs CUDA")
+def test_native_blackwell_mixed_value_attention_matches_triton_split_k():
+    from dotcache.backends.certified_blackwell import (
+        certified_blackwell_available,
+        hybrid_mixedv_split_k_cuda,
+    )
+    from dotcache.kernels.selective_attend_triton import (
+        selective_attend_multihead_hybrid_mixedv_split_k,
+    )
+    from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
+
+    if not certified_blackwell_available():
+        pytest.skip("native Blackwell extension unavailable")
+
+    torch.manual_seed(20260426)
+    kv_heads, q_heads, gqa_group = 2, 4, 2
+    n_blocks, block_size, head_dim, d_v = 8, 16, 32, 32
+    n_tokens = n_blocks * block_size
+    q_scale = 1.0 / (head_dim ** 0.5)
+
+    keys = torch.randn(kv_heads, n_tokens, head_dim, dtype=torch.float16, device="cuda")
+    values = torch.randn(kv_heads, n_tokens, d_v, dtype=torch.float16, device="cuda")
+    cache = TieredKeyCacheLayer.from_fp16_cache_int4v(
+        keys, values, block_size=block_size, group_size=16, max_new_tokens=0,
+    )
+    q = torch.randn(q_heads, head_dim, dtype=torch.float32, device="cuda")
+
+    topk_mask = torch.zeros(q_heads, n_blocks, dtype=torch.int32, device="cuda")
+    topk_mask[:, [0, 3]] = 1
+    no_skip = torch.zeros_like(topk_mask)
+    value_fp16_mask = torch.zeros(q_heads, n_blocks, dtype=torch.int32, device="cuda")
+    value_fp16_mask[0, [1, 5]] = 1
+    value_fp16_mask[1, [2]] = 1
+    value_fp16_mask[2, [4]] = 1
+    value_fp16_mask[3, [7]] = 1
+
+    fallback_blocks = value_fp16_mask.any(dim=0).nonzero().flatten().tolist()
+    value_block_slots = torch.full((n_blocks,), -1, dtype=torch.int32, device="cuda")
+    values_fp16_scratch = torch.empty(
+        kv_heads, max(len(fallback_blocks), 1) * block_size, d_v,
+        dtype=torch.float16, device="cuda",
+    )
+    for slot, bid in enumerate(fallback_blocks):
+        value_block_slots[bid] = slot
+        src = slice(bid * block_size, (bid + 1) * block_size)
+        dst = slice(slot * block_size, (slot + 1) * block_size)
+        values_fp16_scratch[:, dst, :] = values[:, src, :]
+
+    kwargs = dict(
+        keys_int8=cache.keys_int8[:, :n_tokens, :],
+        keys_scale=cache.keys_scale[:, :n_blocks, :],
+        keys_zero_points=cache.keys_zero_points[:, :n_blocks, :],
+        keys_fp16=cache.keys_fp16_gpu[:, :n_tokens, :],
+        topk_mask=topk_mask,
+        values_int4_packed=cache.values_int4_packed[:, :n_tokens, :],
+        values_int4_scales=cache.values_int4_scales[:, :n_tokens, :],
+        values_int4_zeros=cache.values_int4_zeros[:, :n_tokens, :],
+        values_fp16_scratch=values_fp16_scratch,
+        value_fp16_mask=value_fp16_mask,
+        value_block_slots=value_block_slots,
+        q_all=q,
+        skip_mask_i32=no_skip,
+        gqa_group=gqa_group,
+        block_size=block_size,
+        group_size=16,
+        q_scale=q_scale,
+        num_splits=2,
+    )
+    expected = selective_attend_multihead_hybrid_mixedv_split_k(**kwargs)
+    got = hybrid_mixedv_split_k_cuda(**kwargs)
+
+    torch.testing.assert_close(got, expected, atol=2e-4, rtol=2e-4)

@@ -420,10 +420,16 @@ class TieredKeyCacheLayer:
         end = start + self.block_size
         device = self.keys_int8.device
 
-        # Read FP16 keys for this block from CPU
-        keys_block = self.keys_fp16_cpu[:, start:end, :].to(
-            device=device, dtype=torch.float32
-        )  # [kv_heads, block_size, head_dim]
+        # In full-mirror mode the appended FP16 keys are already resident on
+        # GPU, so quantise completed decode blocks from that mirror and avoid
+        # forcing the hot path through pinned CPU. Bounded-cache mode still
+        # uses the CPU tier because evicted blocks must be pageable later.
+        if self.keys_fp16_gpu is not None and self.fp16_key_cache_capacity is None:
+            keys_block = self.keys_fp16_gpu[:, start:end, :].to(dtype=torch.float32)
+        else:
+            keys_block = self.keys_fp16_cpu[:, start:end, :].to(
+                device=device, dtype=torch.float32
+            )
 
         # Per-channel ASYMMETRIC INT8 (paper §2.3 Eq. 1):
         #   q = clamp(round((k - z) / s), -128, 127),  k̂ = q · s + z
@@ -551,15 +557,27 @@ class TieredKeyCacheLayer:
                     err,
                 )
 
-        # Mirror exact K/V into pinned Tier-2 buffers without constructing
-        # temporary CPU tensors in the decode hot path.
-        self.keys_fp16_cpu[:, pos, :].copy_(new_k, non_blocking=True)
+        # Mirror exact K/V into pinned Tier-2 buffers only when the bounded
+        # cache may need CPU page-in later. Full-mirror quality runs keep the
+        # authoritative decode-time FP16 copy in VRAM and quantise completed
+        # blocks from that mirror.
+        if not (
+            self.keys_fp16_gpu is not None
+            and self.fp16_key_cache_capacity is None
+        ):
+            self.keys_fp16_cpu[:, pos, :].copy_(new_k, non_blocking=True)
 
         # Mirror into GPU key buffer so decode-time attend avoids a CPU→GPU copy
         if self.keys_fp16_gpu is not None:
             self.keys_fp16_gpu[:, pos, :] = new_k.to(device=device, dtype=kv_dtype)
 
-        if self.values_fp16_cpu is not None:
+        if (
+            self.values_fp16_cpu is not None
+            and not (
+                self.values_fp16_gpu is not None
+                and self.fp16_value_cache_capacity is None
+            )
+        ):
             self.values_fp16_cpu[:, pos, :].copy_(new_v, non_blocking=True)
         if self.values_fp16_gpu is not None and self.fp16_value_cache_capacity is None:
             self.values_fp16_gpu[:, pos, :] = new_v.to(device=device, dtype=kv_dtype)
