@@ -44,10 +44,10 @@ def test_v2_common_cert_flags_match_experiment_spec(tmp_path: Path):
         "--group-size": "16",
         "--tau-cov": "0.995",
         "--k-max": "128",
-        "--fp16-value-cache-blocks": "64",
     }
     for flag, value in expected_pairs.items():
         assert args[args.index(flag) + 1] == value
+    assert "--fp16-value-cache-blocks" not in args
     for flag in ("--use-int4-values", "--ranking-fallback", "--score-consistency-check"):
         assert flag in args
 
@@ -76,10 +76,11 @@ def test_v2_estimates_match_experiment_spec_tier_totals():
     tier1 = [c for c in cells if c["tier"] == 1]
     tier2 = [c for c in cells if c["tier"] <= 2]
 
-    # Quality cells only: Tier 1 excludes the separate 2h performance block;
-    # Tier 2 adds PG-19 128K but excludes the separate ablation sweeps.
-    assert sum(sweep.estimate_cell_hours(c) for c in tier1) == 66.0
-    assert sum(sweep.estimate_cell_hours(c) for c in tier2) == 96.0
+    # Quality cells only: Tier 1 excludes the separate 2h performance block.
+    # These are calibrated host estimates from the corrected certified path,
+    # not the obsolete paper-spec wall-clock guesses.
+    assert sum(sweep.estimate_cell_hours(c) for c in tier1) == 203.4
+    assert sum(sweep.estimate_cell_hours(c) for c in tier2) == 268.4
     assert sweep.estimate_non_cell_hours(1) == 2.0
     assert sweep.estimate_non_cell_hours(2) == 7.0
 

@@ -389,9 +389,9 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         # Generate tokens
         cache_position = torch.tensor([seq_len], dtype=torch.long, device=device)
         current_input = first_token
-        gen_ids = []
+        gen_token_tensors = [first_token]
 
-        for _ in range(max_new_tokens):
+        for _ in range(max(0, max_new_tokens - 1)):
             with torch.inference_mode():
                 out = model(
                     input_ids=current_input, use_cache=False,
@@ -400,13 +400,14 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
                 )
             if telemetry_collector is not None:
                 telemetry_collector.record_step()
-            tid = out.logits[:, -1, :].argmax(dim=-1).item()
-            gen_ids.append(tid)
-            if tid == tokenizer.eos_token_id:
-                break
-            current_input = torch.tensor([[tid]], dtype=torch.long, device=device)
+            tid = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            gen_token_tensors.append(tid)
+            current_input = tid
             cache_position = cache_position + 1
 
+        gen_ids = torch.cat(gen_token_tensors, dim=1)[0].tolist()
+        if tokenizer.eos_token_id is not None and tokenizer.eos_token_id in gen_ids:
+            gen_ids = gen_ids[:gen_ids.index(tokenizer.eos_token_id) + 1]
         generated_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
 
         cell_agg = adapter.certified_state.aggregate_step_stats() if collect_stats else {}

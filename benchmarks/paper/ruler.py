@@ -527,7 +527,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
 
     cache_position = torch.tensor([seq_len], dtype=torch.long, device=device)
     current_input = first_token
-    gen_ids = [first_token.item()]
+    gen_token_tensors = [first_token]
     for _ in range(max_new - 1):
         with torch.inference_mode():
             out = model(
@@ -537,13 +537,14 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
             )
         if telemetry_collector is not None:
             telemetry_collector.record_step()
-        tid = out.logits[:, -1, :].argmax(dim=-1).item()
-        gen_ids.append(tid)
-        if tid == tokenizer.eos_token_id:
-            break
-        current_input = torch.tensor([[tid]], dtype=torch.long, device=device)
+        tid = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        gen_token_tensors.append(tid)
+        current_input = tid
         cache_position = cache_position + 1
 
+    gen_ids = torch.cat(gen_token_tensors, dim=1)[0].tolist()
+    if tokenizer.eos_token_id is not None and tokenizer.eos_token_id in gen_ids:
+        gen_ids = gen_ids[:gen_ids.index(tokenizer.eos_token_id) + 1]
     text = tokenizer.decode(gen_ids, skip_special_tokens=True)
     # Drain aggregate stats (ranking / adaptive / exploration / score-consistency)
     # before clearing state — the orchestrator pulls these for the arXiv v1 JSON.

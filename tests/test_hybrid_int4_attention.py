@@ -98,6 +98,7 @@ def test_hybrid_mixed_value_attention_promotes_only_masked_blocks():
     from dotcache.kernels.int4_group_quantise import dequantise_int4_grouped
     from dotcache.kernels.selective_attend_triton import (
         selective_attend_multihead_hybrid_mixedv,
+        selective_attend_multihead_hybrid_mixedv_split_k,
     )
     from dotcache.kernels.tiered_kv_cache import TieredKeyCacheLayer
 
@@ -158,6 +159,26 @@ def test_hybrid_mixed_value_attention_promotes_only_masked_blocks():
         group_size=16,
         q_scale=q_scale,
     )
+    got_split = selective_attend_multihead_hybrid_mixedv_split_k(
+        keys_int8=cache.keys_int8[:, :n_tokens, :],
+        keys_scale=cache.keys_scale[:, :n_blocks, :],
+        keys_zero_points=cache.keys_zero_points[:, :n_blocks, :],
+        keys_fp16=cache.keys_fp16_gpu[:, :n_tokens, :],
+        topk_mask=topk_mask,
+        values_int4_packed=cache.values_int4_packed[:, :n_tokens, :],
+        values_int4_scales=cache.values_int4_scales[:, :n_tokens, :],
+        values_int4_zeros=cache.values_int4_zeros[:, :n_tokens, :],
+        values_fp16_scratch=values_fp16_scratch,
+        value_fp16_mask=value_fp16_mask,
+        value_block_slots=value_block_slots,
+        q_all=q,
+        skip_mask_i32=no_skip,
+        gqa_group=gqa_group,
+        block_size=block_size,
+        group_size=16,
+        q_scale=q_scale,
+        num_splits=2,
+    )
 
     q_int8 = cache.keys_int8[:, :n_tokens, :].to(torch.float32).reshape(
         kv_heads, n_blocks, block_size, head_dim,
@@ -199,3 +220,4 @@ def test_hybrid_mixed_value_attention_promotes_only_masked_blocks():
         expected[qh] = weights @ torch.cat(v_blocks, dim=0)
 
     torch.testing.assert_close(got, expected, atol=2e-3, rtol=2e-3)
+    torch.testing.assert_close(got_split, expected, atol=2e-3, rtol=2e-3)

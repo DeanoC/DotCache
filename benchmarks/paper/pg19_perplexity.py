@@ -453,6 +453,7 @@ def compute_certified_perplexity(
     telemetry_collector=None,
     book_indices: list[int] | None = None,
     telemetry_mode: str = "summary",
+    max_certified_steps: int | None = None,
 ) -> dict:
     """Compute perplexity using certified attention decode.
 
@@ -489,6 +490,9 @@ def compute_certified_perplexity(
         seq_len = chunk.shape[0]
         prefix_len = int(seq_len * eval_start_frac)
         eval_len = seq_len - prefix_len
+        decode_limit = eval_len - 1
+        if max_certified_steps is not None:
+            decode_limit = min(decode_limit, max(0, int(max_certified_steps)))
 
         input_ids = chunk.unsqueeze(0).to(device)
 
@@ -542,13 +546,13 @@ def compute_certified_perplexity(
         if use_int4_values:
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_kv, layer_ids, group_size=group_size,
-                max_new_tokens=eval_len + 16,
+                max_new_tokens=decode_limit + 16,
                 fp16_key_cache_capacity=_key_cap,
                 fp16_value_cache_capacity=_value_cap,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(
-                past_kv, layer_ids, max_new_tokens=eval_len + 16,
+                past_kv, layer_ids, max_new_tokens=decode_limit + 16,
                 fp16_key_cache_capacity=_key_cap,
             )
         print(
@@ -603,7 +607,7 @@ def compute_certified_perplexity(
         chunk_cert_t0 = time.perf_counter()
         progress_stats_cursor = 0
 
-        for t in range(eval_len - 1):
+        for t in range(decode_limit):
             token_id = input_ids[:, prefix_len + t]
             with torch.inference_mode():
                 out = model(
@@ -641,7 +645,7 @@ def compute_certified_perplexity(
                 )
                 print(
                     f"    certified progress chunk={i+1}/{len(chunks)} "
-                    f"tokens={t+1}/{eval_len-1} "
+                    f"tokens={t+1}/{decode_limit} "
                     f"tok/s={(t+1)/max(elapsed, 1e-9):.2f} "
                     f"qkv_ms/layer={prof['qkv_projection_ms_total']/calls:.3f} "
                     f"append_ms/layer={prof['append_runtime_ms_total']/calls:.3f} "
@@ -705,7 +709,7 @@ def compute_certified_perplexity(
 
         # Total NLL = prefix (dense) + suffix (certified)
         chunk_nll = prefix_nll + suffix_nll
-        chunk_tokens = (prefix_len - 1) + (eval_len - 1)
+        chunk_tokens = (prefix_len - 1) + decode_limit
         total_nll += chunk_nll
         total_tokens += chunk_tokens
 
@@ -723,7 +727,7 @@ def compute_certified_perplexity(
             "prefix_nll": float(prefix_nll),
             "prefix_tokens": int(prefix_len - 1),
             "suffix_nll": float(suffix_nll),
-            "suffix_tokens": int(eval_len - 1),
+            "suffix_tokens": int(decode_limit),
             "nll": float(chunk_nll),
             "tokens": int(chunk_tokens),
             "skipped_blocks": int(chunk_skipped),
@@ -735,7 +739,7 @@ def compute_certified_perplexity(
         all_step_aggs_accumulator.extend(chunk_step_aggs)
 
         chunk_ppl = math.exp(chunk_nll / chunk_tokens)
-        suffix_ppl = math.exp(suffix_nll / max(eval_len - 1, 1))
+        suffix_ppl = math.exp(suffix_nll / max(decode_limit, 1))
         chunk_skip_rate = chunk_skipped / chunk_blocks if chunk_blocks else 0.0
         if (i + 1) % 5 == 0 or i == len(chunks) - 1:
             ppl_so_far = math.exp(total_nll / total_tokens)
@@ -766,6 +770,8 @@ def compute_certified_perplexity(
         "skipped_blocks": total_skipped,
         "total_blocks": total_blocks,
         "decode_steps": total_steps,
+        "max_certified_steps": max_certified_steps,
+        "truncated_certified_decode": max_certified_steps is not None,
         # Reduced telemetry across all certified decode steps — THIS is
         # where the §8.6 hard-STOP signals and paper §4.5 bound scalars
         # actually live. See docs/paper_v1_run_handoff.md §5.
@@ -815,6 +821,8 @@ def main():
     parser.add_argument("--telemetry-mode", default="summary",
                         choices=["debug", "summary", "off"],
                         help="debug drains telemetry every token; summary drains once per chunk; off disables stats")
+    parser.add_argument("--max-certified-steps", type=int, default=None,
+                        help="Calibration only: limit certified suffix decode steps. Do not use for paper tables.")
     import sys as _sys, os as _os
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from _provenance import add_paper_cache_args, cache_config_dict
@@ -901,6 +909,7 @@ def main():
             telemetry_collector=telemetry_collector,
             book_indices=book_indices,
             telemetry_mode=args.telemetry_mode,
+            max_certified_steps=args.max_certified_steps,
         )
         t_cert = time.perf_counter() - t0
         print(f"Certified: ppl={cert_result['perplexity']:.2f} "
@@ -965,6 +974,8 @@ def main():
         "num_chunks": len(chunks),
         "eval_start_frac": args.eval_start,
         "top_k_override": args.top_k_override,
+        "max_certified_steps": args.max_certified_steps,
+        "truncated_certified_decode": args.max_certified_steps is not None,
         "cache_config": cache_config_dict(args),
         "dense": dense_result,
         "certified": cert_result,

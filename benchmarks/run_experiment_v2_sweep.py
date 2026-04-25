@@ -39,14 +39,21 @@ CERT_FLAGS: dict[str, str] = {
     "exploration_rate": "0.02",
     "rung1_threshold": "0.02",
     "rung1_multiplier": "2.0",
-    "fp16_value_cache_blocks": "64",
+    # Quality runs use full FP16 value mirror. Bounded value-cache capacities
+    # are measured separately by run_fp16_value_cache_sweep.py; forcing cap=64
+    # makes every Rung-2 value fallback page from CPU and is too slow for v2.
+    "fp16_value_cache_blocks": "full",
 }
 
 CELL_ESTIMATE_HOURS: dict[tuple[str, int], float] = {
-    ("pg19", 8192): 1.0,
-    ("pg19", 32768): 4.0,
-    ("pg19", 65536): 10.0,
-    ("pg19", 131072): 30.0,
+    # PG-19 estimates are calibrated on this RTX PRO 6000 host from the
+    # corrected certified path on 2026-04-25:
+    # 8K: 512-step probe at ~5.4 tok/s; 32K/64K: split-K mixed-value probes
+    # at ~1.9/~1.8 tok/s. These replace the paper's pre-fix estimates.
+    ("pg19", 8192): 4.4,
+    ("pg19", 32768): 48.0,
+    ("pg19", 65536): 100.0,
+    ("pg19", 131072): 65.0,
     ("niah", 8192): 2.0,
     ("niah", 32768): 6.0,
     ("niah", 65536): 14.0,
@@ -123,7 +130,7 @@ def format_hours(hours: float) -> str:
 
 
 def _common_cert_args(group_size: int = 16) -> list[str]:
-    return [
+    args = [
         "--model", MODEL,
         "--v-tolerance", CERT_FLAGS["v_tolerance"],
         "--use-int4-values",
@@ -139,8 +146,10 @@ def _common_cert_args(group_size: int = 16) -> list[str]:
         "--exploration-rate", CERT_FLAGS["exploration_rate"],
         "--rung1-threshold", CERT_FLAGS["rung1_threshold"],
         "--rung1-multiplier", CERT_FLAGS["rung1_multiplier"],
-        "--fp16-value-cache-blocks", CERT_FLAGS["fp16_value_cache_blocks"],
     ]
+    if CERT_FLAGS["fp16_value_cache_blocks"] != "full":
+        args.extend(["--fp16-value-cache-blocks", CERT_FLAGS["fp16_value_cache_blocks"]])
+    return args
 
 
 def _cli_for_cell(cell: dict[str, Any], out_json: Path, *, smoke: bool) -> list[str]:
@@ -231,7 +240,7 @@ def _paper_config(native: dict[str, Any] | None = None) -> dict[str, Any]:
         "block_size": 16,
         "ranking_r": int(CERT_FLAGS["ranking_r"]),
         "ranking_fallback_mode": "full",
-        "fp16_value_cache_blocks": int(CERT_FLAGS["fp16_value_cache_blocks"]),
+        "fp16_value_cache_blocks": CERT_FLAGS["fp16_value_cache_blocks"],
     }
 
 

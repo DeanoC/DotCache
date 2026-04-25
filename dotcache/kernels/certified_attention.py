@@ -26,6 +26,7 @@ from dotcache.kernels.selective_attend_triton import (
     selective_attend_multihead_hybrid,
     selective_attend_multihead_hybrid_int4v,
     selective_attend_multihead_hybrid_mixedv,
+    selective_attend_multihead_hybrid_mixedv_split_k,
     selective_attend_multihead_hybrid_split_k,
 )
 
@@ -1301,8 +1302,19 @@ def certified_attention_layer(
                         else:
                             values_fp16_scratch[:, dst_start:dst_end, :] = cache.values_fp16[:, start:end, :]
                         h2d_value_blocks += 1
+            import os as _os
+            _split_threshold = int(_os.environ.get("DOTCACHE_MIXEDV_SPLITK_MIN_BLOCKS", "512"))
+            _use_split_mixed = (
+                _os.environ.get("DOTCACHE_MIXEDV_SPLITK", "1") != "0"
+                and n_active_blocks_hybrid >= _split_threshold
+            )
+            mixed_attend = (
+                selective_attend_multihead_hybrid_mixedv_split_k
+                if _use_split_mixed
+                else selective_attend_multihead_hybrid_mixedv
+            )
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
-                output = selective_attend_multihead_hybrid_mixedv(
+                output = mixed_attend(
                     keys_int8=cache.keys_int8[:, :nt_hybrid, :],
                     keys_scale=keys_scale_active,
                     keys_zero_points=cache.keys_zero_points[:, :n_active_blocks_hybrid, :],
