@@ -54,7 +54,6 @@ def _build_mixed_inputs(
     values = torch.randn(num_kv_heads, n_tokens, head_dim, dtype=torch.float16, device=device, generator=gen)
     cache = TieredKeyCacheLayer.from_fp16_cache_int4v(
         keys, values, block_size=block_size, group_size=group_size, max_new_tokens=0,
-        phase2_fp16_key_mirror=True,
     )
     q = torch.randn(num_q_heads, head_dim, dtype=torch.float32, device=device, generator=gen)
     topk_mask = torch.zeros(num_q_heads, num_blocks, dtype=torch.int32, device=device)
@@ -84,7 +83,6 @@ def _build_mixed_inputs(
         "keys_scale": cache.keys_scale[:, :num_blocks, :],
         "keys_zero_points": cache.keys_zero_points[:, :num_blocks, :],
         "keys_fp16": cache.keys_fp16_gpu[:, :n_tokens, :],
-        "keys_deq_fp16": cache.phase2_keys_fp16_active(),
         "topk_mask": topk_mask,
         "values_int4_packed": cache.values_int4_packed[:, :n_tokens, :],
         "values_int4_scales": cache.values_int4_scales[:, :n_tokens, :],
@@ -130,10 +128,7 @@ def main() -> int:
 
     assert torch.cuda.is_available(), "CUDA required"
     from dotcache.backends.certified_blackwell import hybrid_mixedv_split_k_cuda
-    from dotcache.kernels.selective_attend_triton import (
-        selective_attend_multihead_hybrid_mixedv_deqk_split_k,
-        selective_attend_multihead_hybrid_mixedv_split_k,
-    )
+    from dotcache.kernels.selective_attend_triton import selective_attend_multihead_hybrid_mixedv_split_k
 
     rows = []
     for ctx in args.contexts:
@@ -149,36 +144,24 @@ def main() -> int:
             device="cuda",
             seed=ctx,
         )
-        call_kwargs = {k: v for k, v in inp.items() if k not in {"keys_deq_fp16", "num_blocks", "n_tokens", "fallback_union_blocks"}}
-        deqk_kwargs = {k: v for k, v in inp.items() if k not in {
-            "keys_int8", "keys_scale", "keys_zero_points", "num_blocks", "n_tokens", "fallback_union_blocks",
-        }}
+        call_kwargs = {k: v for k, v in inp.items() if k not in {"num_blocks", "n_tokens", "fallback_union_blocks"}}
 
         def triton_call() -> torch.Tensor:
             return selective_attend_multihead_hybrid_mixedv_split_k(**call_kwargs)
-
-        def triton_deqk_call() -> torch.Tensor:
-            return selective_attend_multihead_hybrid_mixedv_deqk_split_k(**deqk_kwargs)
 
         def native_call() -> torch.Tensor:
             return hybrid_mixedv_split_k_cuda(**call_kwargs)
 
         triton_out = triton_call()
-        deqk_out = triton_deqk_call()
         native_out = native_call()
         torch.cuda.synchronize()
         max_abs = float((triton_out - native_out).abs().max().item())
         mean_abs = float((triton_out - native_out).abs().mean().item())
-        deqk_max_abs = float((triton_out - deqk_out).abs().max().item())
-        deqk_mean_abs = float((triton_out - deqk_out).abs().mean().item())
         triton_ms = _time_ms(triton_call, warmup=args.warmup, iters=args.iters)
-        deqk_ms = _time_ms(triton_deqk_call, warmup=args.warmup, iters=args.iters)
         native_ms = _time_ms(native_call, warmup=args.warmup, iters=args.iters)
         triton_summary = _summarize(triton_ms)
-        deqk_summary = _summarize(deqk_ms)
         native_summary = _summarize(native_ms)
         speedup = triton_summary["mean_ms"] / native_summary["mean_ms"]
-        deqk_speedup = triton_summary["mean_ms"] / deqk_summary["mean_ms"]
         row = {
             "context": ctx,
             "num_blocks": inp["num_blocks"],
@@ -186,10 +169,6 @@ def main() -> int:
             "max_abs_diff": max_abs,
             "mean_abs_diff": mean_abs,
             "triton": triton_summary,
-            "triton_deqk": deqk_summary,
-            "triton_deqk_speedup": float(deqk_speedup),
-            "triton_deqk_max_abs_diff": deqk_max_abs,
-            "triton_deqk_mean_abs_diff": deqk_mean_abs,
             "native": native_summary,
             "native_speedup": float(speedup),
         }
@@ -197,10 +176,8 @@ def main() -> int:
         print(
             f"{ctx//1024:>4}K blocks={inp['num_blocks']:<5} "
             f"triton={triton_summary['mean_ms']:.3f}ms "
-            f"deqk={deqk_summary['mean_ms']:.3f}ms "
             f"native={native_summary['mean_ms']:.3f}ms "
-            f"speedup={speedup:.2f}x deqk={deqk_speedup:.2f}x "
-            f"max_abs={max_abs:.2e} deqk_abs={deqk_max_abs:.2e}"
+            f"speedup={speedup:.2f}x max_abs={max_abs:.2e}"
         )
 
     result = {

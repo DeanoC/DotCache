@@ -117,16 +117,11 @@ class TestAsymmetricEncode:
             block_size=16,
             max_new_tokens=16,
             score_fp16_t_mirror=True,
-            phase2_fp16_key_mirror=True,
         )
         got = cache.score_keys_fp16_t_active()
         expected = cache._keys_deq_f32[:, :cache.num_tokens, :].transpose(1, 2).to(torch.float16)
         assert got is not None
         torch.testing.assert_close(got, expected)
-        phase2_got = cache.phase2_keys_fp16_active()
-        phase2_expected = cache._keys_deq_f32[:, :cache.num_tokens, :].to(torch.float16)
-        assert phase2_got is not None
-        torch.testing.assert_close(phase2_got, phase2_expected)
 
         torch.manual_seed(18)
         new_keys = torch.randn(cache.kv_heads, 16, cache.head_dim, device="cuda")
@@ -140,12 +135,6 @@ class TestAsymmetricEncode:
         ].transpose(1, 2).to(torch.float16)
         assert got_after is not None
         torch.testing.assert_close(got_after, expected_after)
-        phase2_got_after = cache.phase2_keys_fp16_active()
-        phase2_expected_after = cache._keys_deq_f32[
-            :, :cache.num_quantized_blocks * cache.block_size, :
-        ].to(torch.float16)
-        assert phase2_got_after is not None
-        torch.testing.assert_close(phase2_got_after, phase2_expected_after)
 
     def test_degenerate_channel_kmin_equals_kmax(self):
         """A constant channel (k_min == k_max) must not crash and dequant to zero error.

@@ -26,7 +26,6 @@ from dotcache.kernels.selective_attend_triton import (
     selective_attend_multihead_hybrid,
     selective_attend_multihead_hybrid_int4v,
     selective_attend_multihead_hybrid_mixedv,
-    selective_attend_multihead_hybrid_mixedv_deqk_split_k,
     selective_attend_multihead_hybrid_mixedv_split_k,
     selective_attend_multihead_hybrid_split_k,
 )
@@ -1419,52 +1418,26 @@ def certified_attention_layer(
                 except Exception:
                     mixed_attend = selective_attend_multihead_hybrid_mixedv_split_k
             with _PhaseTimer(phase_timings, "phase2_fused_attend"):
-                phase2_keys = cache.phase2_keys_fp16_active()
-                if (
-                    _backend == "triton"
-                    and _use_split_mixed
-                    and _os.environ.get("DOTCACHE_PHASE2_KEY_BACKEND", "int8").strip().lower() == "fp16_mirror"
-                    and phase2_keys is not None
-                ):
-                    output = selective_attend_multihead_hybrid_mixedv_deqk_split_k(
-                        keys_deq_fp16=phase2_keys[:, :nt_hybrid, :],
-                        keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :],
-                        topk_mask=hybrid_topk,
-                        values_int4_packed=cache.values_int4_packed[:, :nt_hybrid, :],
-                        values_int4_scales=cache.values_int4_scales[:, :nt_hybrid, :],
-                        values_int4_zeros=cache.values_int4_zeros[:, :nt_hybrid, :],
-                        values_fp16_scratch=values_fp16_scratch,
-                        value_fp16_mask=value_fp16_mask,
-                        value_block_slots=value_block_slots,
-                        q_all=q_all,
-                        skip_mask_i32=no_skip,
-                        gqa_group=gqa_group,
-                        block_size=bs,
-                        group_size=cache.values_int4_group_size,
-                        q_scale=q_scale,
-                        last_block_valid=last_block_valid,
-                    )
-                else:
-                    output = mixed_attend(
-                        keys_int8=cache.keys_int8[:, :nt_hybrid, :],
-                        keys_scale=keys_scale_active,
-                        keys_zero_points=cache.keys_zero_points[:, :n_active_blocks_hybrid, :],
-                        keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :],
-                        topk_mask=hybrid_topk,
-                        values_int4_packed=cache.values_int4_packed[:, :nt_hybrid, :],
-                        values_int4_scales=cache.values_int4_scales[:, :nt_hybrid, :],
-                        values_int4_zeros=cache.values_int4_zeros[:, :nt_hybrid, :],
-                        values_fp16_scratch=values_fp16_scratch,
-                        value_fp16_mask=value_fp16_mask,
-                        value_block_slots=value_block_slots,
-                        q_all=q_all,
-                        skip_mask_i32=no_skip,
-                        gqa_group=gqa_group,
-                        block_size=bs,
-                        group_size=cache.values_int4_group_size,
-                        q_scale=q_scale,
-                        last_block_valid=last_block_valid,
-                    )
+                output = mixed_attend(
+                    keys_int8=cache.keys_int8[:, :nt_hybrid, :],
+                    keys_scale=keys_scale_active,
+                    keys_zero_points=cache.keys_zero_points[:, :n_active_blocks_hybrid, :],
+                    keys_fp16=keys_fp16_gpu[:, :nt_hybrid, :],
+                    topk_mask=hybrid_topk,
+                    values_int4_packed=cache.values_int4_packed[:, :nt_hybrid, :],
+                    values_int4_scales=cache.values_int4_scales[:, :nt_hybrid, :],
+                    values_int4_zeros=cache.values_int4_zeros[:, :nt_hybrid, :],
+                    values_fp16_scratch=values_fp16_scratch,
+                    value_fp16_mask=value_fp16_mask,
+                    value_block_slots=value_block_slots,
+                    q_all=q_all,
+                    skip_mask_i32=no_skip,
+                    gqa_group=gqa_group,
+                    block_size=bs,
+                    group_size=cache.values_int4_group_size,
+                    q_scale=q_scale,
+                    last_block_valid=last_block_valid,
+                )
     elif use_paper_hybrid:
         # Iterate only fully-quantised blocks; the trailing partial block
         # (if any) has no INT8 data. We zero-out its scale before the call

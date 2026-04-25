@@ -71,16 +71,13 @@ def timed_decode(model, adapter, cache_position, first_token, device, steps: int
     return ms_list, current_input, cache_position
 
 
-def run_config(model, adapter, device, tokenizer, ctx_len: int, steps: int, warmup: int, fast: bool, use_int4_values: bool):
+def run_config(model, adapter, device, tokenizer, ctx_len: int, steps: int, warmup: int, fast: bool):
     os.environ["DOTCACHE_FAST_ATTEND"] = "1" if fast else "0"
 
     from dotcache.integrations.llama import (
         CertifiedAttentionState, _ensure_certified_imports,
     )
-    from dotcache.kernels.tiered_kv_cache import (
-        create_tiered_cache_from_model,
-        create_tiered_cache_int4v_from_model,
-    )
+    from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
 
     prompt = build_prefill(tokenizer, ctx_len)
     ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=ctx_len).to(device)
@@ -98,14 +95,7 @@ def run_config(model, adapter, device, tokenizer, ctx_len: int, steps: int, warm
     layer_ids = list(range(model.config.num_hidden_layers))
     _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
     _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
-    if use_int4_values:
-        tiered = create_tiered_cache_int4v_from_model(
-            past_kv,
-            layer_ids,
-            fp16_key_cache_capacity=_cap,
-        )
-    else:
-        tiered = create_tiered_cache_from_model(past_kv, layer_ids, fp16_key_cache_capacity=_cap)
+    tiered = create_tiered_cache_from_model(past_kv, layer_ids, fp16_key_cache_capacity=_cap)
     del past_kv
     gc.collect(); torch.cuda.empty_cache()
 
@@ -203,8 +193,6 @@ def main() -> int:
     ap.add_argument("--warmup-steps", type=int, default=16)
     ap.add_argument("--modes", default="dense,slow,fast",
                     help="comma-separated subset of {dense, slow, fast}")
-    ap.add_argument("--use-int4-values", action="store_true",
-                    help="exercise the paper mixed INT4-value path for certified modes")
     args = ap.parse_args()
 
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -237,14 +225,12 @@ def main() -> int:
 
     if "slow" in modes:
         ms, _ = run_config(model, adapter, device, tokenizer,
-                           args.context_length, args.decode_steps, args.warmup_steps,
-                           fast=False, use_int4_values=args.use_int4_values)
+                           args.context_length, args.decode_steps, args.warmup_steps, fast=False)
         results["slow"] = summarise("cert FAST_ATTEND=0", ms)
 
     if "fast" in modes:
         ms, _ = run_config(model, adapter, device, tokenizer,
-                           args.context_length, args.decode_steps, args.warmup_steps,
-                           fast=True, use_int4_values=args.use_int4_values)
+                           args.context_length, args.decode_steps, args.warmup_steps, fast=True)
         results["fast"] = summarise("cert FAST_ATTEND=1", ms)
 
     print(f"\n=== Ratios ===")
