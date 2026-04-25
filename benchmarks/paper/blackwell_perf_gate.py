@@ -122,6 +122,7 @@ def main() -> int:
     report: dict[str, Any] = {
         "device": _device_info(),
         "cutlass_sm120": _cutlass_probe(),
+        "score": None,
         "synthetic": None,
         "pg19": [],
         "gates": {
@@ -134,6 +135,20 @@ def main() -> int:
             "cutlass_attention_enabled": env.get("DOTCACHE_CUTLASS_SM120_ENABLE_KERNELS", "0"),
         },
     }
+
+    score_cmd = [
+        args.python,
+        "benchmarks/bench_blackwell_score.py",
+        "--contexts",
+        *[str(c) for c in args.contexts],
+        "--warmup",
+        "5",
+        "--iters",
+        "20",
+        "--output",
+        str(args.output.with_suffix(".score.json")),
+    ]
+    report["score"] = _run(score_cmd, env=env)
 
     bench_cmd = [
         args.python,
