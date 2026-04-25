@@ -14,3 +14,5 @@ target/
 benchmarks/results/gemma4_apple_smoke*/
 benchmarks/results/gemma4_mps_smoke*/
 dotcache/backends/cuda_kernels/.build/
+dotcache/backends/cuda_kernels/.build_cutlass_sm120/
+benchmarks/results/paper_v2_20260425/

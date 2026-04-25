@@ -1389,6 +1389,23 @@ def certified_attention_layer(
             mixed_attend = selective_attend_multihead_hybrid_mixedv
             if _use_split_mixed:
                 mixed_attend = selective_attend_multihead_hybrid_mixedv_split_k
+            if _backend == "cutlass_sm120" and _use_split_mixed:
+                try:
+                    from dotcache.backends.cutlass_sm120 import (
+                        cutlass_sm120_available,
+                        hybrid_mixedv_split_k_cutlass,
+                    )
+                    # The CUTLASS backend is wired behind an explicit kernel
+                    # enable until its tensor-core implementation passes the
+                    # correctness/performance gates. Availability still probes
+                    # the vendored CUTLASS toolchain for CI/perf-gate scripts.
+                    if (
+                        _os.environ.get("DOTCACHE_CUTLASS_SM120_ENABLE_KERNELS", "0") == "1"
+                        and cutlass_sm120_available()
+                    ):
+                        mixed_attend = hybrid_mixedv_split_k_cutlass
+                except Exception:
+                    mixed_attend = selective_attend_multihead_hybrid_mixedv_split_k
             if _backend == "native_blackwell" and _use_split_mixed:
                 try:
                     from dotcache.backends.certified_blackwell import (
