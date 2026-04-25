@@ -201,11 +201,22 @@ def _quality(bench: str, native: Any) -> dict[str, Any]:
     if bench == "niah":
         dense = native.get("dense_accuracy")
         cert = native.get("certified_accuracy")
+        paired_stats = native.get("paired_stats") or {}
         return {
             "metric": "accuracy",
             "dense": dense,
             "certified": cert,
             "delta": (cert - dense) if cert is not None and dense is not None else None,
+            "paired_stats": paired_stats,
+            "n": paired_stats.get("n"),
+            "delta_pp": paired_stats.get("delta_pp"),
+            "bootstrap_ci_pp": (
+                [paired_stats.get("bootstrap_ci_pp_lo"), paired_stats.get("bootstrap_ci_pp_hi")]
+                if paired_stats.get("bootstrap_ci_pp_lo") is not None
+                and paired_stats.get("bootstrap_ci_pp_hi") is not None
+                else None
+            ),
+            "mcnemar_p": paired_stats.get("mcnemar_p"),
             "critical_failures": native.get("critical_failures"),
         }
     if bench == "ruler":

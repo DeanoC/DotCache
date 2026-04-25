@@ -91,6 +91,103 @@ class TestPairedDiffCI:
 
 
 # ---------------------------------------------------------------------------
+# paired_niah_stats — NIAH bootstrap CI + exact McNemar
+# ---------------------------------------------------------------------------
+
+class TestNiahPairedStats:
+    @staticmethod
+    def _row(ctx: int, depth: float, needle: int, correct: bool) -> dict:
+        return {
+            "target_context": ctx,
+            "depth": depth,
+            "needle_idx": needle,
+            "correct": correct,
+        }
+
+    def test_exact_mcnemar_uses_discordant_pairs_only(self):
+        from benchmarks.paper.niah import paired_niah_stats
+
+        dense = [
+            self._row(8192, 0.0, 0, True),   # both correct
+            self._row(8192, 0.1, 0, True),   # dense only
+            self._row(8192, 0.2, 0, False),  # cert only
+            self._row(8192, 0.3, 0, False),  # cert only
+            self._row(8192, 0.4, 0, False),  # both wrong
+        ]
+        cert = [
+            self._row(8192, 0.0, 0, True),
+            self._row(8192, 0.1, 0, False),
+            self._row(8192, 0.2, 0, True),
+            self._row(8192, 0.3, 0, True),
+            self._row(8192, 0.4, 0, False),
+        ]
+
+        stats = paired_niah_stats(dense, cert, bootstrap_iters=500, seed=0)
+        assert stats["n"] == 5
+        assert stats["dense_accuracy"] == pytest.approx(2 / 5)
+        assert stats["certified_accuracy"] == pytest.approx(3 / 5)
+        assert stats["delta_accuracy"] == pytest.approx(1 / 5)
+        assert stats["delta_pp"] == pytest.approx(20.0)
+        assert stats["paired_table"] == {
+            "both_correct": 1,
+            "dense_only": 1,
+            "certified_only": 2,
+            "both_wrong": 1,
+        }
+        # Discordants are 1 vs 2. Exact two-sided binomial p = 1.0.
+        assert stats["mcnemar_p"] == pytest.approx(1.0)
+        assert stats["bootstrap_ci_lo"] <= stats["delta_accuracy"] <= stats["bootstrap_ci_hi"]
+
+    def test_mcnemar_detects_extreme_imbalance(self):
+        from benchmarks.paper.niah import paired_niah_stats
+
+        dense = [self._row(8192, i / 10, 0, True) for i in range(4)]
+        cert = [self._row(8192, i / 10, 0, False) for i in range(4)]
+        stats = paired_niah_stats(dense, cert, bootstrap_iters=0)
+
+        assert stats["paired_table"]["dense_only"] == 4
+        assert stats["paired_table"]["certified_only"] == 0
+        assert stats["delta_pp"] == pytest.approx(-100.0)
+        # Two-sided exact binomial with four discordants all in one direction:
+        # 2 * (1 / 2^4) = 0.125.
+        assert stats["mcnemar_p"] == pytest.approx(0.125)
+
+    def test_by_context_keeps_paper_cells_separate(self):
+        from benchmarks.paper.niah import paired_niah_stats_by_context
+
+        dense = [
+            self._row(4096, 0.0, 0, True),
+            self._row(8192, 0.0, 0, False),
+        ]
+        cert = [
+            self._row(4096, 0.0, 0, False),
+            self._row(8192, 0.0, 0, True),
+        ]
+        stats = paired_niah_stats_by_context(dense, cert, bootstrap_iters=0)
+
+        assert sorted(stats) == ["4K", "8K"]
+        assert stats["4K"]["delta_pp"] == pytest.approx(-100.0)
+        assert stats["8K"]["delta_pp"] == pytest.approx(100.0)
+
+    def test_by_needle_group_splits_original_and_harder_followup(self):
+        from benchmarks.paper.niah import paired_niah_stats_by_needle_group
+
+        dense = [
+            self._row(8192, 0.0, 0, True),
+            self._row(8192, 0.0, 5, False),
+        ]
+        cert = [
+            self._row(8192, 0.0, 0, False),
+            self._row(8192, 0.0, 5, True),
+        ]
+        stats = paired_niah_stats_by_needle_group(dense, cert, bootstrap_iters=0)
+
+        assert sorted(stats) == ["harder", "original"]
+        assert stats["original"]["delta_pp"] == pytest.approx(-100.0)
+        assert stats["harder"]["delta_pp"] == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------------------
 # per_chunk_bpt_stats — PG-19 bootstrap bits-per-token CI
 # ---------------------------------------------------------------------------
 

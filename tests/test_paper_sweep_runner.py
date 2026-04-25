@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "run_arxiv_v1_sweep", REPO / "benchmarks" / "run_arxiv_v1_sweep.py",
@@ -57,3 +59,24 @@ def test_paper_sweep_certified_flags_match_section7(tmp_path: Path):
         assert args[args.index(flag) + 1] == value
     for flag in ("--use-int4-values", "--ranking-fallback", "--score-consistency-check"):
         assert flag in args
+
+
+def test_paper_sweep_wraps_niah_inferential_stats():
+    native = {
+        "dense_accuracy": 0.93,
+        "certified_accuracy": 0.91,
+        "critical_failures": 4,
+        "paired_stats": {
+            "n": 100,
+            "delta_pp": -2.0,
+            "bootstrap_ci_pp_lo": -7.0,
+            "bootstrap_ci_pp_hi": 3.0,
+            "mcnemar_p": 0.38,
+        },
+    }
+    quality = sweep._quality("niah", native)
+    assert quality["delta"] == pytest.approx(-0.02)
+    assert quality["n"] == 100
+    assert quality["delta_pp"] == pytest.approx(-2.0)
+    assert quality["bootstrap_ci_pp"] == [-7.0, 3.0]
+    assert quality["mcnemar_p"] == pytest.approx(0.38)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gc
 import json
+import math
 import os
 import sys
 import time
@@ -94,6 +95,164 @@ def build_niah_prompt(needle_text: str, context_tokens: int, depth_fraction: flo
 def check_retrieval(generated_text: str, expected_answer: str) -> bool:
     """Check if the generated text contains the expected answer."""
     return expected_answer.lower() in generated_text.lower()
+
+
+def _binomial_two_sided_p_value(k: int, n: int, p: float = 0.5) -> float:
+    """Exact two-sided binomial p-value for McNemar's discordant pairs.
+
+    For McNemar, only discordant pairs matter. Under the null, dense-only and
+    certified-only wins are equally likely, so this is Binomial(n=b+c, p=0.5).
+    """
+    if n <= 0:
+        return 1.0
+    k = max(0, min(int(k), int(n)))
+    observed = math.comb(n, k) * (p ** k) * ((1.0 - p) ** (n - k))
+    prob = 0.0
+    for i in range(n + 1):
+        pi = math.comb(n, i) * (p ** i) * ((1.0 - p) ** (n - i))
+        if pi <= observed + 1e-15:
+            prob += pi
+    return float(min(1.0, prob))
+
+
+def paired_niah_stats(
+    dense_results: list[dict],
+    certified_results: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict:
+    """Paired NIAH delta, bootstrap CI, and exact McNemar test.
+
+    Returns statistics for Certified - Dense accuracy. Pairing key is the
+    benchmark unit: (target_context, depth, needle_idx).
+    """
+    dense_map = {
+        (r["target_context"], r["depth"], r["needle_idx"]): bool(r["correct"])
+        for r in dense_results
+    }
+    pairs: list[tuple[bool, bool]] = []
+    for r in certified_results:
+        key = (r["target_context"], r["depth"], r["needle_idx"])
+        if key in dense_map:
+            pairs.append((dense_map[key], bool(r["correct"])))
+
+    n = len(pairs)
+    if n == 0:
+        return {
+            "n": 0,
+            "dense_accuracy": None,
+            "certified_accuracy": None,
+            "delta_accuracy": None,
+            "delta_pp": None,
+            "bootstrap_ci_lo": None,
+            "bootstrap_ci_hi": None,
+            "bootstrap_ci_pp_lo": None,
+            "bootstrap_ci_pp_hi": None,
+            "bootstrap_iters": int(bootstrap_iters),
+            "mcnemar_p": None,
+            "paired_table": {"both_correct": 0, "dense_only": 0, "certified_only": 0, "both_wrong": 0},
+        }
+
+    both_correct = sum(1 for d, c in pairs if d and c)
+    dense_only = sum(1 for d, c in pairs if d and not c)
+    certified_only = sum(1 for d, c in pairs if (not d) and c)
+    both_wrong = sum(1 for d, c in pairs if (not d) and (not c))
+    dense_correct = both_correct + dense_only
+    cert_correct = both_correct + certified_only
+    delta = (certified_only - dense_only) / n
+
+    diffs = np.asarray([(1 if c else 0) - (1 if d else 0) for d, c in pairs], dtype=np.float64)
+    if n > 1 and bootstrap_iters > 0:
+        rng = np.random.default_rng(seed)
+        boot = diffs[rng.integers(0, n, size=(int(bootstrap_iters), n))].mean(axis=1)
+        ci_lo = float(np.quantile(boot, 0.025))
+        ci_hi = float(np.quantile(boot, 0.975))
+    else:
+        ci_lo = ci_hi = float(delta)
+
+    discordant = dense_only + certified_only
+    p_value = _binomial_two_sided_p_value(min(dense_only, certified_only), discordant)
+    return {
+        "n": int(n),
+        "dense_correct": int(dense_correct),
+        "certified_correct": int(cert_correct),
+        "dense_accuracy": dense_correct / n,
+        "certified_accuracy": cert_correct / n,
+        "delta_accuracy": float(delta),
+        "delta_pp": float(delta * 100.0),
+        "bootstrap_ci_lo": ci_lo,
+        "bootstrap_ci_hi": ci_hi,
+        "bootstrap_ci_pp_lo": float(ci_lo * 100.0),
+        "bootstrap_ci_pp_hi": float(ci_hi * 100.0),
+        "bootstrap_iters": int(bootstrap_iters),
+        "bootstrap_seed": int(seed),
+        "mcnemar_p": p_value,
+        "mcnemar": {
+            "test": "exact_two_sided_binomial",
+            "p_value": p_value,
+            "discordant": int(discordant),
+            "dense_only": int(dense_only),
+            "certified_only": int(certified_only),
+        },
+        "paired_table": {
+            "both_correct": int(both_correct),
+            "dense_only": int(dense_only),
+            "certified_only": int(certified_only),
+            "both_wrong": int(both_wrong),
+        },
+    }
+
+
+def paired_niah_stats_by_context(
+    dense_results: list[dict],
+    certified_results: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict[str, dict]:
+    contexts = sorted({int(r["target_context"]) for r in dense_results + certified_results})
+    out: dict[str, dict] = {}
+    for idx, ctx in enumerate(contexts):
+        dense_ctx = [r for r in dense_results if int(r["target_context"]) == ctx]
+        cert_ctx = [r for r in certified_results if int(r["target_context"]) == ctx]
+        out[f"{ctx // 1024}K"] = paired_niah_stats(
+            dense_ctx,
+            cert_ctx,
+            bootstrap_iters=bootstrap_iters,
+            seed=seed + idx,
+        )
+    return out
+
+
+def paired_niah_stats_by_needle_group(
+    dense_results: list[dict],
+    certified_results: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict[str, dict]:
+    """Stats for the paper's original-vs-harder 8K NIAH follow-up.
+
+    Needles 0-4 are the original five; needles 5+ are the harder follow-up
+    set. Groups with no rows are omitted so smaller 30-trial cells stay clean.
+    """
+    groups = {
+        "original": lambda r: int(r["needle_idx"]) < 5,
+        "harder": lambda r: int(r["needle_idx"]) >= 5,
+    }
+    out: dict[str, dict] = {}
+    for idx, (name, pred) in enumerate(groups.items()):
+        dense_group = [r for r in dense_results if pred(r)]
+        cert_group = [r for r in certified_results if pred(r)]
+        if dense_group or cert_group:
+            out[name] = paired_niah_stats(
+                dense_group,
+                cert_group,
+                bootstrap_iters=bootstrap_iters,
+                seed=seed + idx,
+            )
+    return out
 
 
 def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-§7 plumbing
@@ -423,6 +582,13 @@ def run_niah_sweep(
         "dense_accuracy": sum(1 for r in results["dense"] if r["correct"]) / max(len(results["dense"]), 1),
         "certified_accuracy": sum(1 for r in results["certified"] if r["correct"]) / max(len(results["certified"]), 1),
     }
+    sweep_result["paired_stats"] = paired_niah_stats(results["dense"], results["certified"])
+    sweep_result["paired_stats_by_context"] = paired_niah_stats_by_context(
+        results["dense"], results["certified"]
+    )
+    sweep_result["paired_stats_by_needle_group"] = paired_niah_stats_by_needle_group(
+        results["dense"], results["certified"]
+    )
     if ranking_fallback:
         heads_total = sum(r.get("ranking_heads_total", 0) for r in results["certified"])
         disagree_r1 = sum(r.get("ranking_disagree_r1", 0) for r in results["certified"])
@@ -562,6 +728,15 @@ def main():
     print(f"Dense accuracy:     {result['dense_accuracy']:.1%}")
     print(f"Certified accuracy: {result['certified_accuracy']:.1%}")
     print(f"Critical failures:  {result['critical_failures']}")
+    stats = result.get("paired_stats", {})
+    if stats.get("n"):
+        print(
+            "Paired Δ: "
+            f"{stats['delta_pp']:+.1f} pp "
+            f"(95% bootstrap CI "
+            f"[{stats['bootstrap_ci_pp_lo']:+.1f}, {stats['bootstrap_ci_pp_hi']:+.1f}] pp, "
+            f"McNemar p={stats['mcnemar_p']:.4g}, n={stats['n']})"
+        )
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -570,6 +745,9 @@ def main():
         "dense_accuracy": result["dense_accuracy"],
         "certified_accuracy": result["certified_accuracy"],
         "critical_failures": result["critical_failures"],
+        "paired_stats": result["paired_stats"],
+        "paired_stats_by_context": result["paired_stats_by_context"],
+        "paired_stats_by_needle_group": result["paired_stats_by_needle_group"],
         "cache_config": cache_config_dict(args),
     }
     if "ranking_fallback_summary" in result:
