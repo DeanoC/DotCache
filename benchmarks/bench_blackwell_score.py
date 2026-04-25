@@ -97,6 +97,61 @@ def _score_call(inp: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     )
 
 
+def _dense_gemm_bound_prepare(inp: dict) -> dict:
+    """Prepare an optimistic tensor-core bound for phase-1 scoring.
+
+    This intentionally dequantizes keys to FP16 once outside the timed region,
+    then uses batched matmul for the per-token scores. It is not a drop-in
+    exact scorer; it answers whether the paper shape is tensor-core-friendly
+    if dequant/layout costs were solved by a real fused CUTLASS kernel.
+    """
+    kv_heads = int(inp["K_int8_packed"].shape[0])
+    n_tokens = int(inp["K_int8_packed"].shape[1])
+    head_dim = int(inp["K_int8_packed"].shape[2])
+    num_blocks = int(inp["num_blocks"])
+    block_size = int(inp["block_size"])
+    gqa_group = int(inp["gqa_group"])
+    q_heads = int(inp["q_all"].shape[0])
+    keys_i8 = inp["K_int8_packed"].to(torch.float32).reshape(
+        kv_heads, num_blocks, block_size, head_dim,
+    )
+    deq = (
+        keys_i8 * inp["K_scale"].unsqueeze(2)
+        + inp["K_zero_points"].unsqueeze(2)
+    ).reshape(kv_heads, n_tokens, head_dim).to(torch.float16)
+    q_grouped = inp["q_all"].reshape(kv_heads, gqa_group, head_dim).to(torch.float16)
+    return {
+        "keys_t": deq.transpose(1, 2).contiguous(),  # [kv, hd, tokens]
+        "q_grouped": q_grouped,
+        "q_heads": q_heads,
+        "kv_heads": kv_heads,
+        "gqa_group": gqa_group,
+        "num_blocks": num_blocks,
+        "block_size": block_size,
+        "q_scale": float(inp["q_scale"]),
+        "correction": inp["correction"],
+        "block_epsilon": float(inp["block_epsilon"]),
+    }
+
+
+def _dense_gemm_bound_call(bound: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    scores = torch.bmm(bound["q_grouped"], bound["keys_t"]).float() * bound["q_scale"]
+    scores = scores.reshape(
+        bound["kv_heads"], bound["gqa_group"], bound["num_blocks"], bound["block_size"],
+    ).reshape(bound["q_heads"], bound["num_blocks"], bound["block_size"])
+    m_b = scores.amax(dim=2)
+    s_b = torch.exp(scores - m_b.unsqueeze(2)).sum(dim=2)
+    if bound["block_epsilon"] <= 0.0:
+        skip = torch.zeros_like(m_b, dtype=torch.bool)
+    else:
+        correction = bound["correction"].repeat_interleave(bound["gqa_group"], dim=0)
+        m_global = m_b.amax(dim=1, keepdim=True)
+        mass = s_b * correction * torch.exp(m_b - m_global)
+        total = mass.sum(dim=1, keepdim=True).clamp(min=1e-30)
+        skip = (mass / total) < bound["block_epsilon"]
+    return m_b, s_b, skip
+
+
 def _compare(a: tuple[torch.Tensor, torch.Tensor, torch.Tensor], b: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> dict[str, float | int]:
     return {
         "m_b_max_abs": float((a[0] - b[0]).abs().max().item()),
@@ -138,6 +193,14 @@ def main() -> int:
             triton_out = _score_call(inp)
             triton_ms = _time_ms(lambda: _score_call(inp), warmup=args.warmup, iters=args.iters)
 
+            dense_bound = _dense_gemm_bound_prepare(inp)
+            dense_bound_out = _dense_gemm_bound_call(dense_bound)
+            dense_bound_ms = _time_ms(
+                lambda: _dense_gemm_bound_call(dense_bound),
+                warmup=args.warmup,
+                iters=args.iters,
+            )
+
             os.environ["DOTCACHE_SCORE_BACKEND"] = "cutlass_sm120"
             os.environ.setdefault("DOTCACHE_CUTLASS_SM120_ENABLE_SCORE", "0")
             cutlass_out = _score_call(inp)
@@ -145,11 +208,16 @@ def main() -> int:
 
             triton_summary = _summarize(triton_ms)
             cutlass_summary = _summarize(cutlass_ms)
+            dense_bound_summary = _summarize(dense_bound_ms)
             speedup = triton_summary["mean_ms"] / max(cutlass_summary["mean_ms"], 1e-9)
+            dense_bound_speedup = triton_summary["mean_ms"] / max(dense_bound_summary["mean_ms"], 1e-9)
             row = {
                 "context": ctx,
                 "num_blocks": inp["num_blocks"],
                 "triton": triton_summary,
+                "predequant_fp16_gemm_bound": dense_bound_summary,
+                "predequant_fp16_gemm_bound_speedup": float(dense_bound_speedup),
+                "predequant_fp16_gemm_bound_comparison": _compare(dense_bound_out, triton_out),
                 "cutlass_backend": cutlass_summary,
                 "cutlass_speedup": float(speedup),
                 "comparison": _compare(cutlass_out, triton_out),
@@ -159,8 +227,10 @@ def main() -> int:
             print(
                 f"{ctx//1024:>4}K blocks={inp['num_blocks']:<5} "
                 f"triton={triton_summary['mean_ms']:.3f}ms "
+                f"fp16_gemm_bound={dense_bound_summary['mean_ms']:.3f}ms "
                 f"cutlass_backend={cutlass_summary['mean_ms']:.3f}ms "
-                f"speedup={speedup:.2f}x enabled={row['cutlass_enabled']}"
+                f"speedup={speedup:.2f}x bound={dense_bound_speedup:.2f}x "
+                f"enabled={row['cutlass_enabled']}"
             )
     finally:
         if old_backend is None:
