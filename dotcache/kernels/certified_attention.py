@@ -768,6 +768,7 @@ def certified_attention_layer(
                 block_size=bs,
                 q_scale=q_scale,
                 block_epsilon=0.0,
+                K_deq_fp16_t=cache.score_keys_fp16_t_active(),
             )
     else:
         device = q_all.device

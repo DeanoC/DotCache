@@ -17,6 +17,7 @@ Two value storage modes:
 """
 from __future__ import annotations
 
+import os
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
@@ -59,6 +60,10 @@ class TieredKeyCacheLayer:
     # Pre-computed dequantised keys and float32 values (avoid per-call allocation)
     # For quantised blocks: dequantised INT8.  For trailing partial block: exact FP16→f32.
     _keys_deq_f32: torch.Tensor | None = None   # [kv_heads, N, head_dim] float32, cuda
+    # Optional score-path mirror: asymmetric INT8 keys dequantized to FP16 and
+    # transposed to [kv_heads, head_dim, N]. This is experimental/off by
+    # default because it trades extra VRAM for tensor-core-friendly scoring.
+    _keys_deq_fp16_t: torch.Tensor | None = None
     _values_f32: torch.Tensor | None = None      # [kv_heads, N, d_v] float32, cuda
 
     # INT4 per-group quantised values (v2 — optional, replaces values_fp16 in VRAM)
@@ -128,6 +133,7 @@ class TieredKeyCacheLayer:
         max_pagein_blocks: int = 64,
         max_new_tokens: int = 512,
         fp16_key_cache_capacity: int | None = None,
+        score_fp16_t_mirror: bool = False,
     ) -> "TieredKeyCacheLayer":
         """Create tiered cache from existing FP16 KV tensors.
 
@@ -245,6 +251,29 @@ class TieredKeyCacheLayer:
             * k_scale.to(torch.float32)[:, :, None, :]
             + k_zero_points.to(torch.float32)[:, :, None, :]
         ).reshape(kv_heads, N, head_dim)
+        keys_deq_fp16_t_buf = None
+        if score_fp16_t_mirror:
+            keys_deq_fp16_t_buf = torch.zeros(
+                kv_heads, head_dim, capacity, dtype=torch.float16, device=device,
+            )
+            if N > 0:
+                try:
+                    from dotcache.backends.cutlass_sm120 import (
+                        cutlass_sm120_available,
+                        dequant_keys_to_fp16_t,
+                    )
+
+                    if cutlass_sm120_available():
+                        keys_deq_fp16_t_buf[:, :, :N] = dequant_keys_to_fp16_t(
+                            keys_int8,
+                            k_scale.to(torch.float32).contiguous(),
+                            k_zero_points.to(torch.float32).contiguous(),
+                            block_size=block_size,
+                        )
+                    else:
+                        keys_deq_fp16_t_buf[:, :, :N] = keys_deq_buf[:, :N, :].transpose(1, 2).to(torch.float16)
+                except Exception:
+                    keys_deq_fp16_t_buf[:, :, :N] = keys_deq_buf[:, :N, :].transpose(1, 2).to(torch.float16)
 
         result = cls(
             keys_int8=keys_int8_buf,
@@ -263,6 +292,7 @@ class TieredKeyCacheLayer:
             num_quantized_blocks=num_blocks,  # all prefill blocks are complete
             _pagein_buffer=pagein_buffer,
             _keys_deq_f32=keys_deq_buf,
+            _keys_deq_fp16_t=keys_deq_fp16_t_buf,
             keys_fp16_gpu=keys_fp16_gpu_buf,
             fp16_key_cache_capacity=fp16_key_cache_capacity,
         )
@@ -284,6 +314,7 @@ class TieredKeyCacheLayer:
         fp16_key_cache_capacity: int | None = None,
         fp16_value_cache_capacity: int | None = None,
         defer_int4_append_quantization: bool = False,
+        score_fp16_t_mirror: bool = False,
     ) -> "TieredKeyCacheLayer":
         """Create tiered cache with INT4 per-group values.
 
@@ -303,6 +334,7 @@ class TieredKeyCacheLayer:
             keys_fp16, values_fp16, block_size, max_pagein_blocks,
             max_new_tokens=max_new_tokens,
             fp16_key_cache_capacity=fp16_key_cache_capacity,
+            score_fp16_t_mirror=score_fp16_t_mirror,
         )
 
         # Quantise prefill values to INT4 per-group
@@ -522,6 +554,10 @@ class TieredKeyCacheLayer:
             self._keys_deq_f32[:, start:end, :] = (
                 k_int8.to(torch.float32) * k_scale[:, None, :] + k_zp[:, None, :]
             )
+        if self._keys_deq_fp16_t is not None:
+            self._keys_deq_fp16_t[:, :, start:end] = (
+                k_int8.to(torch.float32) * k_scale[:, None, :] + k_zp[:, None, :]
+            ).transpose(1, 2).to(torch.float16)
 
         self.num_quantized_blocks = block_idx + 1
 
@@ -671,6 +707,8 @@ class TieredKeyCacheLayer:
                     # Poison dequant for unused slots (will be overwritten by
                     # subsequent appends or by _quantize_block when block fills)
                     self._keys_deq_f32[:, self.num_tokens:aligned, :] = 0.0
+                if self._keys_deq_fp16_t is not None:
+                    self._keys_deq_fp16_t[:, :, self.num_tokens:aligned] = 0.0
 
     @property
     def has_trailing_partial_block(self) -> bool:
@@ -767,6 +805,18 @@ class TieredKeyCacheLayer:
             )
         if self.values_fp16 is not None:
             self._values_f32 = self.values_fp16.to(torch.float32).contiguous()
+        if self._keys_deq_fp16_t is not None:
+            self._keys_deq_fp16_t.zero_()
+            if qt > 0:
+                self._keys_deq_fp16_t[:, :, :qt] = (
+                    self._keys_deq_f32[:, :qt, :].transpose(1, 2).to(torch.float16)
+                )
+
+    def score_keys_fp16_t_active(self) -> torch.Tensor | None:
+        """Return tensor-core score mirror for fully-quantized blocks only."""
+        if self._keys_deq_fp16_t is None:
+            return None
+        return self._keys_deq_fp16_t[:, :, : self.num_quantized_blocks * self.block_size]
 
     def vram_bytes(self) -> int:
         """Total VRAM usage."""
@@ -780,6 +830,8 @@ class TieredKeyCacheLayer:
             total += self._pagein_buffer.nelement() * 2
         if self._keys_deq_f32 is not None:
             total += self._keys_deq_f32.nelement() * 4
+        if self._keys_deq_fp16_t is not None:
+            total += self._keys_deq_fp16_t.nelement() * self._keys_deq_fp16_t.element_size()
         if self._values_f32 is not None:
             total += self._values_f32.nelement() * 4
         # INT4 value storage
@@ -1029,6 +1081,7 @@ def create_tiered_cache_int4v_from_model(
     fp16_key_cache_capacity: int | None = None,
     fp16_value_cache_capacity: int | None = None,
     defer_int4_append_quantization: bool | None = None,
+    score_fp16_t_mirror: bool | None = None,
 ) -> dict[int, TieredKeyCacheLayer]:
     """Create tiered caches with INT4 per-group values from HF past_key_values.
 
@@ -1040,6 +1093,8 @@ def create_tiered_cache_int4v_from_model(
     """
     if defer_int4_append_quantization is None:
         defer_int4_append_quantization = fp16_value_cache_capacity is None
+    if score_fp16_t_mirror is None:
+        score_fp16_t_mirror = os.environ.get("DOTCACHE_SCORE_FP16_T_MIRROR", "0") == "1"
 
     caches = {}
     for layer_id in layer_ids:
@@ -1069,6 +1124,7 @@ def create_tiered_cache_int4v_from_model(
             fp16_key_cache_capacity=fp16_key_cache_capacity,
             fp16_value_cache_capacity=fp16_value_cache_capacity,
             defer_int4_append_quantization=bool(defer_int4_append_quantization),
+            score_fp16_t_mirror=bool(score_fp16_t_mirror),
         )
         # num_tokens tracks what the INT4 packed tensor actually covers;
         # the trailing (seq_len - aligned_len) tokens weren't quantised and
@@ -1084,6 +1140,7 @@ def create_tiered_cache_from_model(
     block_size: int = 16,
     max_new_tokens: int = 512,
     fp16_key_cache_capacity: int | None = None,
+    score_fp16_t_mirror: bool | None = None,
 ) -> dict[int, TieredKeyCacheLayer]:
     """Create tiered caches from a HuggingFace model's past_key_values.
 
@@ -1096,6 +1153,9 @@ def create_tiered_cache_from_model(
     Returns:
         dict mapping layer_id → TieredKeyCacheLayer
     """
+    if score_fp16_t_mirror is None:
+        score_fp16_t_mirror = os.environ.get("DOTCACHE_SCORE_FP16_T_MIRROR", "0") == "1"
+
     caches = {}
     for layer_id in layer_ids:
         if hasattr(past_kv, 'layers'):
@@ -1117,6 +1177,7 @@ def create_tiered_cache_from_model(
             keys_aligned, values_aligned, block_size=block_size,
             max_new_tokens=max_new_tokens + (seq_len - aligned_len),
             fp16_key_cache_capacity=fp16_key_cache_capacity,
+            score_fp16_t_mirror=bool(score_fp16_t_mirror),
         )
 
         # Append the trailing (non-block-aligned) tokens — they stay FP16
@@ -1133,6 +1194,8 @@ def create_tiered_cache_from_model(
             cache.keys_int8[:, nt:at, :] = -127
             if cache._keys_deq_f32 is not None:
                 cache._keys_deq_f32[:, nt:at, :] = 0.0
+            if cache._keys_deq_fp16_t is not None:
+                cache._keys_deq_fp16_t[:, :, nt:at] = 0.0
 
         caches[layer_id] = cache
     return caches
