@@ -151,7 +151,7 @@ def per_chunk_ppl_delta_stats(
 
 
 def load_pg19_chunks(tokenizer, context_length: int, num_chunks: int,
-                     stride: int = None) -> tuple[list[torch.Tensor], list[int]]:
+                     stride: int = None, start_chunk: int = 0) -> tuple[list[torch.Tensor], list[int]]:
     """Load PG-19 test set and chunk into fixed-length token sequences.
 
     Uses strided windowing: each chunk starts `stride` tokens after the
@@ -164,6 +164,7 @@ def load_pg19_chunks(tokenizer, context_length: int, num_chunks: int,
 
     chunks = []
     book_indices: list[int] = []  # parallel to chunks; used for per-book CI grouping
+    seen_chunks = 0
     ds = load_dataset("emozilla/pg19", split="test", streaming=True)
 
     for book_idx, book in enumerate(ds):
@@ -171,9 +172,13 @@ def load_pg19_chunks(tokenizer, context_length: int, num_chunks: int,
         tokens = tokenizer.encode(text, add_special_tokens=False)
         # Slide window across the book
         for start in range(0, len(tokens) - context_length, stride):
+            if seen_chunks < int(start_chunk):
+                seen_chunks += 1
+                continue
             chunk = tokens[start : start + context_length]
             chunks.append(torch.tensor(chunk, dtype=torch.long))
             book_indices.append(book_idx)
+            seen_chunks += 1
             if len(chunks) >= num_chunks:
                 return chunks, book_indices
 
@@ -186,6 +191,7 @@ def compute_dense_perplexity(
     chunks: list[torch.Tensor],
     device: str = "cuda",
     book_indices: list[int] | None = None,
+    chunk_offset: int = 0,
 ) -> dict:
     """Compute perplexity using standard dense forward pass.
 
@@ -221,7 +227,7 @@ def compute_dense_perplexity(
         total_tokens += targets.numel()
 
         per_chunk.append({
-            "chunk_idx": i,
+            "chunk_idx": int(chunk_offset) + i,
             "book_idx": (book_indices[i] if book_indices is not None else None),
             "nll": chunk_nll,
             "tokens": int(targets.numel()),
@@ -458,6 +464,7 @@ def compute_certified_perplexity(
     collect_step_stats: bool = False,
     max_certified_steps: int | None = None,
     certified_warmup_steps: int = 128,
+    chunk_offset: int = 0,
 ) -> dict:
     """Compute perplexity using certified attention decode.
 
@@ -793,7 +800,7 @@ def compute_certified_perplexity(
         # them weight consistently.
         chunk_telemetry = _reduce_step_aggs(chunk_step_aggs)
         per_chunk.append({
-            "chunk_idx": i,
+            "chunk_idx": int(chunk_offset) + i,
             "book_idx": (book_indices[i] if book_indices is not None else None),
             "prefix_nll": float(prefix_nll),
             "prefix_tokens": int(prefix_len - 1),
@@ -866,6 +873,10 @@ def main():
                         help="Context length per chunk")
     parser.add_argument("--num-chunks", type=int, default=20,
                         help="Number of document chunks to evaluate")
+    parser.add_argument("--chunk-start", type=int, default=0,
+                        help="Global PG-19 chunk index to start from (for distributed shards).")
+    parser.add_argument("--chunk-index", type=int, default=None,
+                        help="Alias for --chunk-start with --num-chunks 1.")
     parser.add_argument("--eval-start", type=float, default=0.5,
                         help="Fraction of context for dense prefix (rest is certified)")
     parser.add_argument("--output", default="benchmarks/results/pg19_perplexity.json")
@@ -934,10 +945,19 @@ def main():
     config = DotCacheConfig(head_dim=head_dim)
     adapter = LlamaDotCacheModelAdapter(model, config)
 
+    if args.chunk_index is not None:
+        args.chunk_start = int(args.chunk_index)
+        args.num_chunks = 1
+
     # Load PG-19 chunks
-    print(f"\nLoading PG-19 test set: {args.num_chunks} chunks × {args.context} tokens...")
+    print(
+        f"\nLoading PG-19 test set: {args.num_chunks} chunks × {args.context} tokens "
+        f"(start={args.chunk_start})..."
+    )
     t0 = time.perf_counter()
-    chunks, book_indices = load_pg19_chunks(tokenizer, args.context, args.num_chunks)
+    chunks, book_indices = load_pg19_chunks(
+        tokenizer, args.context, args.num_chunks, start_chunk=args.chunk_start,
+    )
     print(f"Loaded {len(chunks)} chunks in {time.perf_counter()-t0:.1f}s")
 
     # Dense perplexity
@@ -945,7 +965,9 @@ def main():
     print("Dense perplexity")
     print(f"{'='*50}")
     t0 = time.perf_counter()
-    dense_result = compute_dense_perplexity(model, chunks, book_indices=book_indices)
+    dense_result = compute_dense_perplexity(
+        model, chunks, book_indices=book_indices, chunk_offset=args.chunk_start,
+    )
     t_dense = time.perf_counter() - t0
     print(f"Dense: ppl={dense_result['perplexity']:.2f} "
           f"({dense_result['total_tokens']} tokens, {t_dense:.1f}s)")
@@ -998,6 +1020,7 @@ def main():
             collect_step_stats=args.collect_step_stats,
             max_certified_steps=args.max_certified_steps,
             certified_warmup_steps=args.certified_warmup_steps,
+            chunk_offset=args.chunk_start,
         )
         t_cert = time.perf_counter() - t0
         print(f"Certified: ppl={cert_result['perplexity']:.2f} "

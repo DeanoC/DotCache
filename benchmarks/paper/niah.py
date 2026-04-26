@@ -444,6 +444,9 @@ def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-
         "boundary_check_fired", "boundary_check_fired_layers",
         "boundary_check_triggered_heads_total",
         "e_key_step_mean", "e_key_step_max", "v_max_global",
+        "e_val_max", "e_val_mean", "e_val_pre_rung2_max",
+        "e_val_pre_rung2_mean", "value_error_mode",
+        "value_fallback_blocks", "value_fallback_head_blocks",
         "delta_bound_step_mean",
         "tail_mass_int8_est_step_mean", "tail_mass_int8_est_step_max",
         "k_star_mean", "k_star_max",
@@ -484,55 +487,66 @@ def run_niah_sweep(
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     telemetry_collector=None,
+    trial_start: int = 0,
+    trial_count: int | None = None,
 ) -> dict:
     """Run full NIAH sweep across depths and context lengths."""
     if depths is None:
         depths = [i / 10 for i in range(10)]  # 0.0, 0.1, ..., 0.9
 
     results = {"dense": [], "certified": []}
-    total = len(context_lengths) * len(depths) * num_needles * 2
+    all_trials = [
+        (depth, needle_idx)
+        for depth in depths
+        for needle_idx in range(num_needles)
+    ]
+    start = max(0, int(trial_start))
+    end = len(all_trials) if trial_count is None else min(len(all_trials), start + max(0, int(trial_count)))
+    trials = all_trials[start:end]
+    total = len(context_lengths) * len(trials) * 2
     done = 0
 
     for ctx_len in context_lengths:
-        for depth in depths:
-            for needle_idx in range(num_needles):
-                for mode in ["dense", "certified"]:
-                    done += 1
-                    r = run_niah_cell(
-                        model, tokenizer, adapter, mode,
-                        ctx_len, depth, needle_idx,
-                        device=device,
-                        top_k_fp16_keys=top_k_fp16_keys,
-                        v_tolerance=v_tolerance,
-                        use_int4_values=use_int4_values,
-                        group_size=group_size,
-                        fp16_key_cache_blocks=fp16_key_cache_blocks,
-                        fp16_value_cache_blocks=fp16_value_cache_blocks,
-                        ranking_fallback=ranking_fallback,
-                        ranking_r=ranking_r,
-                        ranking_fallback_mode=ranking_fallback_mode,
-                        tau_cov=tau_cov,
-                        k_min=k_min,
-                        k_max=k_max,
-                        rung1_threshold=rung1_threshold,
-                        rung1_multiplier=rung1_multiplier,
-                        score_consistency_check=score_consistency_check,
-                        score_consistency_interval=score_consistency_interval,
-                        eps_guard=eps_guard,
-                        exploration_rate=exploration_rate,
-                        telemetry_collector=telemetry_collector if mode == "certified" else None,
-                    )
-                    results[mode].append(r)
+        for local_trial_idx, (depth, needle_idx) in enumerate(trials):
+            trial_idx = start + local_trial_idx
+            for mode in ["dense", "certified"]:
+                done += 1
+                r = run_niah_cell(
+                    model, tokenizer, adapter, mode,
+                    ctx_len, depth, needle_idx,
+                    device=device,
+                    top_k_fp16_keys=top_k_fp16_keys,
+                    v_tolerance=v_tolerance,
+                    use_int4_values=use_int4_values,
+                    group_size=group_size,
+                    fp16_key_cache_blocks=fp16_key_cache_blocks,
+                    fp16_value_cache_blocks=fp16_value_cache_blocks,
+                    ranking_fallback=ranking_fallback,
+                    ranking_r=ranking_r,
+                    ranking_fallback_mode=ranking_fallback_mode,
+                    tau_cov=tau_cov,
+                    k_min=k_min,
+                    k_max=k_max,
+                    rung1_threshold=rung1_threshold,
+                    rung1_multiplier=rung1_multiplier,
+                    score_consistency_check=score_consistency_check,
+                    score_consistency_interval=score_consistency_interval,
+                    eps_guard=eps_guard,
+                    exploration_rate=exploration_rate,
+                    telemetry_collector=telemetry_collector if mode == "certified" else None,
+                )
+                r["trial_idx"] = trial_idx
+                results[mode].append(r)
 
-                    status = "OK" if r["correct"] else "FAIL"
-                    print(f"  [{done}/{total}] {mode:>10} {ctx_len//1024}K d={depth:.1f} "
-                          f"n={needle_idx} -> {status}")
+                status = "OK" if r["correct"] else "FAIL"
+                print(f"  [{done}/{total}] {mode:>10} {ctx_len//1024}K d={depth:.1f} "
+                      f"n={needle_idx} -> {status}")
 
-                    if not r["correct"] and mode == "certified":
-                        # Check if dense also failed
-                        dense_r = results["dense"][-1] if results["dense"] else None
-                        if dense_r and dense_r["correct"]:
-                            print(f"    *** CRITICAL: dense OK but certified FAILED ***")
+                if not r["correct"] and mode == "certified":
+                    # Check if dense also failed
+                    dense_r = results["dense"][-1] if results["dense"] else None
+                    if dense_r and dense_r["correct"]:
+                        print(f"    *** CRITICAL: dense OK but certified FAILED ***")
 
     # Compute accuracy heatmaps
     heatmaps = {}
@@ -613,7 +627,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
     parser.add_argument("--contexts", type=int, nargs="+", default=[4096, 8192])
+    parser.add_argument("--depths", type=float, nargs="+", default=None,
+                        help="Needle depths to run. Default is the paper sweep 0.0,0.1,...,0.9.")
     parser.add_argument("--needles", type=int, default=3)
+    parser.add_argument("--trial-start", type=int, default=0,
+                        help="Start paired trial index after flattening depth-major depths x needles.")
+    parser.add_argument("--trial-count", type=int, default=None,
+                        help="Number of paired trials to run from --trial-start.")
+    parser.add_argument("--trial-index", type=int, default=None,
+                        help="Alias for --trial-start with --trial-count 1.")
     parser.add_argument("--output", default="benchmarks/results/niah.json")
     parser.add_argument("--top-k-fp16", type=int, default=4,
                         help="Top-K blocks use FP16 keys (999=all FP16, 0=all INT8)")
@@ -655,6 +677,9 @@ def main():
     )
     add_paper_cache_args(parser)
     args = parser.parse_args()
+    if args.trial_index is not None:
+        args.trial_start = int(args.trial_index)
+        args.trial_count = 1
     configure_paper_runtime_defaults()
 
     token = os.environ.get("HF_TOKEN") or None
@@ -695,6 +720,7 @@ def main():
     result = run_niah_sweep(
         model, tokenizer, adapter,
         context_lengths=args.contexts,
+        depths=args.depths,
         num_needles=args.needles,
         top_k_fp16_keys=args.top_k_fp16,
         v_tolerance=args.v_tolerance,
@@ -715,6 +741,8 @@ def main():
         eps_guard=args.eps_guard,
         exploration_rate=args.exploration_rate,
         telemetry_collector=telemetry_collector,
+        trial_start=args.trial_start,
+        trial_count=args.trial_count,
     )
 
     if telemetry_collector is not None:
@@ -745,6 +773,7 @@ def main():
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "results": result["results"],
         "heatmaps": result["heatmaps"],
         "dense_accuracy": result["dense_accuracy"],
         "certified_accuracy": result["certified_accuracy"],

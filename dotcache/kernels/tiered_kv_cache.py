@@ -66,7 +66,7 @@ class TieredKeyCacheLayer:
     values_int4_packed: torch.Tensor | None = None   # [kv_heads, N, d_v//2] uint8, cuda
     values_int4_scales: torch.Tensor | None = None   # [kv_heads, N, num_groups] float16, cuda
     values_int4_zeros: torch.Tensor | None = None    # [kv_heads, N, num_groups] float16, cuda
-    values_int4_errors: torch.Tensor | None = None   # [kv_heads, num_blocks] mean relative L2 error, cuda
+    values_int4_errors: torch.Tensor | None = None   # [kv_heads, num_blocks] max relative L2 error, cuda
     values_int4_error_sums: torch.Tensor | None = None  # [kv_heads, num_blocks] running sums for append
     values_int4_error_counts: torch.Tensor | None = None  # [kv_heads, num_blocks] running counts for append
     values_int4_group_size: int = 16  # paper §7
@@ -589,7 +589,7 @@ class TieredKeyCacheLayer:
         # The kernel reads N from keys_int8.shape[1], so values_int4_* must
         # grow in lockstep with keys (paper §3.1 / §7).
         # We also update the per-block error annotation η_b incrementally:
-        # η_b = mean relative ℓ₂ reconstruction error across the block's
+        # η_b = max relative ℓ₂ reconstruction error across the block's
         # tokens. This is the dimensionless paper §7 value-tolerance scale
         # (~0.05 at g=16). Without this, decide_v_format_tight
         # silently under-estimates per-block error for blocks containing
@@ -612,14 +612,14 @@ class TieredKeyCacheLayer:
             self.values_int4_packed[:, pos:pos+1, :] = r["data_packed"].unsqueeze(1)
             self.values_int4_scales[:, pos:pos+1, :] = r["scales"].unsqueeze(1)
             self.values_int4_zeros[:, pos:pos+1, :] = r["zeros"].unsqueeze(1)
-            # Update η_b incrementally on device — keep mean over block tokens.
+            # Update η_b incrementally on device, preserving the per-block max.
             err = r["per_token_error"].to(dtype=self.values_int4_errors.dtype)
             if self.values_int4_error_sums is not None and self.values_int4_error_counts is not None:
                 self.values_int4_error_sums[:, block_idx] += err
                 self.values_int4_error_counts[:, block_idx] += 1
-                counts = self.values_int4_error_counts[:, block_idx].to(dtype=self.values_int4_errors.dtype)
-                self.values_int4_errors[:, block_idx] = (
-                    self.values_int4_error_sums[:, block_idx] / counts.clamp(min=1)
+                self.values_int4_errors[:, block_idx] = torch.maximum(
+                    self.values_int4_errors[:, block_idx],
+                    err,
                 )
             else:
                 self.values_int4_errors[:, block_idx] = torch.maximum(
@@ -1611,14 +1611,10 @@ def create_tiered_cache_int4v_from_model(
         keys_aligned = keys[:, :aligned_len, :].contiguous()
         values_aligned = values[:, :aligned_len, :].contiguous()
 
-        # Constructor requires N % block_size == 0; pass the aligned slices.
-        # (Prior code computed the aligned tensors then passed the unaligned
-        # originals, which blew up on any seq_len not a multiple of block_size.)
-        # The trailing (seq_len - aligned_len) FP16 tokens weren't quantised
-        # into the INT4 prefill buffers, so they'll be re-appended via
-        # append_token() — add their count to the reservation so the buffer
-        # has room for them plus the max_new_tokens decode budget.
-        caches[layer_id] = TieredKeyCacheLayer.from_fp16_cache_int4v(
+        # Constructor requires N % block_size == 0; pass the aligned slices,
+        # then append the trailing prefill tokens so certified decode sees the
+        # same full prompt cache as dense generation.
+        cache = TieredKeyCacheLayer.from_fp16_cache_int4v(
             keys_aligned, values_aligned,
             block_size=block_size, group_size=group_size,
             max_new_tokens=max_new_tokens + (seq_len - aligned_len),
@@ -1626,11 +1622,22 @@ def create_tiered_cache_int4v_from_model(
             fp16_value_cache_capacity=fp16_value_cache_capacity,
             defer_int4_append_quantization=bool(defer_int4_append_quantization),
         )
-        # num_tokens tracks what the INT4 packed tensor actually covers;
-        # the trailing (seq_len - aligned_len) tokens weren't quantised and
-        # don't exist in the INT4 buffers, so exposing num_tokens = seq_len
-        # would tell downstream kernels to read past the end of the data.
-        caches[layer_id].num_tokens = aligned_len
+        for t in range(aligned_len, seq_len):
+            cache.append_token(
+                keys[:, t:t + 1, :],
+                values[:, t:t + 1, :],
+            )
+
+        # Poison padding positions so trailing partial blocks get zero weight
+        # in score kernels until the block fills and is quantised atomically.
+        at = cache.aligned_tokens
+        nt = cache.num_tokens
+        if at > nt:
+            cache.keys_int8[:, nt:at, :] = -127
+            if cache._keys_deq_f32 is not None:
+                cache._keys_deq_f32[:, nt:at, :] = 0.0
+
+        caches[layer_id] = cache
     return caches
 
 

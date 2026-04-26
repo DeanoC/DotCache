@@ -2282,11 +2282,12 @@ def certified_attention_layer(
                     group_size=cache.values_int4_group_size,
                     q_scale=q_scale,
                     last_block_valid=last_block_valid,
-                    int8_token_scores=int8_token_scores,
                     workspace=_cert_workspace(cache),
                 )
                 if not mixed_attend_is_native:
                     mixed_kwargs["skip_mask_i32"] = no_skip
+                if mixed_attend_is_native or mixed_attend is selective_attend_multihead_hybrid_mixedv_split_k:
+                    mixed_kwargs["int8_token_scores"] = int8_token_scores
                 output = mixed_attend(**mixed_kwargs)
     elif use_paper_hybrid:
         # Iterate only fully-quantised blocks; the trailing partial block

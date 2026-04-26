@@ -325,6 +325,31 @@ class CertifiedAttentionState:
             agg["e_key_step_max"] = float(max(
                 s.get("e_key_step_max", 0.0) for s in entries
             ))
+        e_val_means = [
+            s.get("e_val_mean") for s in entries
+            if s.get("e_val_mean") is not None
+        ]
+        if e_val_means:
+            agg["e_val_mean"] = float(sum(e_val_means) / len(e_val_means))
+            agg["e_val_max"] = float(max(
+                s.get("e_val_max", 0.0) for s in entries
+            ))
+        e_val_pre_means = [
+            s.get("e_val_pre_rung2_mean") for s in entries
+            if s.get("e_val_pre_rung2_mean") is not None
+        ]
+        if e_val_pre_means:
+            agg["e_val_pre_rung2_mean"] = float(sum(e_val_pre_means) / len(e_val_pre_means))
+            agg["e_val_pre_rung2_max"] = float(max(
+                s.get("e_val_pre_rung2_max", 0.0) for s in entries
+            ))
+        if any("value_fallback_blocks" in s for s in entries):
+            agg["value_fallback_blocks"] = int(sum(
+                s.get("value_fallback_blocks", 0) for s in entries
+            ))
+            agg["value_fallback_head_blocks"] = int(sum(
+                s.get("value_fallback_head_blocks", 0) for s in entries
+            ))
         v_max_layers = [
             s.get("v_max_layer") for s in entries
             if s.get("v_max_layer") is not None

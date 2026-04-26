@@ -562,6 +562,7 @@ def run_ruler(
     v_tolerance: float,
     top_k_fp16_keys: int = 4,
     seed_base: int = 20260416, device: str = "cuda",
+    sample_start: int = 0,
     use_int4_values: bool = False,
     group_size: int = 16,
     fp16_key_cache_blocks: int | str | None = None,
@@ -582,6 +583,7 @@ def run_ruler(
     telemetry_collector=None,
 ) -> dict:
     results = []
+    sample_start = max(0, int(sample_start))
     total = len(subtasks) * len(contexts) * num_samples * 2
     done = 0
 
@@ -589,7 +591,7 @@ def run_ruler(
         for subtask in subtasks:
             builder = SUBTASK_BUILDERS[subtask]
             max_new = SUBTASK_MAX_NEW[subtask]
-            for sidx in range(num_samples):
+            for sidx in range(sample_start, sample_start + num_samples):
                 # Deterministic per (subtask, ctx, sample) — avoid Python's
                 # salted hash so seeds are stable across runs.
                 key = f"{subtask}|{ctx_len}|{sidx}".encode()
@@ -680,6 +682,10 @@ def main():
     parser.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
     parser.add_argument("--contexts", type=int, nargs="+", default=[4096])
     parser.add_argument("--num-samples", type=int, default=10)
+    parser.add_argument("--sample-start", type=int, default=0,
+                        help="First deterministic sample index to run (for distributed shards).")
+    parser.add_argument("--sample-index", type=int, default=None,
+                        help="Alias for --sample-start with --num-samples 1.")
     parser.add_argument("--subtasks", nargs="+", default=list(SUBTASK_BUILDERS.keys()))
     parser.add_argument("--output", default="benchmarks/results/ruler.json")
     parser.add_argument("--top-k-fp16", type=int, default=4)
@@ -712,6 +718,9 @@ def main():
     )
     add_paper_cache_args(parser)
     args = parser.parse_args()
+    if args.sample_index is not None:
+        args.sample_start = int(args.sample_index)
+        args.num_samples = 1
     configure_paper_runtime_defaults()
 
     for st in args.subtasks:
@@ -763,6 +772,7 @@ def main():
         fp16_value_cache_blocks=args.fp16_value_cache_blocks,
         top_k_fp16_keys=args.top_k_fp16,
         seed_base=args.seed,
+        sample_start=args.sample_start,
         tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
         k_min=args.k_min,
         k_max=args.k_max,
@@ -822,6 +832,7 @@ def main():
         "subtasks": args.subtasks,
         "contexts": args.contexts,
         "num_samples": args.num_samples,
+        "sample_start": args.sample_start,
         "top_k_fp16": args.top_k_fp16,
         "seed": args.seed,
         "wall_minutes": wall / 60.0,

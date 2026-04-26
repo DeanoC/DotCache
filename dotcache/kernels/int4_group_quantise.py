@@ -36,7 +36,7 @@ def quantise_int4_grouped(
             'group_size': int
             'per_token_error': [num_tokens] float32 tensor, relative ℓ₂ error
             'per_token_abs_error': [num_tokens] float32 tensor, absolute ℓ₂ error
-            'error_bound': 0-dim float32 tensor (mean per-token relative ℓ₂ error)
+            'error_bound': 0-dim float32 tensor (max per-token relative ℓ₂ error)
             'abs_error_bound': 0-dim float32 tensor (max per-token absolute ℓ₂ error)
     """
     num_tokens, head_dim = values.shape
@@ -73,7 +73,7 @@ def quantise_int4_grouped(
     per_token_abs_error = (flat_source - flat_dequant).norm(dim=-1)
     value_norm = flat_source.norm(dim=-1).clamp(min=1e-6)
     per_token_error = per_token_abs_error / value_norm
-    error_bound = per_token_error.mean()
+    error_bound = per_token_error.max()
     abs_error_bound = per_token_abs_error.max()
 
     return {
@@ -137,7 +137,7 @@ def quantise_int4_grouped_block(
     per_token_error = result["per_token_error"].reshape(kv_heads, N)
     per_token_abs_error = result["per_token_abs_error"].reshape(kv_heads, N)
     block_errors = per_token_error.reshape(kv_heads, num_blocks, block_size)
-    error_bounds = block_errors.mean(dim=2)
+    error_bounds = block_errors.amax(dim=2)
     error_sums = block_errors.sum(dim=2)
     abs_error_bounds = per_token_abs_error.reshape(kv_heads, num_blocks, block_size).amax(dim=2)
     return {
