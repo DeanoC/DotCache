@@ -246,6 +246,29 @@ manifests.
 Do not edit JSON outputs by hand. The paper table generation should consume the
 raw JSONs directly.
 
+## Pushing Result Archives
+
+After a machine completes its assigned slices, create and push a compressed
+archive of that machine's output directory. Result JSON/logs compress heavily,
+so this is cheap and gives us a stable artifact for later auditing.
+
+Example for machine A:
+
+```bash
+mkdir -p runs/archives
+tar -czf runs/archives/paper_v2_64k_machineA_slices_7_12.tar.gz \
+  runs/paper_v2_distributed_64k_machineA
+
+git add runs/archives/paper_v2_64k_machineA_slices_7_12.tar.gz \
+  runs/paper_v2_distributed_64k_machineA
+git commit -m "Add 64K paper slices 7-12"
+git push origin port-to-paper-20260424
+```
+
+If the loose result directory is too noisy for a given machine, at minimum push
+the `.tar.gz` archive and the slice summary. Do not include old calibration,
+profile, cache, or debug artifacts unless they are explicitly needed.
+
 ## More Detail
 
 The longer benchmark runbook is:
@@ -253,4 +276,3 @@ The longer benchmark runbook is:
 ```text
 docs/paper_v2_distributed_runbook.md
 ```
-
