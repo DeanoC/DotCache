@@ -34,12 +34,24 @@ git checkout port-to-paper-20260424
 
 export HF_TOKEN=...
 source scripts/env_cuda.sh
+sudo apt-get update
+sudo apt-get install -y \
+  libcusparse-dev-13-1 \
+  libcublas-dev-13-1 \
+  libcusolver-dev-13-1
 bash scripts/bootstrap_nvidia_llama_dev.sh
 ```
 
 The bootstrap script creates `.venv`, installs the repo with the required dev
 and Hugging Face dependencies, and fails if CUDA is not visible inside the
 virtualenv.
+
+The CUDA dev packages above provide the headers required to build the native
+Blackwell extension:
+
+- `libcusparse-dev-13-1`: `cusparse.h`
+- `libcublas-dev-13-1`: `cublas_v2.h`
+- `libcusolver-dev-13-1`: `cusolverDn.h`
 
 Check the environment:
 
