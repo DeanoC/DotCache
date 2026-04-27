@@ -40,6 +40,20 @@ def _sync() -> None:
         torch.cuda.synchronize()
 
 
+def _event_pair() -> tuple[torch.cuda.Event | None, torch.cuda.Event | None]:
+    if not torch.cuda.is_available():
+        return None, None
+    return torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+
+
+def _ms_stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"mean": None, "std": None, "n": 0}
+    mean = float(sum(values) / len(values))
+    var = sum((v - mean) ** 2 for v in values) / len(values)
+    return {"mean": mean, "std": float(var ** 0.5), "n": len(values)}
+
+
 def _runtime_cache_summary(tiered_caches: dict[int, Any]) -> dict[str, Any]:
     caches = list(tiered_caches.values())
     return {
@@ -78,6 +92,7 @@ def measure_dense_decode(
     warmup_steps: int,
     measure_steps: int,
 ) -> dict[str, Any]:
+    print(f"[dense] prefill start prefix_len={prefix_len}", flush=True)
     _sync()
     t0 = time.perf_counter()
     with torch.inference_mode():
@@ -88,6 +103,7 @@ def measure_dense_decode(
     del outputs
 
     cache_position = torch.tensor([prefix_len], dtype=torch.long, device=input_ids.device)
+    print(f"[dense] warmup start steps={warmup_steps}", flush=True)
     with torch.inference_mode():
         for t in range(warmup_steps):
             token_id = input_ids[:, prefix_len + t:prefix_len + t + 1]
@@ -104,10 +120,15 @@ def measure_dense_decode(
     _sync()
 
     nll = torch.zeros((), dtype=torch.float32, device=input_ids.device)
+    print(f"[dense] measure start steps={measure_steps}", flush=True)
     _sync()
     t0 = time.perf_counter()
+    step_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
     with torch.inference_mode():
         for t in range(warmup_steps, warmup_steps + measure_steps):
+            ev0, ev1 = _event_pair()
+            if ev0 is not None and ev1 is not None:
+                ev0.record()
             token_id = input_ids[:, prefix_len + t:prefix_len + t + 1]
             out = model(
                 input_ids=token_id,
@@ -120,17 +141,24 @@ def measure_dense_decode(
             target = input_ids[:, prefix_len + t + 1]
             nll = nll + F.cross_entropy(out.logits[:, -1, :].float(), target, reduction="sum")
             cache_position.add_(1)
+            if ev0 is not None and ev1 is not None:
+                ev1.record()
+                step_events.append((ev0, ev1))
             del out
     _sync()
     decode_s = time.perf_counter() - t0
+    step_ms = [float(a.elapsed_time(b)) for a, b in step_events]
     nll_f = float(nll.item())
     del past
+    print(f"[dense] measure done tok_s={measure_steps / max(decode_s, 1e-9):.2f}", flush=True)
     return {
         "prefill_s": float(prefill_s),
         "decode_s": float(decode_s),
         "decode_steps": int(measure_steps),
         "decode_tok_s": float(measure_steps / max(decode_s, 1e-9)),
         "decode_ms_per_token": float(1000.0 * decode_s / max(measure_steps, 1)),
+        "decode_step_ms": step_ms,
+        "decode_step_ms_stats": _ms_stats(step_ms),
         "nll": nll_f,
         "perplexity": _ppl(nll_f, measure_steps),
     }
@@ -154,6 +182,7 @@ def measure_certified_decode(
 
     _ensure_certified_imports()
     adapter.set_mode("dense")
+    print(f"[certified] prefill start prefix_len={prefix_len}", flush=True)
     _sync()
     t0 = time.perf_counter()
     with torch.inference_mode():
@@ -172,7 +201,12 @@ def measure_certified_decode(
         args.fp16_value_cache_blocks,
         os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS"),
     )
-    max_new = warmup_steps + measure_steps + 16
+    max_new = int(args.cache_decode_budget) if args.cache_decode_budget is not None else warmup_steps + measure_steps + 16
+    print(
+        f"[certified] cache build start key_cap={key_cap} value_cap={value_cap} "
+        f"max_new_tokens={max_new}",
+        flush=True,
+    )
     _sync()
     t0 = time.perf_counter()
     if args.use_int4_values:
@@ -194,13 +228,20 @@ def measure_certified_decode(
     _sync()
     cache_build_s = time.perf_counter() - t0
     cache_runtime = _runtime_cache_summary(tiered_caches)
+    print(
+        f"[certified] cache build done seconds={cache_build_s:.2f} "
+        f"key_vram_mb={cache_runtime['vram_fp16_key_cache_bytes'] / 1e6:.1f} "
+        f"value_vram_mb={cache_runtime['vram_fp16_value_cache_bytes'] / 1e6:.1f}",
+        flush=True,
+    )
     del past_kv
     gc.collect()
     torch.cuda.empty_cache()
+    print("[certified] cache cleanup done", flush=True)
 
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered_caches,
-        collect_stats=False,
+        collect_stats=bool(args.collect_step_stats),
         append_kv=True,
         top_k_fp16_keys=args.top_k_fp16,
         v_tolerance=args.v_tolerance,
@@ -222,6 +263,7 @@ def measure_certified_decode(
     adapter.reset_runtime_metrics()
 
     cache_position = torch.tensor([prefix_len], dtype=torch.long, device=input_ids.device)
+    print(f"[certified] warmup start steps={warmup_steps}", flush=True)
     with torch.inference_mode():
         for t in range(warmup_steps):
             token_id = input_ids[:, prefix_len + t:prefix_len + t + 1]
@@ -243,10 +285,17 @@ def measure_certified_decode(
         reset_native_profile()
 
     nll = torch.zeros((), dtype=torch.float32, device=input_ids.device)
+    step_aggs: list[dict[str, Any]] = []
+    stats_cursor = 0
     _sync()
     t0 = time.perf_counter()
+    step_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+    print(f"[certified] measure start steps={measure_steps}", flush=True)
     with torch.inference_mode():
         for t in range(warmup_steps, warmup_steps + measure_steps):
+            ev0, ev1 = _event_pair()
+            if ev0 is not None and ev1 is not None:
+                ev0.record()
             token_id = input_ids[:, prefix_len + t:prefix_len + t + 1]
             out = model(
                 input_ids=token_id,
@@ -257,9 +306,16 @@ def measure_certified_decode(
             target = input_ids[:, prefix_len + t + 1]
             nll = nll + F.cross_entropy(out.logits[:, -1, :].float(), target, reduction="sum")
             cache_position.add_(1)
+            if args.collect_step_stats:
+                step_aggs.append(adapter.certified_state.aggregate_step_stats(since=stats_cursor))
+                stats_cursor = len(adapter.certified_state.step_stats)
+            if ev0 is not None and ev1 is not None:
+                ev1.record()
+                step_events.append((ev0, ev1))
             del out
     _sync()
     decode_s = time.perf_counter() - t0
+    step_ms = [float(a.elapsed_time(b)) for a, b in step_events]
     runtime_profile = adapter.runtime_profile_summary(model_forward_ms_total=decode_s * 1000.0)
     phase_timings_us = dict(adapter.certified_state.phase_timings or {}) if args.phase_profile else {}
     phase_timings_ms = {k.removesuffix("_us") + "_ms": float(v) / 1000.0 for k, v in phase_timings_us.items()}
@@ -269,31 +325,110 @@ def measure_certified_decode(
 
         native_profile = native_profile_summary()
     nll_f = float(nll.item())
+    telemetry = _summarize_step_aggs(step_aggs)
 
     adapter.certified_state = None
     adapter.set_mode("dense")
+    print(f"[certified] measure done tok_s={measure_steps / max(decode_s, 1e-9):.2f}", flush=True)
     return {
         "prefill_s": float(prefill_s),
         "cache_build_s": float(cache_build_s),
+        "cache_decode_budget": int(max_new),
         "cache_runtime": cache_runtime,
         "decode_s": float(decode_s),
         "decode_steps": int(measure_steps),
         "decode_tok_s": float(measure_steps / max(decode_s, 1e-9)),
         "decode_ms_per_token": float(1000.0 * decode_s / max(measure_steps, 1)),
+        "decode_step_ms": step_ms,
+        "decode_step_ms_stats": _ms_stats(step_ms),
         "nll": nll_f,
         "perplexity": _ppl(nll_f, measure_steps),
         "runtime_profile": runtime_profile,
         "phase_timings_ms": phase_timings_ms,
         "native_profile": native_profile,
+        "telemetry": telemetry,
+    }
+
+
+def _mean(vals: list[float]) -> float | None:
+    return float(sum(vals) / len(vals)) if vals else None
+
+
+def _summarize_step_aggs(step_aggs: list[dict[str, Any]]) -> dict[str, Any]:
+    if not step_aggs:
+        return {"n_steps": 0}
+    n = len(step_aggs)
+
+    def rate(key: str) -> float:
+        return float(sum(1 for s in step_aggs if s.get(key)) / n)
+
+    def total(key: str) -> int:
+        return int(sum(int(s.get(key, 0) or 0) for s in step_aggs))
+
+    fp16_hits = total("fp16_cache_hits")
+    fp16_misses = total("fp16_cache_misses")
+    fp16_access = fp16_hits + fp16_misses
+    value_hits = total("fp16_value_cache_hits_step")
+    value_misses = total("fp16_value_cache_misses_step")
+    value_access = value_hits + value_misses
+    total_blocks = total("total_blocks")
+    skipped_blocks = total("skipped_blocks")
+    h2d_total = total("h2d_total_bytes")
+    k_star_vals = [float(s["k_star_mean"]) for s in step_aggs if s.get("k_star_mean") is not None]
+    e_key_means = [float(s["e_key_step_mean"]) for s in step_aggs if s.get("e_key_step_mean") is not None]
+    e_key_maxes = [float(s["e_key_step_max"]) for s in step_aggs if s.get("e_key_step_max") is not None]
+    e_val_means = [float(s["e_val_mean"]) for s in step_aggs if s.get("e_val_mean") is not None]
+    e_val_maxes = [float(s["e_val_max"]) for s in step_aggs if s.get("e_val_max") is not None]
+    ranking_heads = total("ranking_heads_total")
+    ranking_fallback = total("ranking_fallback_triggered")
+    value_fallback_blocks = total("value_fallback_blocks")
+    return {
+        "n_steps": n,
+        "int8_tail_fraction": float(skipped_blocks / total_blocks) if total_blocks else None,
+        "k_star_mean": _mean(k_star_vals),
+        "k_star_max": int(max((s.get("k_star_max", 0) or 0) for s in step_aggs)),
+        "rung1_trigger_rate": rate("rung1_fired"),
+        "rung2_trigger_rate": rate("rung2_fired"),
+        "rung3_trigger_rate": rate("rung3_fired"),
+        "rung4_trigger_rate": rate("rung4_fired"),
+        "rung1_expansion_rate": rate("rung1_fired"),
+        "boundary_check_triggers": total("boundary_check_triggered_heads_total"),
+        "score_consistency_violations": total("score_consistency_violation_heads_total"),
+        "ranking_consistency_fire_rate": float(ranking_fallback / ranking_heads) if ranking_heads else 0.0,
+        "e_key_mean": _mean(e_key_means),
+        "e_key_max": float(max(e_key_maxes)) if e_key_maxes else None,
+        "e_val_mean": _mean(e_val_means),
+        "e_val_max": float(max(e_val_maxes)) if e_val_maxes else None,
+        "value_fallback_blocks": value_fallback_blocks,
+        "h2d_bytes_per_step": float(h2d_total / n),
+        "h2d_total_bytes": h2d_total,
+        "fp16_cache_hit_rate": float(fp16_hits / fp16_access) if fp16_access else None,
+        "fp16_cache_total_hits": fp16_hits,
+        "fp16_cache_total_misses": fp16_misses,
+        "fp16_value_cache_hit_rate": float(value_hits / value_access) if value_access else None,
+        "fp16_value_cache_total_hits": value_hits,
+        "fp16_value_cache_total_misses": value_misses,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
+    parser.add_argument("--mode", choices=["both", "dense", "certified"], default="both",
+                        help="Which decode path(s) to run. Certified-only is useful for cache sweeps.")
     parser.add_argument("--context", type=int, default=32768)
     parser.add_argument("--chunk-index", type=int, default=0)
     parser.add_argument("--eval-start", type=float, default=0.5)
+    parser.add_argument("--prefix-len", type=int, default=None,
+                        help="Exact prefilled context length before measured decode. Overrides --eval-start.")
+    parser.add_argument("--chunk-tokens", type=int, default=None,
+                        help="Number of PG-19 tokens to load. Defaults to --context.")
+    parser.add_argument("--cache-decode-budget", type=int, default=None,
+                        help=(
+                            "max_new_tokens used when constructing the certified cache. "
+                            "Defaults to warmup+measure+16; set to the full quality suffix "
+                            "budget to match pg19_perplexity.py allocation."
+                        ))
     parser.add_argument("--warmup-steps", type=int, default=16)
     parser.add_argument("--measure-steps", type=int, default=128)
     parser.add_argument("--top-k-fp16", type=int, default=4)
@@ -311,6 +446,8 @@ def main() -> int:
                         help="Collect synchronized CUDA phase timings inside certified_attention_layer. Slow; profiling only.")
     parser.add_argument("--native-profile", action="store_true",
                         help="Collect native Blackwell partial-vs-reduce timings. Slow; profiling only.")
+    parser.add_argument("--collect-step-stats", action="store_true",
+                        help="Collect certified per-step telemetry for cache/selector/rung summaries. Slow; avoid for pure throughput.")
     parser.add_argument("--output", default="runs/decode_speed_compare.json")
     add_paper_cache_args(parser)
     args = parser.parse_args()
@@ -318,13 +455,14 @@ def main() -> int:
     if args.native_profile:
         os.environ["DOTCACHE_NATIVE_PROFILE"] = "1"
 
-    if args.eval_start <= 0.0 or args.eval_start >= 1.0:
+    if args.prefix_len is None and (args.eval_start <= 0.0 or args.eval_start >= 1.0):
         raise SystemExit("--eval-start must be in (0, 1)")
-    prefix_len = int(args.context * args.eval_start)
+    prefix_len = int(args.prefix_len) if args.prefix_len is not None else int(args.context * args.eval_start)
+    chunk_tokens = int(args.chunk_tokens) if args.chunk_tokens is not None else int(args.context)
     required = prefix_len + args.warmup_steps + args.measure_steps + 1
-    if required > args.context:
+    if required > chunk_tokens:
         raise SystemExit(
-            f"context too short for prefix+warmup+measure+target: need {required}, have {args.context}"
+            f"chunk too short for prefix+warmup+measure+target: need {required}, have {chunk_tokens}"
         )
 
     token = os.environ.get("HF_TOKEN") or None
@@ -352,7 +490,7 @@ def main() -> int:
 
     chunks, book_indices = load_pg19_chunks(
         tokenizer,
-        args.context,
+        chunk_tokens,
         args.chunk_index + 1,
     )
     input_ids = chunks[args.chunk_index].unsqueeze(0).to("cuda")
@@ -363,32 +501,38 @@ def main() -> int:
         flush=True,
     )
 
-    dense = measure_dense_decode(
-        model,
-        input_ids,
-        prefix_len=prefix_len,
-        warmup_steps=args.warmup_steps,
-        measure_steps=args.measure_steps,
-    )
-    gc.collect()
-    torch.cuda.empty_cache()
-    certified = measure_certified_decode(
-        model,
-        adapter,
-        input_ids,
-        args,
-        prefix_len=prefix_len,
-        warmup_steps=args.warmup_steps,
-        measure_steps=args.measure_steps,
-    )
+    dense = None
+    certified = None
+    if args.mode in ("both", "dense"):
+        dense = measure_dense_decode(
+            model,
+            input_ids,
+            prefix_len=prefix_len,
+            warmup_steps=args.warmup_steps,
+            measure_steps=args.measure_steps,
+        )
+        gc.collect()
+        torch.cuda.empty_cache()
+    if args.mode in ("both", "certified"):
+        certified = measure_certified_decode(
+            model,
+            adapter,
+            input_ids,
+            args,
+            prefix_len=prefix_len,
+            warmup_steps=args.warmup_steps,
+            measure_steps=args.measure_steps,
+        )
 
     output = {
         "benchmark": "decode_speed_compare",
         "model": args.model,
+        "mode": args.mode,
         "context_length": args.context,
+        "prefix_len": prefix_len,
+        "chunk_tokens": chunk_tokens,
         "chunk_index": args.chunk_index,
         "book_idx": book_indices[args.chunk_index] if book_indices else None,
-        "prefix_len": prefix_len,
         "warmup_steps": args.warmup_steps,
         "measure_steps": args.measure_steps,
         "measured_token_start": prefix_len + args.warmup_steps,
@@ -396,32 +540,41 @@ def main() -> int:
         "cache_config": cache_config_dict(args),
         "dense": dense,
         "certified": certified,
-        "certified_vs_dense_decode_speed": {
+        "certified_vs_dense_decode_speed": None,
+        "quality_window": None,
+    }
+    if dense is not None and certified is not None:
+        output["certified_vs_dense_decode_speed"] = {
             "tok_s_ratio": float(certified["decode_tok_s"] / max(dense["decode_tok_s"], 1e-9)),
             "slowdown": float(dense["decode_tok_s"] / max(certified["decode_tok_s"], 1e-9)),
             "dense_tok_s": dense["decode_tok_s"],
             "certified_tok_s": certified["decode_tok_s"],
-        },
-        "quality_window": {
+        }
+        output["quality_window"] = {
             "dense_ppl": dense["perplexity"],
             "certified_ppl": certified["perplexity"],
             "ppl_ratio": float(certified["perplexity"] / max(dense["perplexity"], 1e-9)),
             "delta_ppl": float(certified["perplexity"] - dense["perplexity"]),
-        },
-    }
+        }
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(output, indent=2))
     print(json.dumps({
-        "dense_tok_s": dense["decode_tok_s"],
-        "certified_tok_s": certified["decode_tok_s"],
-        "certified_vs_dense_ratio": output["certified_vs_dense_decode_speed"]["tok_s_ratio"],
-        "slowdown": output["certified_vs_dense_decode_speed"]["slowdown"],
-        "dense_ppl": dense["perplexity"],
-        "certified_ppl": certified["perplexity"],
-        "ppl_ratio": output["quality_window"]["ppl_ratio"],
-        "phase_timings_ms": certified.get("phase_timings_ms"),
-        "native_profile": certified.get("native_profile"),
+        "dense_tok_s": dense["decode_tok_s"] if dense is not None else None,
+        "certified_tok_s": certified["decode_tok_s"] if certified is not None else None,
+        "certified_vs_dense_ratio": (
+            output["certified_vs_dense_decode_speed"]["tok_s_ratio"]
+            if output["certified_vs_dense_decode_speed"] is not None else None
+        ),
+        "slowdown": (
+            output["certified_vs_dense_decode_speed"]["slowdown"]
+            if output["certified_vs_dense_decode_speed"] is not None else None
+        ),
+        "dense_ppl": dense["perplexity"] if dense is not None else None,
+        "certified_ppl": certified["perplexity"] if certified is not None else None,
+        "ppl_ratio": output["quality_window"]["ppl_ratio"] if output["quality_window"] is not None else None,
+        "phase_timings_ms": certified.get("phase_timings_ms") if certified is not None else None,
+        "native_profile": certified.get("native_profile") if certified is not None else None,
         "json": str(out_path),
     }, indent=2), flush=True)
     return 0
