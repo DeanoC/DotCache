@@ -1,0 +1,73 @@
+started: 2026-04-27T10:43:25.825295+00:00
+cmd: /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 14 --telemetry-mode summary --certified-warmup-steps 128 --output runs/paper_v2_distributed_8k_slices_10_19/slice_0014/8K/pg19_slice_0014_8K.json --model NousResearch/Meta-Llama-3.1-8B --v-tolerance 0.05 --use-int4-values --group-size 16 --tau-cov 0.995 --k-min 2 --k-max 128 --ranking-fallback --ranking-r 1 --ranking-fallback-mode full --eps-guard 0.01 --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 --fp16-key-cache-blocks 1536 --fp16-value-cache-blocks 1536
+---
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|                                 | 0/291 [00:00<?, ?it/s]Loading weights:   0%|                         | 1/291 [00:00<01:28,  3.28it/s]Loading weights:   1%|▏                        | 2/291 [00:00<01:26,  3.34it/s]Loading weights:   1%|▎                        | 4/291 [00:00<00:45,  6.33it/s]Loading weights:   2%|▍                        | 5/291 [00:00<00:43,  6.54it/s]Loading weights:   2%|▌                        | 6/291 [00:01<00:43,  6.62it/s]Loading weights:   4%|█                       | 13/291 [00:01<00:17, 15.93it/s]Loading weights:   5%|█▏                      | 15/291 [00:01<00:22, 12.24it/s]Loading weights:   8%|█▊                      | 22/291 [00:01<00:14, 17.99it/s]Loading weights:   8%|█▉                      | 24/291 [00:02<00:19, 13.91it/s]Loading weights:  11%|██▌                     | 31/291 [00:02<00:13, 19.32it/s]Loading weights:  12%|██▊                     | 34/291 [00:02<00:15, 16.16it/s]Loading weights:  14%|███▎                    | 40/291 [00:02<00:12, 19.41it/s]Loading weights:  15%|███▌                    | 43/291 [00:03<00:15, 16.20it/s]Loading weights:  17%|████                    | 49/291 [00:03<00:12, 19.28it/s]Loading weights:  18%|████▎                   | 52/291 [00:03<00:14, 16.31it/s]Loading weights:  20%|████▊                   | 58/291 [00:03<00:11, 19.72it/s]Loading weights:  21%|█████                   | 61/291 [00:04<00:13, 16.52it/s]Loading weights:  23%|█████▌                  | 67/291 [00:04<00:11, 19.63it/s]Loading weights:  24%|█████▊                  | 70/291 [00:04<00:13, 16.43it/s]Loading weights:  26%|██████▎                 | 76/291 [00:04<00:11, 19.53it/s]Loading weights:  27%|██████▌                 | 79/291 [00:05<00:12, 16.49it/s]Loading weights:  29%|███████                 | 85/291 [00:05<00:10, 19.52it/s]Loading weights:  30%|███████▎                | 88/291 [00:05<00:12, 16.47it/s]Loading weights:  32%|███████▊                | 94/291 [00:05<00:10, 19.56it/s]Loading weights:  33%|████████                | 97/291 [00:06<00:11, 16.52it/s]Loading weights:  35%|████████▏              | 103/291 [00:06<00:09, 19.66it/s]Loading weights:  36%|████████▍              | 106/291 [00:06<00:11, 16.55it/s]Loading weights:  38%|████████▊              | 112/291 [00:06<00:09, 19.44it/s]Loading weights:  40%|█████████              | 115/291 [00:07<00:10, 16.47it/s]Loading weights:  42%|█████████▌             | 121/291 [00:07<00:08, 19.55it/s]Loading weights:  43%|█████████▊             | 124/291 [00:07<00:10, 16.42it/s]Loading weights:  45%|██████████▎            | 130/291 [00:07<00:08, 19.69it/s]Loading weights:  46%|██████████▌            | 133/291 [00:08<00:09, 16.54it/s]Loading weights:  48%|██████████▉            | 139/291 [00:08<00:07, 19.49it/s]Loading weights:  49%|███████████▏           | 142/291 [00:08<00:09, 16.37it/s]Loading weights:  51%|███████████▋           | 148/291 [00:08<00:08, 17.61it/s]Loading weights:  52%|███████████▊           | 150/291 [00:09<00:10, 14.06it/s]Loading weights:  54%|████████████▍          | 157/291 [00:09<00:07, 18.22it/s]Loading weights:  55%|████████████▌          | 159/291 [00:09<00:09, 14.47it/s]Loading weights:  57%|█████████████          | 166/291 [00:09<00:06, 19.94it/s]Loading weights:  58%|█████████████▎         | 169/291 [00:10<00:07, 16.56it/s]Loading weights:  60%|█████████████▊         | 175/291 [00:10<00:05, 19.58it/s]Loading weights:  61%|██████████████         | 178/291 [00:10<00:06, 16.52it/s]Loading weights:  63%|██████████████▌        | 184/291 [00:10<00:05, 19.87it/s]Loading weights:  64%|██████████████▊        | 187/291 [00:11<00:06, 16.43it/s]Loading weights:  66%|███████████████▎       | 193/291 [00:11<00:05, 19.30it/s]Loading weights:  67%|███████████████▍       | 196/291 [00:11<00:05, 16.36it/s]Loading weights:  69%|███████████████▉       | 202/291 [00:11<00:04, 19.67it/s]Loading weights:  70%|████████████████▏      | 205/291 [00:12<00:05, 16.28it/s]Loading weights:  73%|████████████████▋      | 211/291 [00:12<00:03, 20.19it/s]Loading weights:  74%|████████████████▉      | 214/291 [00:12<00:04, 16.73it/s]Loading weights:  76%|█████████████████▍     | 220/291 [00:12<00:03, 19.58it/s]Loading weights:  77%|█████████████████▋     | 223/291 [00:13<00:04, 16.36it/s]Loading weights:  79%|██████████████████     | 229/291 [00:13<00:03, 19.44it/s]Loading weights:  80%|██████████████████▎    | 232/291 [00:13<00:03, 15.92it/s]Loading weights:  82%|██████████████████▊    | 238/291 [00:13<00:02, 19.71it/s]Loading weights:  83%|███████████████████    | 241/291 [00:14<00:03, 16.44it/s]Loading weights:  85%|███████████████████▌   | 247/291 [00:14<00:02, 20.30it/s]Loading weights:  86%|███████████████████▊   | 250/291 [00:14<00:02, 16.63it/s]Loading weights:  88%|████████████████████▏  | 256/291 [00:14<00:01, 19.71it/s]Loading weights:  89%|████████████████████▍  | 259/291 [00:15<00:01, 16.32it/s]Loading weights:  91%|████████████████████▉  | 265/291 [00:15<00:01, 19.66it/s]Loading weights:  92%|█████████████████████▏ | 268/291 [00:15<00:01, 16.54it/s]Loading weights:  94%|█████████████████████▋ | 274/291 [00:15<00:00, 19.99it/s]Loading weights:  95%|█████████████████████▉ | 277/291 [00:16<00:00, 16.49it/s]Loading weights:  97%|██████████████████████▎| 283/291 [00:16<00:00, 19.96it/s]Loading weights:  98%|██████████████████████▌| 286/291 [00:16<00:00, 16.70it/s]Loading weights: 100%|███████████████████████| 291/291 [00:16<00:00, 17.41it/s]
+Model: 9.09 GB
+
+Loading PG-19 test set: 1 chunks × 8192 tokens (start=14)...
+Loaded 1 chunks in 3.2s
+
+==================================================
+Dense perplexity
+==================================================
+  Dense [1/1]: ppl=15.71
+Dense: ppl=15.71 (8191 tokens, 1.5s)
+  bits/token: 3.9733 (95% bootstrap CI [3.9733, 3.9733], n=1 chunks)
+
+==================================================
+Certified perplexity
+==================================================
+  Certified [1/1] prefill_ms=259.5
+  Certified [1/1] prefix_nll_ms=18.5
+  Certified [1/1] warmup_steps=128 warmup_ms=29686.5
+  Certified [1/1] cache_build_ms=941.8
+  Certified [1/1] cache_cleanup_ms=1143.5
+    certified progress chunk=1/1 tokens=128/4095 tok/s=5.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=256/4095 tok/s=5.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=384/4095 tok/s=5.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=512/4095 tok/s=5.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=640/4095 tok/s=5.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=768/4095 tok/s=5.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=896/4095 tok/s=5.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1024/4095 tok/s=5.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1152/4095 tok/s=5.06 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1280/4095 tok/s=5.05 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1408/4095 tok/s=5.03 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1536/4095 tok/s=5.02 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1664/4095 tok/s=5.01 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1792/4095 tok/s=5.00 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1920/4095 tok/s=5.00 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2048/4095 tok/s=4.99 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2176/4095 tok/s=4.98 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2304/4095 tok/s=4.97 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2432/4095 tok/s=4.96 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2560/4095 tok/s=4.96 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2688/4095 tok/s=4.94 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2816/4095 tok/s=4.93 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2944/4095 tok/s=4.92 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3072/4095 tok/s=4.91 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3200/4095 tok/s=4.90 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3328/4095 tok/s=4.89 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3456/4095 tok/s=4.88 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3584/4095 tok/s=4.88 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3712/4095 tok/s=4.87 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3840/4095 tok/s=4.86 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3968/4095 tok/s=4.85 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+  Certified [1/1]: chunk_ppl=15.73, suffix_ppl=14.27, running_ppl=15.73, skip=0.000 (overall 0.000)
+Certified: ppl=15.73 (8190 tokens, 876.0s)
+  bits/token (full): 3.9758 (95% CI [3.9758, 3.9758])
+  bits/token (certified suffix only): 3.8353 (95% CI [3.8353, 3.8353])
+
+==================================================
+Summary
+==================================================
+Context: 8192 tokens, 1 chunks
+Dense perplexity:     15.7071
+Certified perplexity: 15.7338
+Ratio (cert/dense):   1.001702
+Delta:                +0.0267
+Per-chunk Δppl:       +0.0267 (95% CI [+0.0267, +0.0267], n=1)
+
+JSON -> runs/paper_v2_distributed_8k_slices_10_19/slice_0014/8K/pg19_slice_0014_8K.json
