@@ -26,6 +26,7 @@ from run_experiment_v2_sweep import MODEL, _common_cert_args  # noqa: E402
 CONTEXTS = [8192, 32768, 65536, 131072]
 CACHE_SWEEP_64K = [0, 64, 256, 512, 1024, 2048, 3072, 3584, 4096, "full_mirror"]
 CACHE_SWEEP_128K = [0, 256, 1024, 2048, 4096, 5120, 6144, 7168, 8192, "full_mirror"]
+CAP2048 = 2048
 CONFIG = {
     "k_max": 128,
     "tau_cov": 0.995,
@@ -179,6 +180,15 @@ def _capacity_arg(context: int, capacity: int | str) -> int:
 def _telemetry(raw: dict[str, Any]) -> dict[str, Any]:
     cert = raw.get("certified") or {}
     return cert.get("telemetry") or {}
+
+
+def _cache_hit_rate(tel: dict[str, Any], *, context: int, cap: int) -> float | None:
+    hit_rate = tel.get("fp16_cache_hit_rate")
+    if hit_rate is not None:
+        return float(hit_rate)
+    if float(tel.get("h2d_bytes_per_step") or 0.0) == 0.0 and cap >= _context_blocks(context):
+        return 1.0
+    return None
 
 
 def run_context_scaling(args: argparse.Namespace) -> None:
@@ -394,7 +404,14 @@ def run_cache_sweep(args: argparse.Namespace, *, context: int, capacities: list[
     print(f"wrote {out}")
 
 
-def _telemetry_result(data: dict[str, Any], *, raw: Path, cache_blocks: int, source: str) -> dict[str, Any]:
+def _telemetry_result(
+    data: dict[str, Any],
+    *,
+    raw: Path,
+    cache_blocks: int,
+    source: str,
+    cache_mode: str = "full-bounded",
+) -> dict[str, Any]:
     tel = _telemetry(data)
     return {
         "source": source,
@@ -413,9 +430,10 @@ def _telemetry_result(data: dict[str, Any], *, raw: Path, cache_blocks: int, sou
         "k_star_max": tel.get("k_star_max"),
         "int8_tail_fraction_mean": tel.get("int8_tail_fraction"),
         "h2d_bytes_per_step": tel.get("h2d_bytes_per_step"),
+        "cache_hit_rate": _cache_hit_rate(tel, context=65536, cap=cache_blocks),
         "fp16_key_cache_blocks": cache_blocks,
         "fp16_value_cache_blocks": cache_blocks,
-        "cache_mode": "full-bounded",
+        "cache_mode": cache_mode,
         "raw": str(raw),
     }
 
@@ -474,9 +492,272 @@ def run_memory(args: argparse.Namespace) -> None:
     print(f"wrote {out}")
 
 
+def run_context_scaling_cap2048(args: argparse.Namespace) -> None:
+    raw_dir = args.output_dir / "raw" / "context_scaling_cap2048"
+    results: dict[str, Any] = {}
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    for ctx in CONTEXTS:
+        raw = raw_dir / f"context_{ctx}_cap2048.json"
+        if not raw.exists() or args.force:
+            _run(
+                _compare_cmd(
+                    context=ctx,
+                    steps=500,
+                    warmup=8,
+                    out_json=raw,
+                    key_cap=CAP2048,
+                    value_cap=CAP2048,
+                    collect_step_stats=True,
+                ),
+                cwd=REPO,
+                env=env,
+                log=raw.with_suffix(".log"),
+            )
+        data = _load(raw)
+        tel = _telemetry(data)
+        dense_ms = _ms_mean(data, "dense")
+        cert_ms = _ms_mean(data, "certified")
+        results[str(ctx)] = {
+            "dense_ms_mean": dense_ms,
+            "dense_ms_std": _ms_std(data, "dense"),
+            "cert_ms_mean": cert_ms,
+            "cert_ms_std": _ms_std(data, "certified"),
+            "ratio": cert_ms / max(dense_ms, 1e-9),
+            "int8_tail_fraction": tel.get("int8_tail_fraction"),
+            "k_star_mean": tel.get("k_star_mean"),
+            "rung1_expansion_rate": tel.get("rung1_expansion_rate"),
+            "cache_hit_rate": _cache_hit_rate(tel, context=ctx, cap=CAP2048),
+            "h2d_bytes_per_step": tel.get("h2d_bytes_per_step"),
+            "fp16_key_cache_blocks": CAP2048,
+            "fp16_value_cache_blocks": CAP2048,
+            "cache_mode": "capped-2048",
+            "raw": str(raw),
+        }
+    out = args.output_dir / "perf_context_scaling_cap2048.json"
+    out.write_text(json.dumps(_envelope("context_scaling_cap2048", results), indent=2), encoding="utf-8")
+    print(f"wrote {out}")
+
+
+def run_phase_breakdown_cap2048(args: argparse.Namespace) -> None:
+    raw = args.output_dir / "raw" / "phase_breakdown_64k_cap2048.json"
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    if not raw.exists() or args.force:
+        _run(
+            _compare_cmd(
+                context=65536,
+                steps=500,
+                warmup=8,
+                out_json=raw,
+                key_cap=CAP2048,
+                value_cap=CAP2048,
+                collect_step_stats=True,
+                phase_profile=True,
+                native_profile=True,
+            ),
+            cwd=REPO,
+            env=env,
+            log=raw.with_suffix(".log"),
+        )
+    data = _load(raw)
+    phase = data["certified"].get("phase_timings_ms", {})
+    tel = _telemetry(data)
+    dense_ms = _ms_mean(data, "dense")
+    cert_ms = _ms_mean(data, "certified")
+    denom = cert_ms * float(data.get("measure_steps", 500))
+    attention_total = sum(float(v) for v in phase.values())
+    denom = denom or attention_total or 1.0
+    results = {
+        "phase1_int8_scoring_pct": 100.0 * float(phase.get("phase1_int8_scoring_ms", 0.0)) / denom,
+        "phase2_fp16_attend_pct": 100.0 * float(phase.get("phase2_fused_attend_ms", 0.0)) / denom,
+        "adaptive_selection_pct": 100.0 * float(phase.get("adaptive_selection_ms", 0.0)) / denom,
+        "value_decompression_pct": 100.0 * float(phase.get("value_check_ms", 0.0)) / denom,
+        "ranking_check_pct": 100.0 * float(phase.get("ranking_check_ms", 0.0)) / denom,
+        "h2d_pagein_pct": 100.0 * float(phase.get("h2d_pagein_ms", 0.0)) / denom,
+        "rung3_dense_recompute_pct": 100.0 * float(phase.get("rung3_dense_recompute_ms", 0.0)) / denom,
+        "non_attention_pct": 100.0 * max(denom - attention_total, 0.0) / denom,
+        "phase_timings_ms": phase,
+        "native_profile": data["certified"].get("native_profile"),
+        "total_cert_ms_mean": cert_ms,
+        "total_dense_ms_mean": dense_ms,
+        "overhead_ms": cert_ms - dense_ms,
+        "cache_hit_rate": _cache_hit_rate(tel, context=65536, cap=CAP2048),
+        "h2d_bytes_per_step": tel.get("h2d_bytes_per_step"),
+        "fp16_key_cache_blocks": CAP2048,
+        "fp16_value_cache_blocks": CAP2048,
+        "cache_mode": "capped-2048",
+        "raw": str(raw),
+    }
+    out = args.output_dir / "perf_phase_breakdown_64k_cap2048.json"
+    out.write_text(json.dumps(_envelope("phase_breakdown_64k_cap2048", results), indent=2), encoding="utf-8")
+    print(f"wrote {out}")
+
+
+def run_memory_cap2048(args: argparse.Namespace) -> None:
+    raw = args.output_dir / "raw" / "perf_memory_cap2048_raw.json"
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    if not raw.exists() or args.force:
+        _run(
+            [
+                sys.executable,
+                str(REPO / "benchmarks" / "paper" / "measure_perf_memory.py"),
+                "--contexts",
+                *[str(c) for c in CONTEXTS],
+                "--output",
+                str(raw),
+                *_cert_args(65536, key_cap=CAP2048, value_cap=CAP2048),
+            ],
+            cwd=REPO,
+            env=env,
+            log=raw.with_suffix(".log"),
+        )
+    out = args.output_dir / "perf_memory_cap2048.json"
+    out.write_text(json.dumps(_envelope("memory_cap2048", _load(raw)), indent=2), encoding="utf-8")
+    print(f"wrote {out}")
+
+
+def run_pg19_telemetry_cap2048(args: argparse.Namespace) -> None:
+    context = 65536
+    raw = args.output_dir / "raw" / "telemetry_64k_pg19_cap2048.json"
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    if not raw.exists() or args.force:
+        _run(
+            _compare_cmd(
+                context=context,
+                steps=1000,
+                warmup=8,
+                out_json=raw,
+                key_cap=CAP2048,
+                value_cap=CAP2048,
+                collect_step_stats=True,
+                mode="certified",
+            ),
+            cwd=REPO,
+            env=env,
+            log=raw.with_suffix(".log"),
+        )
+    out = args.output_dir / "perf_telemetry_64k_cap2048.json"
+    out.write_text(
+        json.dumps(
+            _envelope(
+                "telemetry_64k_pg19_cap2048",
+                _telemetry_result(
+                    _load(raw),
+                    raw=raw,
+                    cache_blocks=CAP2048,
+                    source="pg19",
+                    cache_mode="capped-2048",
+                ),
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"wrote {out}")
+
+
+def _summarize_niah_cap2048(raw: Path, page: Path) -> dict[str, Any]:
+    niah = _load(raw)
+    page_data = _load(page)
+    steps = page_data.get("per_step", [])
+    summary = page_data.get("summary", {})
+    cert = (niah.get("results", {}).get("certified") or [{}])[0]
+    dense = (niah.get("results", {}).get("dense") or [{}])[0]
+    heads = sum(int(s.get("ranking_heads_total", 0) or 0) for s in steps)
+    rank = sum(int(s.get("ranking_fallback_triggered", 0) or 0) for s in steps)
+
+    def vals(key: str) -> list[float]:
+        return [float(s[key]) for s in steps if s.get(key) is not None]
+
+    def mean(xs: list[float]) -> float | None:
+        return float(sum(xs) / len(xs)) if xs else None
+
+    e_key_maxes = vals("e_key_step_max")
+    e_key_means = vals("e_key_step_mean")
+    e_val_maxes = vals("e_val_max")
+    e_val_means = vals("e_val_mean")
+    skip_rates = vals("skip_rate")
+    boundary = sum(int(s.get("boundary_check_triggered_heads_total", 0) or 0) for s in steps)
+    violations = sum(int(s.get("score_consistency_violation_heads_total", 0) or 0) for s in steps)
+    return {
+        "source": "niah",
+        "trial_count": 1,
+        "dense_correct": bool(dense.get("correct")),
+        "certified_correct": bool(cert.get("correct")),
+        "rung1_trigger_rate": summary.get("rung1_rate"),
+        "rung2_trigger_rate": summary.get("rung2_rate"),
+        "rung3_trigger_rate": summary.get("rung3_rate"),
+        "rung4_trigger_rate": summary.get("rung4_rate"),
+        "ranking_consistency_fire_rate": (rank / heads) if heads else None,
+        "e_key_max": max(e_key_maxes) if e_key_maxes else cert.get("e_key_step_max"),
+        "e_key_mean": mean(e_key_means) if e_key_means else cert.get("e_key_step_mean"),
+        "e_val_max": max(e_val_maxes) if e_val_maxes else cert.get("e_val_max"),
+        "e_val_mean": mean(e_val_means) if e_val_means else cert.get("e_val_mean"),
+        "boundary_check_triggers": boundary or cert.get("boundary_check_triggered_heads_total"),
+        "score_consistency_violations": violations,
+        "k_star_mean": summary.get("k_star_mean") if summary.get("k_star_mean") is not None else cert.get("k_star_mean"),
+        "k_star_max": summary.get("k_star_max") if summary.get("k_star_max") is not None else cert.get("k_star_max"),
+        "int8_tail_fraction_mean": mean(skip_rates),
+        "h2d_bytes_per_step": summary.get("h2d_total_bytes_mean"),
+        "cache_hit_rate": summary.get("fp16_cache_hit_rate"),
+        "fp16_key_cache_blocks": CAP2048,
+        "fp16_value_cache_blocks": CAP2048,
+        "cache_mode": "capped-2048",
+        "raw": str(raw),
+        "pagein_raw": str(page),
+    }
+
+
+def run_niah_telemetry_cap2048(args: argparse.Namespace) -> None:
+    raw = args.output_dir / "raw" / "telemetry_64k_niah_cap2048.json"
+    page = args.output_dir / "raw" / "telemetry_64k_niah_cap2048.pagein.json"
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    if not raw.exists() or args.force:
+        _run(
+            [
+                sys.executable,
+                str(REPO / "benchmarks" / "paper" / "niah.py"),
+                "--contexts",
+                "65536",
+                "--needles",
+                "10",
+                "--trial-start",
+                "0",
+                "--trial-count",
+                "1",
+                "--output",
+                str(raw),
+                "--pagein-telemetry",
+                "--telemetry-output",
+                str(page),
+                *_cert_args(65536, key_cap=CAP2048, value_cap=CAP2048),
+            ],
+            cwd=REPO,
+            env=env,
+            log=raw.with_suffix(".log"),
+        )
+    out = args.output_dir / "perf_telemetry_64k_niah_cap2048.json"
+    out.write_text(
+        json.dumps(_envelope("telemetry_64k_niah_cap2048", _summarize_niah_cap2048(raw, page)), indent=2),
+        encoding="utf-8",
+    )
+    print(f"wrote {out}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("which", choices=["p1", "p2", "p3", "p4", "p5", "p6", "p7_pg19"])
+    parser.add_argument(
+        "which",
+        choices=[
+            "p1", "p2", "p3", "p4", "p5", "p6", "p7_pg19",
+            "r1_cap2048", "r2_cap2048", "r3_cap2048",
+            "r4_pg19_cap2048", "r4_niah_cap2048",
+        ],
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("runs/perf_single_machine"))
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
@@ -507,6 +788,16 @@ def main() -> int:
         run_pg19_telemetry(args)
     elif args.which == "p6":
         run_memory(args)
+    elif args.which == "r1_cap2048":
+        run_context_scaling_cap2048(args)
+    elif args.which == "r2_cap2048":
+        run_phase_breakdown_cap2048(args)
+    elif args.which == "r3_cap2048":
+        run_memory_cap2048(args)
+    elif args.which == "r4_pg19_cap2048":
+        run_pg19_telemetry_cap2048(args)
+    elif args.which == "r4_niah_cap2048":
+        run_niah_telemetry_cap2048(args)
     return 0
 
 

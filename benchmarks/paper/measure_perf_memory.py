@@ -17,7 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pg19_perplexity import load_pg19_chunks
-from _provenance import add_paper_cache_args, add_paper_section7_args, configure_paper_runtime_defaults
+from _provenance import (
+    add_paper_cache_args,
+    add_paper_section7_args,
+    configure_paper_runtime_defaults,
+    resolve_fp16_key_cache_blocks,
+    resolve_fp16_value_cache_blocks,
+)
 
 
 def _sync() -> None:
@@ -115,16 +121,22 @@ def main() -> int:
         past_kv = dense_out.past_key_values
         dense_bytes = _past_kv_bytes(past_kv)
         layer_ids = list(range(model.config.num_hidden_layers))
-        context_blocks = (context + 16 - 1) // 16
-        cap = context_blocks + 1024
+        key_cap = resolve_fp16_key_cache_blocks(
+            args.fp16_key_cache_blocks,
+            os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS"),
+        )
+        value_cap = resolve_fp16_value_cache_blocks(
+            args.fp16_value_cache_blocks,
+            os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS"),
+        )
         max_new = 16
         tiered_caches = create_tiered_cache_int4v_from_model(
             past_kv,
             layer_ids,
             group_size=args.group_size,
             max_new_tokens=max_new,
-            fp16_key_cache_capacity=cap,
-            fp16_value_cache_capacity=cap,
+            fp16_key_cache_capacity=key_cap,
+            fp16_value_cache_capacity=value_cap,
         )
         _sync()
         mem = _cache_memory(tiered_caches)
@@ -139,9 +151,9 @@ def main() -> int:
             "cert_system_ram_mb": mem["cert_system_ram_bytes"] / 1e6,
             "vram_ratio": mem["cert_total_vram_bytes"] / max(dense_bytes, 1),
             "tier1_ratio": mem["cert_tier1_vram_bytes"] / max(dense_bytes, 1),
-            "fp16_key_cache_blocks": cap,
-            "fp16_value_cache_blocks": cap,
-            "cache_mode": "full-bounded",
+            "fp16_key_cache_blocks": key_cap if key_cap is not None else "full",
+            "fp16_value_cache_blocks": value_cap if value_cap is not None else "full",
+            "cache_mode": "full" if key_cap is None or value_cap is None else f"capped-{key_cap}",
         }
         del tiered_caches, past_kv, dense_out, input_ids
         gc.collect()
