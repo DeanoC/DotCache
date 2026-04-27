@@ -86,15 +86,20 @@ def build_jobs(
     benches: list[str],
     output_dir: Path,
     cache_mode: str,
+    niah_trials_per_slice: int = 1,
 ) -> list[dict[str, Any]]:
     if mode == "context" and len(contexts) != 1:
         raise ValueError("--mode context requires exactly one --context/--contexts value")
+    if niah_trials_per_slice < 1:
+        raise ValueError("--niah-trials-per-slice must be >= 1")
     if "niah" in benches:
         niah_trials = len(NIAH_DEPTHS) * NIAH_NEEDLES
-        if slice_id < 0 or slice_id >= niah_trials:
+        niah_trial_start = slice_id * niah_trials_per_slice
+        if slice_id < 0 or niah_trial_start >= niah_trials:
             raise ValueError(
-                f"NIAH slice id must be in [0, {niah_trials - 1}] for "
-                f"{len(NIAH_DEPTHS)} depths x {NIAH_NEEDLES} needles"
+                f"NIAH slice id must map into [0, {niah_trials - 1}] for "
+                f"{len(NIAH_DEPTHS)} depths x {NIAH_NEEDLES} needles with "
+                f"--niah-trials-per-slice={niah_trials_per_slice}"
             )
     selected_contexts = contexts if mode == "line" else [contexts[0]]
 
@@ -117,11 +122,13 @@ def build_jobs(
                     *common,
                 ]
             elif bench == "niah":
+                niah_trial_start = slice_id * niah_trials_per_slice
                 cmd = [
                     sys.executable, str(PAPER / "niah.py"),
                     "--contexts", str(context),
                     "--needles", str(NIAH_NEEDLES),
-                    "--trial-index", str(slice_id),
+                    "--trial-start", str(niah_trial_start),
+                    "--trial-count", str(niah_trials_per_slice),
                     "--output", str(out_json),
                     *common,
                 ]
@@ -238,6 +245,8 @@ def main() -> int:
     parser.add_argument("--benches", nargs="+", choices=DEFAULT_BENCHES, default=DEFAULT_BENCHES)
     parser.add_argument("--cache-mode", choices=["full-bounded", "v2-bounded", "full-mirror"],
                         default="full-bounded")
+    parser.add_argument("--niah-trials-per-slice", type=int, default=1,
+                        help="Number of paired NIAH trials to run for each distributed slice.")
     parser.add_argument("--output-dir", type=Path, default=Path("runs/paper_v2_distributed"))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
@@ -259,6 +268,7 @@ def main() -> int:
             benches=list(args.benches),
             output_dir=args.output_dir,
             cache_mode=args.cache_mode,
+            niah_trials_per_slice=args.niah_trials_per_slice,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -268,6 +278,7 @@ def main() -> int:
         "mode": args.mode,
         "model": MODEL,
         "cache_mode": args.cache_mode,
+        "niah_trials_per_slice": int(args.niah_trials_per_slice),
         "created": dt.datetime.now(dt.timezone.utc).isoformat(),
         "provenance": _manifest_provenance(),
         "jobs": [{k: v for k, v in j.items() if k != "command"} for j in jobs],
