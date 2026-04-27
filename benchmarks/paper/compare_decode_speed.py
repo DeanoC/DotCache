@@ -374,6 +374,8 @@ def _summarize_step_aggs(step_aggs: list[dict[str, Any]]) -> dict[str, Any]:
     total_blocks = total("total_blocks")
     skipped_blocks = total("skipped_blocks")
     h2d_total = total("h2d_total_bytes")
+    h2d_key_total = total("h2d_key_bytes")
+    h2d_value_total = total("h2d_value_bytes")
     k_star_vals = [float(s["k_star_mean"]) for s in step_aggs if s.get("k_star_mean") is not None]
     e_key_means = [float(s["e_key_step_mean"]) for s in step_aggs if s.get("e_key_step_mean") is not None]
     e_key_maxes = [float(s["e_key_step_max"]) for s in step_aggs if s.get("e_key_step_max") is not None]
@@ -401,7 +403,11 @@ def _summarize_step_aggs(step_aggs: list[dict[str, Any]]) -> dict[str, Any]:
         "e_val_max": float(max(e_val_maxes)) if e_val_maxes else None,
         "value_fallback_blocks": value_fallback_blocks,
         "h2d_bytes_per_step": float(h2d_total / n),
+        "h2d_key_bytes_per_step": float(h2d_key_total / n),
+        "h2d_value_bytes_per_step": float(h2d_value_total / n),
         "h2d_total_bytes": h2d_total,
+        "h2d_key_total_bytes": h2d_key_total,
+        "h2d_value_total_bytes": h2d_value_total,
         "fp16_cache_hit_rate": float(fp16_hits / fp16_access) if fp16_access else None,
         "fp16_cache_total_hits": fp16_hits,
         "fp16_cache_total_misses": fp16_misses,
