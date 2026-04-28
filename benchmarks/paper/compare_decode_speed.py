@@ -307,7 +307,13 @@ def measure_certified_decode(
             nll = nll + F.cross_entropy(out.logits[:, -1, :].float(), target, reduction="sum")
             cache_position.add_(1)
             if args.collect_step_stats:
-                step_aggs.append(adapter.certified_state.aggregate_step_stats(since=stats_cursor))
+                step_agg = adapter.certified_state.aggregate_step_stats(since=stats_cursor)
+                if args.fail_on_value_cache_overflow and int(step_agg.get("fp16_value_cache_overflow_step", 0) or 0) > 0:
+                    raise RuntimeError(
+                        "FP16 value cache overflowed in at least one layer during measured decode; "
+                        "increase --fp16-value-cache-blocks or disable --fail-on-value-cache-overflow"
+                    )
+                step_aggs.append(step_agg)
                 stats_cursor = len(adapter.certified_state.step_stats)
             if ev0 is not None and ev1 is not None:
                 ev1.record()
@@ -384,6 +390,15 @@ def _summarize_step_aggs(step_aggs: list[dict[str, Any]]) -> dict[str, Any]:
     ranking_heads = total("ranking_heads_total")
     ranking_fallback = total("ranking_fallback_triggered")
     value_fallback_blocks = total("value_fallback_blocks")
+    value_overflow_layer_steps = total("fp16_value_cache_overflow_step")
+    value_overflow_decode_steps = sum(
+        1 for s in step_aggs if int(s.get("fp16_value_cache_overflow_step", 0) or 0) > 0
+    )
+    value_needed_vals = [
+        int(s["fp16_value_cache_needed_blocks_step"])
+        for s in step_aggs
+        if s.get("fp16_value_cache_needed_blocks_step") is not None
+    ]
     return {
         "n_steps": n,
         "int8_tail_fraction": float(skipped_blocks / total_blocks) if total_blocks else None,
@@ -414,6 +429,12 @@ def _summarize_step_aggs(step_aggs: list[dict[str, Any]]) -> dict[str, Any]:
         "fp16_value_cache_hit_rate": float(value_hits / value_access) if value_access else None,
         "fp16_value_cache_total_hits": value_hits,
         "fp16_value_cache_total_misses": value_misses,
+        "fp16_value_cache_overflow_steps": value_overflow_decode_steps,
+        "fp16_value_cache_overflow_rate": float(value_overflow_decode_steps / n),
+        "fp16_value_cache_overflow_layer_steps": value_overflow_layer_steps,
+        "fp16_value_cache_overflow_layers_per_step": float(value_overflow_layer_steps / n),
+        "fp16_value_cache_needed_blocks_mean": _mean([float(v) for v in value_needed_vals]),
+        "fp16_value_cache_needed_blocks_max": int(max(value_needed_vals)) if value_needed_vals else 0,
     }
 
 
@@ -454,6 +475,8 @@ def main() -> int:
                         help="Collect native Blackwell partial-vs-reduce timings. Slow; profiling only.")
     parser.add_argument("--collect-step-stats", action="store_true",
                         help="Collect certified per-step telemetry for cache/selector/rung summaries. Slow; avoid for pure throughput.")
+    parser.add_argument("--fail-on-value-cache-overflow", action="store_true",
+                        help="Abort measured certified decode if bounded FP16 value scratch overflows.")
     parser.add_argument("--output", default="runs/decode_speed_compare.json")
     add_paper_cache_args(parser)
     args = parser.parse_args()

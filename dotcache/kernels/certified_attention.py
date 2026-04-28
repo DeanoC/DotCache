@@ -2059,6 +2059,7 @@ def certified_attention_layer(
             if force_trailing_value_fp16:
                 value_fp16_mask[:, n_qblocks:n_active_blocks_hybrid] = 1
             use_one_step_value_pagein = False
+            dynamic_one_step_value_scratch = False
             if (
                 cache.values_fp16_gpu is not None
                 and cache.fp16_value_cache_capacity is None
@@ -2186,6 +2187,7 @@ def certified_attention_layer(
                         use_one_step_value_pagein = True
 
                     if (not gpu_mask_pagein) and use_one_step_value_pagein:
+                        dynamic_one_step_value_scratch = True
                         value_block_slots[unsafe_block_ids] = torch.arange(
                             n_value_slots,
                             dtype=torch.int32,
@@ -2256,7 +2258,11 @@ def certified_attention_layer(
                         certified_blackwell_available,
                         hybrid_mixedv_split_k_cuda,
                     )
-                    if certified_blackwell_available():
+                    # The overflow path builds a compact per-step FP16 value
+                    # scratch. Keep that on the reference split-K backend until
+                    # the native kernel's compact value-slot path is proven at
+                    # paper scale; cache capacity must not affect quality.
+                    if certified_blackwell_available() and not dynamic_one_step_value_scratch:
                         mixed_attend = hybrid_mixedv_split_k_cuda
                         mixed_attend_is_native = True
                 except Exception:
