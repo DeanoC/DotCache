@@ -1,0 +1,886 @@
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|                                 | 0/291 [00:00<?, ?it/s]Loading weights:   0%|                         | 1/291 [00:00<01:21,  3.56it/s]Loading weights:   1%|▏                        | 2/291 [00:00<01:21,  3.56it/s]Loading weights:   1%|▎                        | 4/291 [00:00<00:39,  7.27it/s]Loading weights:   2%|▌                        | 6/291 [00:00<00:33,  8.44it/s]Loading weights:   4%|█                       | 13/291 [00:00<00:13, 20.91it/s]Loading weights:   5%|█▎                      | 16/291 [00:01<00:14, 18.36it/s]Loading weights:   8%|█▊                      | 22/291 [00:01<00:10, 25.51it/s]Loading weights:   9%|██▏                     | 26/291 [00:01<00:11, 23.59it/s]Loading weights:  11%|██▌                     | 31/291 [00:01<00:09, 27.80it/s]Loading weights:  12%|██▉                     | 35/291 [00:01<00:10, 24.86it/s]Loading weights:  14%|███▎                    | 40/291 [00:01<00:08, 28.37it/s]Loading weights:  15%|███▋                    | 44/291 [00:02<00:09, 25.23it/s]Loading weights:  17%|████                    | 49/291 [00:02<00:08, 28.77it/s]Loading weights:  18%|████▎                   | 53/291 [00:02<00:09, 25.37it/s]Loading weights:  20%|████▊                   | 58/291 [00:02<00:08, 28.94it/s]Loading weights:  21%|█████                   | 62/291 [00:02<00:08, 25.68it/s]Loading weights:  23%|█████▌                  | 67/291 [00:02<00:07, 29.12it/s]Loading weights:  24%|█████▊                  | 71/291 [00:03<00:08, 25.71it/s]Loading weights:  26%|██████▎                 | 76/291 [00:03<00:07, 29.39it/s]Loading weights:  27%|██████▌                 | 80/291 [00:03<00:08, 26.18it/s]Loading weights:  29%|███████                 | 85/291 [00:03<00:06, 29.87it/s]Loading weights:  31%|███████▎                | 89/291 [00:03<00:07, 26.45it/s]Loading weights:  32%|███████▊                | 94/291 [00:03<00:06, 30.14it/s]Loading weights:  34%|████████                | 98/291 [00:04<00:07, 26.49it/s]Loading weights:  35%|████████▏              | 103/291 [00:04<00:06, 30.15it/s]Loading weights:  37%|████████▍              | 107/291 [00:04<00:06, 26.68it/s]Loading weights:  38%|████████▊              | 112/291 [00:04<00:05, 30.40it/s]Loading weights:  40%|█████████▏             | 116/291 [00:04<00:06, 26.91it/s]Loading weights:  42%|█████████▌             | 121/291 [00:04<00:05, 30.55it/s]Loading weights:  43%|█████████▉             | 125/291 [00:05<00:06, 26.95it/s]Loading weights:  45%|██████████▎            | 130/291 [00:05<00:05, 30.56it/s]Loading weights:  46%|██████████▌            | 134/291 [00:05<00:05, 26.52it/s]Loading weights:  48%|██████████▉            | 139/291 [00:05<00:05, 30.04it/s]Loading weights:  49%|███████████▎           | 143/291 [00:05<00:05, 26.39it/s]Loading weights:  51%|███████████▋           | 148/291 [00:05<00:04, 29.91it/s]Loading weights:  52%|████████████           | 152/291 [00:06<00:05, 26.48it/s]Loading weights:  54%|████████████▍          | 157/291 [00:06<00:04, 30.11it/s]Loading weights:  55%|████████████▋          | 161/291 [00:06<00:04, 26.58it/s]Loading weights:  57%|█████████████          | 166/291 [00:06<00:04, 30.29it/s]Loading weights:  58%|█████████████▍         | 170/291 [00:06<00:05, 24.06it/s]Loading weights:  60%|█████████████▊         | 175/291 [00:06<00:04, 26.38it/s]Loading weights:  61%|██████████████         | 178/291 [00:07<00:04, 22.98it/s]Loading weights:  63%|██████████████▌        | 184/291 [00:07<00:03, 28.90it/s]Loading weights:  65%|██████████████▊        | 188/291 [00:07<00:03, 26.17it/s]Loading weights:  66%|███████████████▎       | 193/291 [00:07<00:03, 29.89it/s]Loading weights:  68%|███████████████▌       | 197/291 [00:07<00:03, 26.71it/s]Loading weights:  69%|███████████████▉       | 202/291 [00:07<00:02, 30.40it/s]Loading weights:  71%|████████████████▎      | 206/291 [00:07<00:03, 27.05it/s]Loading weights:  73%|████████████████▋      | 211/291 [00:08<00:02, 30.68it/s]Loading weights:  74%|████████████████▉      | 215/291 [00:08<00:02, 27.12it/s]Loading weights:  76%|█████████████████▍     | 220/291 [00:08<00:02, 30.75it/s]Loading weights:  77%|█████████████████▋     | 224/291 [00:08<00:02, 27.16it/s]Loading weights:  79%|██████████████████     | 229/291 [00:08<00:02, 30.78it/s]Loading weights:  80%|██████████████████▍    | 233/291 [00:08<00:02, 27.17it/s]Loading weights:  82%|██████████████████▊    | 238/291 [00:09<00:01, 30.77it/s]Loading weights:  83%|███████████████████▏   | 242/291 [00:09<00:01, 27.17it/s]Loading weights:  85%|███████████████████▌   | 247/291 [00:09<00:01, 30.75it/s]Loading weights:  86%|███████████████████▊   | 251/291 [00:09<00:01, 27.17it/s]Loading weights:  88%|████████████████████▏  | 256/291 [00:09<00:01, 30.75it/s]Loading weights:  89%|████████████████████▌  | 260/291 [00:09<00:01, 27.09it/s]Loading weights:  91%|████████████████████▉  | 265/291 [00:09<00:00, 30.53it/s]Loading weights:  92%|█████████████████████▎ | 269/291 [00:10<00:00, 26.96it/s]Loading weights:  94%|█████████████████████▋ | 274/291 [00:10<00:00, 30.54it/s]Loading weights:  96%|█████████████████████▉ | 278/291 [00:10<00:00, 26.88it/s]Loading weights:  97%|██████████████████████▎| 283/291 [00:10<00:00, 30.49it/s]Loading weights:  99%|██████████████████████▋| 287/291 [00:10<00:00, 26.98it/s]Loading weights: 100%|███████████████████████| 291/291 [00:10<00:00, 26.88it/s]
+Model: 9.09 GB
+
+RULER: subtasks=['niah_single', 'niah_multikey', 'niah_multivalue', 'niah_multiquery', 'vt', 'cwe', 'fwe'], contexts=[8, 32, 64, 128]K, n=10, top_k_fp16=0
+[transformers] The following generation flags are not valid and may be ignored: ['top_p']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [1/560] dense     niah_single        8K s=0 -> 1.00
+  [2/560] certified niah_single        8K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [3/560] dense     niah_single        8K s=1 -> 1.00
+  [4/560] certified niah_single        8K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [5/560] dense     niah_single        8K s=2 -> 1.00
+  [6/560] certified niah_single        8K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [7/560] dense     niah_single        8K s=3 -> 1.00
+  [8/560] certified niah_single        8K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [9/560] dense     niah_single        8K s=4 -> 1.00
+  [10/560] certified niah_single        8K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [11/560] dense     niah_single        8K s=5 -> 1.00
+  [12/560] certified niah_single        8K s=5 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [13/560] dense     niah_single        8K s=6 -> 1.00
+  [14/560] certified niah_single        8K s=6 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [15/560] dense     niah_single        8K s=7 -> 1.00
+  [16/560] certified niah_single        8K s=7 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [17/560] dense     niah_single        8K s=8 -> 1.00
+  [18/560] certified niah_single        8K s=8 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [19/560] dense     niah_single        8K s=9 -> 1.00
+  [20/560] certified niah_single        8K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [21/560] dense     niah_multikey      8K s=0 -> 1.00
+  [22/560] certified niah_multikey      8K s=0 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [23/560] dense     niah_multikey      8K s=1 -> 1.00
+  [24/560] certified niah_multikey      8K s=1 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [25/560] dense     niah_multikey      8K s=2 -> 1.00
+  [26/560] certified niah_multikey      8K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [27/560] dense     niah_multikey      8K s=3 -> 1.00
+  [28/560] certified niah_multikey      8K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [29/560] dense     niah_multikey      8K s=4 -> 1.00
+  [30/560] certified niah_multikey      8K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [31/560] dense     niah_multikey      8K s=5 -> 1.00
+  [32/560] certified niah_multikey      8K s=5 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [33/560] dense     niah_multikey      8K s=6 -> 1.00
+  [34/560] certified niah_multikey      8K s=6 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [35/560] dense     niah_multikey      8K s=7 -> 1.00
+  [36/560] certified niah_multikey      8K s=7 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [37/560] dense     niah_multikey      8K s=8 -> 1.00
+  [38/560] certified niah_multikey      8K s=8 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [39/560] dense     niah_multikey      8K s=9 -> 1.00
+  [40/560] certified niah_multikey      8K s=9 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [41/560] dense     niah_multivalue    8K s=0 -> 1.00
+  [42/560] certified niah_multivalue    8K s=0 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [43/560] dense     niah_multivalue    8K s=1 -> 1.00
+  [44/560] certified niah_multivalue    8K s=1 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [45/560] dense     niah_multivalue    8K s=2 -> 1.00
+  [46/560] certified niah_multivalue    8K s=2 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [47/560] dense     niah_multivalue    8K s=3 -> 1.00
+  [48/560] certified niah_multivalue    8K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [49/560] dense     niah_multivalue    8K s=4 -> 1.00
+  [50/560] certified niah_multivalue    8K s=4 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [51/560] dense     niah_multivalue    8K s=5 -> 1.00
+  [52/560] certified niah_multivalue    8K s=5 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [53/560] dense     niah_multivalue    8K s=6 -> 1.00
+  [54/560] certified niah_multivalue    8K s=6 -> 0.75  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [55/560] dense     niah_multivalue    8K s=7 -> 1.00
+  [56/560] certified niah_multivalue    8K s=7 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [57/560] dense     niah_multivalue    8K s=8 -> 1.00
+  [58/560] certified niah_multivalue    8K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [59/560] dense     niah_multivalue    8K s=9 -> 1.00
+  [60/560] certified niah_multivalue    8K s=9 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [61/560] dense     niah_multiquery    8K s=0 -> 1.00
+  [62/560] certified niah_multiquery    8K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [63/560] dense     niah_multiquery    8K s=1 -> 1.00
+  [64/560] certified niah_multiquery    8K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [65/560] dense     niah_multiquery    8K s=2 -> 1.00
+  [66/560] certified niah_multiquery    8K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [67/560] dense     niah_multiquery    8K s=3 -> 1.00
+  [68/560] certified niah_multiquery    8K s=3 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [69/560] dense     niah_multiquery    8K s=4 -> 1.00
+  [70/560] certified niah_multiquery    8K s=4 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [71/560] dense     niah_multiquery    8K s=5 -> 1.00
+  [72/560] certified niah_multiquery    8K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [73/560] dense     niah_multiquery    8K s=6 -> 1.00
+  [74/560] certified niah_multiquery    8K s=6 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [75/560] dense     niah_multiquery    8K s=7 -> 1.00
+  [76/560] certified niah_multiquery    8K s=7 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [77/560] dense     niah_multiquery    8K s=8 -> 1.00
+  [78/560] certified niah_multiquery    8K s=8 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [79/560] dense     niah_multiquery    8K s=9 -> 1.00
+  [80/560] certified niah_multiquery    8K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [81/560] dense     vt                 8K s=0 -> 1.00
+  [82/560] certified vt                 8K s=0 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [83/560] dense     vt                 8K s=1 -> 1.00
+  [84/560] certified vt                 8K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [85/560] dense     vt                 8K s=2 -> 1.00
+  [86/560] certified vt                 8K s=2 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [87/560] dense     vt                 8K s=3 -> 1.00
+  [88/560] certified vt                 8K s=3 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [89/560] dense     vt                 8K s=4 -> 1.00
+  [90/560] certified vt                 8K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [91/560] dense     vt                 8K s=5 -> 1.00
+  [92/560] certified vt                 8K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [93/560] dense     vt                 8K s=6 -> 0.75
+  [94/560] certified vt                 8K s=6 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [95/560] dense     vt                 8K s=7 -> 0.50
+  [96/560] certified vt                 8K s=7 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [97/560] dense     vt                 8K s=8 -> 0.75
+  [98/560] certified vt                 8K s=8 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [99/560] dense     vt                 8K s=9 -> 1.00
+  [100/560] certified vt                 8K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [101/560] dense     cwe                8K s=0 -> 1.00
+  [102/560] certified cwe                8K s=0 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [103/560] dense     cwe                8K s=1 -> 1.00
+  [104/560] certified cwe                8K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [105/560] dense     cwe                8K s=2 -> 1.00
+  [106/560] certified cwe                8K s=2 -> 0.60  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [107/560] dense     cwe                8K s=3 -> 1.00
+  [108/560] certified cwe                8K s=3 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [109/560] dense     cwe                8K s=4 -> 0.30
+  [110/560] certified cwe                8K s=4 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [111/560] dense     cwe                8K s=5 -> 1.00
+  [112/560] certified cwe                8K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [113/560] dense     cwe                8K s=6 -> 1.00
+  [114/560] certified cwe                8K s=6 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [115/560] dense     cwe                8K s=7 -> 1.00
+  [116/560] certified cwe                8K s=7 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [117/560] dense     cwe                8K s=8 -> 1.00
+  [118/560] certified cwe                8K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [119/560] dense     cwe                8K s=9 -> 1.00
+  [120/560] certified cwe                8K s=9 -> 0.10  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [121/560] dense     fwe                8K s=0 -> 0.67
+  [122/560] certified fwe                8K s=0 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [123/560] dense     fwe                8K s=1 -> 0.67
+  [124/560] certified fwe                8K s=1 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [125/560] dense     fwe                8K s=2 -> 0.33
+  [126/560] certified fwe                8K s=2 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [127/560] dense     fwe                8K s=3 -> 1.00
+  [128/560] certified fwe                8K s=3 -> 0.33  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [129/560] dense     fwe                8K s=4 -> 1.00
+  [130/560] certified fwe                8K s=4 -> 0.33  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [131/560] dense     fwe                8K s=5 -> 0.33
+  [132/560] certified fwe                8K s=5 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [133/560] dense     fwe                8K s=6 -> 0.67
+  [134/560] certified fwe                8K s=6 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [135/560] dense     fwe                8K s=7 -> 0.33
+  [136/560] certified fwe                8K s=7 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [137/560] dense     fwe                8K s=8 -> 0.33
+  [138/560] certified fwe                8K s=8 -> 0.67
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [139/560] dense     fwe                8K s=9 -> 1.00
+  [140/560] certified fwe                8K s=9 -> 0.33  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [141/560] dense     niah_single        32K s=0 -> 1.00
+  [142/560] certified niah_single        32K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [143/560] dense     niah_single        32K s=1 -> 1.00
+  [144/560] certified niah_single        32K s=1 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [145/560] dense     niah_single        32K s=2 -> 1.00
+  [146/560] certified niah_single        32K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [147/560] dense     niah_single        32K s=3 -> 1.00
+  [148/560] certified niah_single        32K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [149/560] dense     niah_single        32K s=4 -> 1.00
+  [150/560] certified niah_single        32K s=4 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [151/560] dense     niah_single        32K s=5 -> 1.00
+  [152/560] certified niah_single        32K s=5 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [153/560] dense     niah_single        32K s=6 -> 1.00
+  [154/560] certified niah_single        32K s=6 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [155/560] dense     niah_single        32K s=7 -> 1.00
+  [156/560] certified niah_single        32K s=7 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [157/560] dense     niah_single        32K s=8 -> 1.00
+  [158/560] certified niah_single        32K s=8 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [159/560] dense     niah_single        32K s=9 -> 1.00
+  [160/560] certified niah_single        32K s=9 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [161/560] dense     niah_multikey      32K s=0 -> 1.00
+  [162/560] certified niah_multikey      32K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [163/560] dense     niah_multikey      32K s=1 -> 1.00
+  [164/560] certified niah_multikey      32K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [165/560] dense     niah_multikey      32K s=2 -> 1.00
+  [166/560] certified niah_multikey      32K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [167/560] dense     niah_multikey      32K s=3 -> 1.00
+  [168/560] certified niah_multikey      32K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [169/560] dense     niah_multikey      32K s=4 -> 1.00
+  [170/560] certified niah_multikey      32K s=4 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [171/560] dense     niah_multikey      32K s=5 -> 1.00
+  [172/560] certified niah_multikey      32K s=5 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [173/560] dense     niah_multikey      32K s=6 -> 1.00
+  [174/560] certified niah_multikey      32K s=6 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [175/560] dense     niah_multikey      32K s=7 -> 1.00
+  [176/560] certified niah_multikey      32K s=7 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [177/560] dense     niah_multikey      32K s=8 -> 1.00
+  [178/560] certified niah_multikey      32K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [179/560] dense     niah_multikey      32K s=9 -> 1.00
+  [180/560] certified niah_multikey      32K s=9 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [181/560] dense     niah_multivalue    32K s=0 -> 1.00
+  [182/560] certified niah_multivalue    32K s=0 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [183/560] dense     niah_multivalue    32K s=1 -> 1.00
+  [184/560] certified niah_multivalue    32K s=1 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [185/560] dense     niah_multivalue    32K s=2 -> 1.00
+  [186/560] certified niah_multivalue    32K s=2 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [187/560] dense     niah_multivalue    32K s=3 -> 1.00
+  [188/560] certified niah_multivalue    32K s=3 -> 0.75  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [189/560] dense     niah_multivalue    32K s=4 -> 1.00
+  [190/560] certified niah_multivalue    32K s=4 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [191/560] dense     niah_multivalue    32K s=5 -> 1.00
+  [192/560] certified niah_multivalue    32K s=5 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [193/560] dense     niah_multivalue    32K s=6 -> 1.00
+  [194/560] certified niah_multivalue    32K s=6 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [195/560] dense     niah_multivalue    32K s=7 -> 1.00
+  [196/560] certified niah_multivalue    32K s=7 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [197/560] dense     niah_multivalue    32K s=8 -> 1.00
+  [198/560] certified niah_multivalue    32K s=8 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [199/560] dense     niah_multivalue    32K s=9 -> 1.00
+  [200/560] certified niah_multivalue    32K s=9 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [201/560] dense     niah_multiquery    32K s=0 -> 1.00
+  [202/560] certified niah_multiquery    32K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [203/560] dense     niah_multiquery    32K s=1 -> 1.00
+  [204/560] certified niah_multiquery    32K s=1 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [205/560] dense     niah_multiquery    32K s=2 -> 1.00
+  [206/560] certified niah_multiquery    32K s=2 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [207/560] dense     niah_multiquery    32K s=3 -> 1.00
+  [208/560] certified niah_multiquery    32K s=3 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [209/560] dense     niah_multiquery    32K s=4 -> 1.00
+  [210/560] certified niah_multiquery    32K s=4 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [211/560] dense     niah_multiquery    32K s=5 -> 1.00
+  [212/560] certified niah_multiquery    32K s=5 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [213/560] dense     niah_multiquery    32K s=6 -> 1.00
+  [214/560] certified niah_multiquery    32K s=6 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [215/560] dense     niah_multiquery    32K s=7 -> 1.00
+  [216/560] certified niah_multiquery    32K s=7 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [217/560] dense     niah_multiquery    32K s=8 -> 1.00
+  [218/560] certified niah_multiquery    32K s=8 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [219/560] dense     niah_multiquery    32K s=9 -> 1.00
+  [220/560] certified niah_multiquery    32K s=9 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [221/560] dense     vt                 32K s=0 -> 1.00
+  [222/560] certified vt                 32K s=0 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [223/560] dense     vt                 32K s=1 -> 1.00
+  [224/560] certified vt                 32K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [225/560] dense     vt                 32K s=2 -> 0.75
+  [226/560] certified vt                 32K s=2 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [227/560] dense     vt                 32K s=3 -> 1.00
+  [228/560] certified vt                 32K s=3 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [229/560] dense     vt                 32K s=4 -> 1.00
+  [230/560] certified vt                 32K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [231/560] dense     vt                 32K s=5 -> 0.75
+  [232/560] certified vt                 32K s=5 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [233/560] dense     vt                 32K s=6 -> 0.25
+  [234/560] certified vt                 32K s=6 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [235/560] dense     vt                 32K s=7 -> 1.00
+  [236/560] certified vt                 32K s=7 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [237/560] dense     vt                 32K s=8 -> 1.00
+  [238/560] certified vt                 32K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [239/560] dense     vt                 32K s=9 -> 1.00
+  [240/560] certified vt                 32K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [241/560] dense     cwe                32K s=0 -> 1.00
+  [242/560] certified cwe                32K s=0 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [243/560] dense     cwe                32K s=1 -> 1.00
+  [244/560] certified cwe                32K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [245/560] dense     cwe                32K s=2 -> 1.00
+  [246/560] certified cwe                32K s=2 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [247/560] dense     cwe                32K s=3 -> 0.00
+  [248/560] certified cwe                32K s=3 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [249/560] dense     cwe                32K s=4 -> 1.00
+  [250/560] certified cwe                32K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [251/560] dense     cwe                32K s=5 -> 1.00
+  [252/560] certified cwe                32K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [253/560] dense     cwe                32K s=6 -> 1.00
+  [254/560] certified cwe                32K s=6 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [255/560] dense     cwe                32K s=7 -> 0.00
+  [256/560] certified cwe                32K s=7 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [257/560] dense     cwe                32K s=8 -> 1.00
+  [258/560] certified cwe                32K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [259/560] dense     cwe                32K s=9 -> 1.00
+  [260/560] certified cwe                32K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [261/560] dense     fwe                32K s=0 -> 0.67
+  [262/560] certified fwe                32K s=0 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [263/560] dense     fwe                32K s=1 -> 0.33
+  [264/560] certified fwe                32K s=1 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [265/560] dense     fwe                32K s=2 -> 0.67
+  [266/560] certified fwe                32K s=2 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [267/560] dense     fwe                32K s=3 -> 0.33
+  [268/560] certified fwe                32K s=3 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [269/560] dense     fwe                32K s=4 -> 0.33
+  [270/560] certified fwe                32K s=4 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [271/560] dense     fwe                32K s=5 -> 0.67
+  [272/560] certified fwe                32K s=5 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [273/560] dense     fwe                32K s=6 -> 0.33
+  [274/560] certified fwe                32K s=6 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [275/560] dense     fwe                32K s=7 -> 0.33
+  [276/560] certified fwe                32K s=7 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [277/560] dense     fwe                32K s=8 -> 0.67
+  [278/560] certified fwe                32K s=8 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [279/560] dense     fwe                32K s=9 -> 0.67
+  [280/560] certified fwe                32K s=9 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [281/560] dense     niah_single        64K s=0 -> 1.00
+  [282/560] certified niah_single        64K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [283/560] dense     niah_single        64K s=1 -> 1.00
+  [284/560] certified niah_single        64K s=1 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [285/560] dense     niah_single        64K s=2 -> 1.00
+  [286/560] certified niah_single        64K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [287/560] dense     niah_single        64K s=3 -> 1.00
+  [288/560] certified niah_single        64K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [289/560] dense     niah_single        64K s=4 -> 1.00
+  [290/560] certified niah_single        64K s=4 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [291/560] dense     niah_single        64K s=5 -> 1.00
+  [292/560] certified niah_single        64K s=5 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [293/560] dense     niah_single        64K s=6 -> 1.00
+  [294/560] certified niah_single        64K s=6 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [295/560] dense     niah_single        64K s=7 -> 1.00
+  [296/560] certified niah_single        64K s=7 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [297/560] dense     niah_single        64K s=8 -> 1.00
+  [298/560] certified niah_single        64K s=8 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [299/560] dense     niah_single        64K s=9 -> 1.00
+  [300/560] certified niah_single        64K s=9 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [301/560] dense     niah_multikey      64K s=0 -> 1.00
+  [302/560] certified niah_multikey      64K s=0 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [303/560] dense     niah_multikey      64K s=1 -> 1.00
+  [304/560] certified niah_multikey      64K s=1 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [305/560] dense     niah_multikey      64K s=2 -> 1.00
+  [306/560] certified niah_multikey      64K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [307/560] dense     niah_multikey      64K s=3 -> 1.00
+  [308/560] certified niah_multikey      64K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [309/560] dense     niah_multikey      64K s=4 -> 1.00
+  [310/560] certified niah_multikey      64K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [311/560] dense     niah_multikey      64K s=5 -> 1.00
+  [312/560] certified niah_multikey      64K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [313/560] dense     niah_multikey      64K s=6 -> 1.00
+  [314/560] certified niah_multikey      64K s=6 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [315/560] dense     niah_multikey      64K s=7 -> 1.00
+  [316/560] certified niah_multikey      64K s=7 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [317/560] dense     niah_multikey      64K s=8 -> 1.00
+  [318/560] certified niah_multikey      64K s=8 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [319/560] dense     niah_multikey      64K s=9 -> 1.00
+  [320/560] certified niah_multikey      64K s=9 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [321/560] dense     niah_multivalue    64K s=0 -> 1.00
+  [322/560] certified niah_multivalue    64K s=0 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [323/560] dense     niah_multivalue    64K s=1 -> 1.00
+  [324/560] certified niah_multivalue    64K s=1 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [325/560] dense     niah_multivalue    64K s=2 -> 1.00
+  [326/560] certified niah_multivalue    64K s=2 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [327/560] dense     niah_multivalue    64K s=3 -> 1.00
+  [328/560] certified niah_multivalue    64K s=3 -> 0.75  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [329/560] dense     niah_multivalue    64K s=4 -> 1.00
+  [330/560] certified niah_multivalue    64K s=4 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [331/560] dense     niah_multivalue    64K s=5 -> 1.00
+  [332/560] certified niah_multivalue    64K s=5 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [333/560] dense     niah_multivalue    64K s=6 -> 1.00
+  [334/560] certified niah_multivalue    64K s=6 -> 0.75  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [335/560] dense     niah_multivalue    64K s=7 -> 1.00
+  [336/560] certified niah_multivalue    64K s=7 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [337/560] dense     niah_multivalue    64K s=8 -> 0.50
+  [338/560] certified niah_multivalue    64K s=8 -> 0.25
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [339/560] dense     niah_multivalue    64K s=9 -> 1.00
+  [340/560] certified niah_multivalue    64K s=9 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [341/560] dense     niah_multiquery    64K s=0 -> 1.00
+  [342/560] certified niah_multiquery    64K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [343/560] dense     niah_multiquery    64K s=1 -> 1.00
+  [344/560] certified niah_multiquery    64K s=1 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [345/560] dense     niah_multiquery    64K s=2 -> 1.00
+  [346/560] certified niah_multiquery    64K s=2 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [347/560] dense     niah_multiquery    64K s=3 -> 1.00
+  [348/560] certified niah_multiquery    64K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [349/560] dense     niah_multiquery    64K s=4 -> 1.00
+  [350/560] certified niah_multiquery    64K s=4 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [351/560] dense     niah_multiquery    64K s=5 -> 1.00
+  [352/560] certified niah_multiquery    64K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [353/560] dense     niah_multiquery    64K s=6 -> 1.00
+  [354/560] certified niah_multiquery    64K s=6 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [355/560] dense     niah_multiquery    64K s=7 -> 1.00
+  [356/560] certified niah_multiquery    64K s=7 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [357/560] dense     niah_multiquery    64K s=8 -> 1.00
+  [358/560] certified niah_multiquery    64K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [359/560] dense     niah_multiquery    64K s=9 -> 1.00
+  [360/560] certified niah_multiquery    64K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [361/560] dense     vt                 64K s=0 -> 0.75
+  [362/560] certified vt                 64K s=0 -> 0.25
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [363/560] dense     vt                 64K s=1 -> 1.00
+  [364/560] certified vt                 64K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [365/560] dense     vt                 64K s=2 -> 0.75
+  [366/560] certified vt                 64K s=2 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [367/560] dense     vt                 64K s=3 -> 0.50
+  [368/560] certified vt                 64K s=3 -> 0.25
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [369/560] dense     vt                 64K s=4 -> 1.00
+  [370/560] certified vt                 64K s=4 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [371/560] dense     vt                 64K s=5 -> 1.00
+  [372/560] certified vt                 64K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [373/560] dense     vt                 64K s=6 -> 1.00
+  [374/560] certified vt                 64K s=6 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [375/560] dense     vt                 64K s=7 -> 0.25
+  [376/560] certified vt                 64K s=7 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [377/560] dense     vt                 64K s=8 -> 1.00
+  [378/560] certified vt                 64K s=8 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [379/560] dense     vt                 64K s=9 -> 1.00
+  [380/560] certified vt                 64K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [381/560] dense     cwe                64K s=0 -> 1.00
+  [382/560] certified cwe                64K s=0 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [383/560] dense     cwe                64K s=1 -> 1.00
+  [384/560] certified cwe                64K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [385/560] dense     cwe                64K s=2 -> 1.00
+  [386/560] certified cwe                64K s=2 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [387/560] dense     cwe                64K s=3 -> 1.00
+  [388/560] certified cwe                64K s=3 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [389/560] dense     cwe                64K s=4 -> 1.00
+  [390/560] certified cwe                64K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [391/560] dense     cwe                64K s=5 -> 1.00
+  [392/560] certified cwe                64K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [393/560] dense     cwe                64K s=6 -> 1.00
+  [394/560] certified cwe                64K s=6 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [395/560] dense     cwe                64K s=7 -> 1.00
+  [396/560] certified cwe                64K s=7 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [397/560] dense     cwe                64K s=8 -> 1.00
+  [398/560] certified cwe                64K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [399/560] dense     cwe                64K s=9 -> 1.00
+  [400/560] certified cwe                64K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [401/560] dense     fwe                64K s=0 -> 0.67
+  [402/560] certified fwe                64K s=0 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [403/560] dense     fwe                64K s=1 -> 0.67
+  [404/560] certified fwe                64K s=1 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [405/560] dense     fwe                64K s=2 -> 0.33
+  [406/560] certified fwe                64K s=2 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [407/560] dense     fwe                64K s=3 -> 1.00
+  [408/560] certified fwe                64K s=3 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [409/560] dense     fwe                64K s=4 -> 1.00
+  [410/560] certified fwe                64K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [411/560] dense     fwe                64K s=5 -> 0.67
+  [412/560] certified fwe                64K s=5 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [413/560] dense     fwe                64K s=6 -> 0.33
+  [414/560] certified fwe                64K s=6 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [415/560] dense     fwe                64K s=7 -> 0.33
+  [416/560] certified fwe                64K s=7 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [417/560] dense     fwe                64K s=8 -> 0.33
+  [418/560] certified fwe                64K s=8 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [419/560] dense     fwe                64K s=9 -> 0.33
+  [420/560] certified fwe                64K s=9 -> 0.67
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [421/560] dense     niah_single        128K s=0 -> 1.00
+  [422/560] certified niah_single        128K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [423/560] dense     niah_single        128K s=1 -> 1.00
+  [424/560] certified niah_single        128K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [425/560] dense     niah_single        128K s=2 -> 1.00
+  [426/560] certified niah_single        128K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [427/560] dense     niah_single        128K s=3 -> 1.00
+  [428/560] certified niah_single        128K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [429/560] dense     niah_single        128K s=4 -> 1.00
+  [430/560] certified niah_single        128K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [431/560] dense     niah_single        128K s=5 -> 1.00
+  [432/560] certified niah_single        128K s=5 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [433/560] dense     niah_single        128K s=6 -> 1.00
+  [434/560] certified niah_single        128K s=6 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [435/560] dense     niah_single        128K s=7 -> 1.00
+  [436/560] certified niah_single        128K s=7 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [437/560] dense     niah_single        128K s=8 -> 1.00
+  [438/560] certified niah_single        128K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [439/560] dense     niah_single        128K s=9 -> 1.00
+  [440/560] certified niah_single        128K s=9 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [441/560] dense     niah_multikey      128K s=0 -> 1.00
+  [442/560] certified niah_multikey      128K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [443/560] dense     niah_multikey      128K s=1 -> 1.00
+  [444/560] certified niah_multikey      128K s=1 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [445/560] dense     niah_multikey      128K s=2 -> 1.00
+  [446/560] certified niah_multikey      128K s=2 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [447/560] dense     niah_multikey      128K s=3 -> 1.00
+  [448/560] certified niah_multikey      128K s=3 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [449/560] dense     niah_multikey      128K s=4 -> 1.00
+  [450/560] certified niah_multikey      128K s=4 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [451/560] dense     niah_multikey      128K s=5 -> 1.00
+  [452/560] certified niah_multikey      128K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [453/560] dense     niah_multikey      128K s=6 -> 1.00
+  [454/560] certified niah_multikey      128K s=6 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [455/560] dense     niah_multikey      128K s=7 -> 1.00
+  [456/560] certified niah_multikey      128K s=7 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [457/560] dense     niah_multikey      128K s=8 -> 1.00
+  [458/560] certified niah_multikey      128K s=8 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [459/560] dense     niah_multikey      128K s=9 -> 1.00
+  [460/560] certified niah_multikey      128K s=9 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [461/560] dense     niah_multivalue    128K s=0 -> 0.75
+  [462/560] certified niah_multivalue    128K s=0 -> 0.25
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [463/560] dense     niah_multivalue    128K s=1 -> 0.75
+  [464/560] certified niah_multivalue    128K s=1 -> 0.25
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [465/560] dense     niah_multivalue    128K s=2 -> 1.00
+  [466/560] certified niah_multivalue    128K s=2 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [467/560] dense     niah_multivalue    128K s=3 -> 1.00
+  [468/560] certified niah_multivalue    128K s=3 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [469/560] dense     niah_multivalue    128K s=4 -> 1.00
+  [470/560] certified niah_multivalue    128K s=4 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [471/560] dense     niah_multivalue    128K s=5 -> 0.75
+  [472/560] certified niah_multivalue    128K s=5 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [473/560] dense     niah_multivalue    128K s=6 -> 1.00
+  [474/560] certified niah_multivalue    128K s=6 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [475/560] dense     niah_multivalue    128K s=7 -> 1.00
+  [476/560] certified niah_multivalue    128K s=7 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [477/560] dense     niah_multivalue    128K s=8 -> 1.00
+  [478/560] certified niah_multivalue    128K s=8 -> 0.25  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [479/560] dense     niah_multivalue    128K s=9 -> 1.00
+  [480/560] certified niah_multivalue    128K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [481/560] dense     niah_multiquery    128K s=0 -> 1.00
+  [482/560] certified niah_multiquery    128K s=0 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [483/560] dense     niah_multiquery    128K s=1 -> 1.00
+  [484/560] certified niah_multiquery    128K s=1 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [485/560] dense     niah_multiquery    128K s=2 -> 1.00
+  [486/560] certified niah_multiquery    128K s=2 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [487/560] dense     niah_multiquery    128K s=3 -> 1.00
+  [488/560] certified niah_multiquery    128K s=3 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [489/560] dense     niah_multiquery    128K s=4 -> 1.00
+  [490/560] certified niah_multiquery    128K s=4 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [491/560] dense     niah_multiquery    128K s=5 -> 1.00
+  [492/560] certified niah_multiquery    128K s=5 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [493/560] dense     niah_multiquery    128K s=6 -> 1.00
+  [494/560] certified niah_multiquery    128K s=6 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [495/560] dense     niah_multiquery    128K s=7 -> 1.00
+  [496/560] certified niah_multiquery    128K s=7 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [497/560] dense     niah_multiquery    128K s=8 -> 1.00
+  [498/560] certified niah_multiquery    128K s=8 -> 1.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [499/560] dense     niah_multiquery    128K s=9 -> 1.00
+  [500/560] certified niah_multiquery    128K s=9 -> 0.50  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [501/560] dense     vt                 128K s=0 -> 0.75
+  [502/560] certified vt                 128K s=0 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [503/560] dense     vt                 128K s=1 -> 0.50
+  [504/560] certified vt                 128K s=1 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [505/560] dense     vt                 128K s=2 -> 0.75
+  [506/560] certified vt                 128K s=2 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [507/560] dense     vt                 128K s=3 -> 1.00
+  [508/560] certified vt                 128K s=3 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [509/560] dense     vt                 128K s=4 -> 1.00
+  [510/560] certified vt                 128K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [511/560] dense     vt                 128K s=5 -> 1.00
+  [512/560] certified vt                 128K s=5 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [513/560] dense     vt                 128K s=6 -> 0.25
+  [514/560] certified vt                 128K s=6 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [515/560] dense     vt                 128K s=7 -> 0.75
+  [516/560] certified vt                 128K s=7 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [517/560] dense     vt                 128K s=8 -> 0.50
+  [518/560] certified vt                 128K s=8 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [519/560] dense     vt                 128K s=9 -> 1.00
+  [520/560] certified vt                 128K s=9 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [521/560] dense     cwe                128K s=0 -> 1.00
+  [522/560] certified cwe                128K s=0 -> 0.20  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+[transformers] This is a friendly reminder - the current text generation call has exceeded the model's predefined maximum length (131072). Depending on the model, you may observe exceptions, performance degradation, or nothing at all.
+  [523/560] dense     cwe                128K s=1 -> 0.00
+  [524/560] certified cwe                128K s=1 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [525/560] dense     cwe                128K s=2 -> 0.00
+  [526/560] certified cwe                128K s=2 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [527/560] dense     cwe                128K s=3 -> 1.00
+  [528/560] certified cwe                128K s=3 -> 0.10  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [529/560] dense     cwe                128K s=4 -> 1.00
+  [530/560] certified cwe                128K s=4 -> 0.00  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [531/560] dense     cwe                128K s=5 -> 0.00
+  [532/560] certified cwe                128K s=5 -> 0.10
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [533/560] dense     cwe                128K s=6 -> 0.00
+  [534/560] certified cwe                128K s=6 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [535/560] dense     cwe                128K s=7 -> 1.00
+  [536/560] certified cwe                128K s=7 -> 0.10  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [537/560] dense     cwe                128K s=8 -> 0.00
+  [538/560] certified cwe                128K s=8 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [539/560] dense     cwe                128K s=9 -> 0.00
+  [540/560] certified cwe                128K s=9 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [541/560] dense     fwe                128K s=0 -> 0.33
+  [542/560] certified fwe                128K s=0 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [543/560] dense     fwe                128K s=1 -> 0.67
+  [544/560] certified fwe                128K s=1 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [545/560] dense     fwe                128K s=2 -> 0.00
+  [546/560] certified fwe                128K s=2 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [547/560] dense     fwe                128K s=3 -> 0.33
+  [548/560] certified fwe                128K s=3 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [549/560] dense     fwe                128K s=4 -> 0.67
+  [550/560] certified fwe                128K s=4 -> 0.33
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [551/560] dense     fwe                128K s=5 -> 1.00
+  [552/560] certified fwe                128K s=5 -> 0.33  *** CRITICAL ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [553/560] dense     fwe                128K s=6 -> 0.33
+  [554/560] certified fwe                128K s=6 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [555/560] dense     fwe                128K s=7 -> 0.33
+  [556/560] certified fwe                128K s=7 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [557/560] dense     fwe                128K s=8 -> 0.00
+  [558/560] certified fwe                128K s=8 -> 0.00
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [559/560] dense     fwe                128K s=9 -> 0.33
+  [560/560] certified fwe                128K s=9 -> 0.33
+
+============================================================
+RULER subset results (279.6 min)
+============================================================
+task_ctx                  dense     cert        Δ   crit
+cwe_128K                  0.400    0.050   -0.350      4
+cwe_32K                   0.800    0.000   -0.800      8
+cwe_64K                   1.000    0.050   -0.950     10
+cwe_8K                    0.930    0.070   -0.860      9
+fwe_128K                  0.400    0.133   -0.267      1
+fwe_32K                   0.500    0.167   -0.333      0
+fwe_64K                   0.567    0.300   -0.267      2
+fwe_8K                    0.633    0.333   -0.300      3
+niah_multikey_128K        1.000    0.600   -0.400      4
+niah_multikey_32K         1.000    0.800   -0.200      2
+niah_multikey_64K         1.000    0.600   -0.400      4
+niah_multikey_8K          1.000    0.700   -0.300      3
+niah_multiquery_128K      1.000    0.650   -0.350      6
+niah_multiquery_32K       1.000    0.800   -0.200      3
+niah_multiquery_64K       1.000    0.450   -0.550      7
+niah_multiquery_8K        1.000    0.500   -0.500      7
+niah_multivalue_128K      0.925    0.150   -0.775      7
+niah_multivalue_32K       1.000    0.300   -0.700     10
+niah_multivalue_64K       0.950    0.500   -0.450      8
+niah_multivalue_8K        1.000    0.425   -0.575      9
+niah_single_128K          1.000    0.600   -0.400      4
+niah_single_32K           1.000    1.000   +0.000      0
+niah_single_64K           1.000    1.000   +0.000      0
+niah_single_8K            1.000    0.500   -0.500      5
+vt_128K                   0.750    0.000   -0.750      4
+vt_32K                    0.875    0.000   -0.875      7
+vt_64K                    0.825    0.100   -0.725      6
+vt_8K                     0.900    0.000   -0.900      7
+
+Overall: dense=0.873 cert=0.385 Δ=-0.488 critical=140/280
+Paired Δ CI: -0.488 [-0.538, -0.439] n=280
+
+JSON -> runs/naive_int8k_int4v_ruler_10_slices/ruler_slices_0_9_8k_32k_64k_128k.json
