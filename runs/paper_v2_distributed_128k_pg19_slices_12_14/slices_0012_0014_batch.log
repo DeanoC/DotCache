@@ -1,0 +1,18 @@
+[slice 12 started] 2026-04-27T14:47:24+00:00
+[start] pg19 128K slice=12
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 131072 --chunk-index 12 --telemetry-mode summary --certified-warmup-steps 128 --output runs/paper_v2_distributed_128k_pg19_slices_12_14/slice_0012/128K/pg19_slice_0012_128K.json --model NousResearch/Meta-Llama-3.1-8B --v-tolerance 0.05 --use-int4-values --group-size 16 --tau-cov 0.995 --k-min 2 --k-max 128 --ranking-fallback --ranking-r 1 --ranking-fallback-mode full --eps-guard 0.01 --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 --fp16-key-cache-blocks 9216 --fp16-value-cache-blocks 9216
+[done] pg19 128K exit=0 wall=282.4m
+manifest -> runs/paper_v2_distributed_128k_pg19_slices_12_14/slice_0012/manifest.json
+[slice 12 finished] 2026-04-27T19:29:48+00:00
+[slice 13 started] 2026-04-27T19:29:48+00:00
+[start] pg19 128K slice=13
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 131072 --chunk-index 13 --telemetry-mode summary --certified-warmup-steps 128 --output runs/paper_v2_distributed_128k_pg19_slices_12_14/slice_0013/128K/pg19_slice_0013_128K.json --model NousResearch/Meta-Llama-3.1-8B --v-tolerance 0.05 --use-int4-values --group-size 16 --tau-cov 0.995 --k-min 2 --k-max 128 --ranking-fallback --ranking-r 1 --ranking-fallback-mode full --eps-guard 0.01 --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 --fp16-key-cache-blocks 9216 --fp16-value-cache-blocks 9216
+[done] pg19 128K exit=0 wall=267.4m
+manifest -> runs/paper_v2_distributed_128k_pg19_slices_12_14/slice_0013/manifest.json
+[slice 13 finished] 2026-04-27T23:57:14+00:00
+[slice 14 started] 2026-04-27T23:57:14+00:00
+[start] pg19 128K slice=14
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 131072 --chunk-index 14 --telemetry-mode summary --certified-warmup-steps 128 --output runs/paper_v2_distributed_128k_pg19_slices_12_14/slice_0014/128K/pg19_slice_0014_128K.json --model NousResearch/Meta-Llama-3.1-8B --v-tolerance 0.05 --use-int4-values --group-size 16 --tau-cov 0.995 --k-min 2 --k-max 128 --ranking-fallback --ranking-r 1 --ranking-fallback-mode full --eps-guard 0.01 --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 --fp16-key-cache-blocks 9216 --fp16-value-cache-blocks 9216
+[done] pg19 128K exit=0 wall=262.1m
+manifest -> runs/paper_v2_distributed_128k_pg19_slices_12_14/slice_0014/manifest.json
+[slice 14 finished] 2026-04-28T04:19:20+00:00
