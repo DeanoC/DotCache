@@ -713,9 +713,11 @@ def main():
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from _provenance import (
         add_paper_cache_args,
+        add_cert_profile_arg,
         cache_config_dict,
         configure_paper_runtime_defaults,
     )
+    add_cert_profile_arg(parser)
     add_paper_cache_args(parser)
     args = parser.parse_args()
     if args.sample_index is not None:

@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pg19_perplexity import load_pg19_chunks
 from _provenance import (
     add_paper_cache_args,
+    add_cert_profile_arg,
     cache_config_dict,
     configure_paper_runtime_defaults,
     resolve_fp16_key_cache_blocks,
@@ -486,9 +487,26 @@ def main() -> int:
     parser.add_argument("--fail-on-value-cache-overflow", action="store_true",
                         help="Abort measured certified decode if bounded FP16 value scratch overflows.")
     parser.add_argument("--output", default="runs/decode_speed_compare.json")
+    add_cert_profile_arg(parser)
     add_paper_cache_args(parser)
     args = parser.parse_args()
     configure_paper_runtime_defaults()
+    if args.cert_profile == "naive-int8k-int4v":
+        args.top_k_fp16 = 0
+        args.tau_cov = 0.0
+        args.k_min = 0
+        args.k_max = 0
+        args.ranking_fallback = False
+        args.exploration_rate = 0.0
+        args.rung1_threshold = 1.0
+        args.rung1_multiplier = 1.0
+        args.fp16_key_cache_blocks = 0
+        args.fp16_value_cache_blocks = 0
+        args.use_int4_values = True
+        # Keep collect-step-stats off for the naive latency row. Collecting
+        # full certified telemetry would compute value-error bounds and can
+        # reintroduce branches this baseline is meant to exclude.
+        args.collect_step_stats = False
     if args.native_profile:
         os.environ["DOTCACHE_NATIVE_PROFILE"] = "1"
 

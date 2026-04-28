@@ -170,6 +170,8 @@ def cache_config_dict(args: argparse.Namespace) -> dict[str, Any]:
         "runtime_profile": os.environ.get("DOTCACHE_RUNTIME_PROFILE", "0"),
         "code_sha": _git_sha(),
     }
+    if hasattr(args, "cert_profile"):
+        config["cert_profile"] = getattr(args, "cert_profile")
     config["dotcache_config_hash"] = hashlib.sha256(
         json.dumps(config, sort_keys=True).encode()
     ).hexdigest()
@@ -210,6 +212,19 @@ def add_paper_cache_args(parser: argparse.ArgumentParser) -> None:
         help="Bounded GPU FP16 value fallback scratch capacity in blocks "
              f"(paper default: {DEFAULT_FP16_VALUE_CACHE_BLOCKS}). Use 0 for "
              "one-step page-in only, or 'full' only for legacy/debug full mirror.",
+    )
+
+
+def add_cert_profile_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cert-profile",
+        choices=["certified", "naive-int8k-int4v"],
+        default="certified",
+        help=(
+            "Provenance label for the certified adapter configuration. "
+            "naive-int8k-int4v means plain all-block INT8-key/INT4-value "
+            "attention with adaptive promotion and fallback machinery disabled."
+        ),
     )
 
 

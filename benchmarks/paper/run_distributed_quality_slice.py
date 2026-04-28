@@ -39,7 +39,39 @@ def _context_blocks(context: int, *, block_size: int = 16) -> int:
     return (int(context) + block_size - 1) // block_size
 
 
-def _cert_args(context: int, *, cache_mode: str) -> list[str]:
+def _naive_quant_args() -> list[str]:
+    """Plain INT8K/INT4V baseline: no adaptive promotion or fallbacks.
+
+    The benchmark CLIs still call this path "certified" internally because it
+    reuses the Llama adapter and tiered cache. With tau_cov/ranking/score/
+    exploration disabled and top_k_fp16 set to zero per benchmark command, the
+    kernel path is all-block INT8-key scoring plus INT4-value attention with no
+    Rung 1-4 fallback machinery.
+    """
+    return [
+        "--model", MODEL,
+        "--cert-profile", "naive-int8k-int4v",
+        "--v-tolerance", "1000000000.0",
+        "--use-int4-values",
+        "--group-size", "16",
+        "--tau-cov", "0",
+        "--k-min", "0",
+        "--k-max", "0",
+        "--eps-guard", "0.01",
+        "--exploration-rate", "0.0",
+        "--rung1-threshold", "1.0",
+        "--rung1-multiplier", "1.0",
+        "--fp16-key-cache-blocks", "0",
+        "--fp16-value-cache-blocks", "0",
+    ]
+
+
+def _cert_args(context: int, *, cache_mode: str, cert_profile: str) -> list[str]:
+    if cert_profile == "naive-int8k-int4v":
+        return _naive_quant_args()
+    if cert_profile != "certified":
+        raise ValueError(f"unknown cert profile: {cert_profile}")
+
     args = _common_cert_args(context)
     if cache_mode == "v2-bounded":
         return args
@@ -86,6 +118,7 @@ def build_jobs(
     benches: list[str],
     output_dir: Path,
     cache_mode: str,
+    cert_profile: str = "certified",
     niah_trials_per_slice: int = 1,
 ) -> list[dict[str, Any]]:
     if mode == "context" and len(contexts) != 1:
@@ -110,7 +143,7 @@ def build_jobs(
         for bench in benches:
             out_json = ctx_dir / f"{bench}_slice_{slice_id:04d}_{ctx_k}K.json"
             log_path = ctx_dir / f"{bench}_slice_{slice_id:04d}_{ctx_k}K.log"
-            common = _cert_args(context, cache_mode=cache_mode)
+            common = _cert_args(context, cache_mode=cache_mode, cert_profile=cert_profile)
             if bench == "pg19":
                 cmd = [
                     sys.executable, str(PAPER / "pg19_perplexity.py"),
@@ -121,6 +154,8 @@ def build_jobs(
                     "--output", str(out_json),
                     *common,
                 ]
+                if cert_profile == "naive-int8k-int4v":
+                    cmd.extend(["--top-k-override", "0"])
             elif bench == "niah":
                 niah_trial_start = slice_id * niah_trials_per_slice
                 cmd = [
@@ -132,6 +167,8 @@ def build_jobs(
                     "--output", str(out_json),
                     *common,
                 ]
+                if cert_profile == "naive-int8k-int4v":
+                    cmd.extend(["--top-k-fp16", "0"])
             elif bench == "ruler":
                 cmd = [
                     sys.executable, str(PAPER / "ruler.py"),
@@ -140,6 +177,8 @@ def build_jobs(
                     "--output", str(out_json),
                     *common,
                 ]
+                if cert_profile == "naive-int8k-int4v":
+                    cmd.extend(["--top-k-fp16", "0"])
             else:
                 raise ValueError(f"unknown benchmark: {bench}")
 
@@ -152,6 +191,7 @@ def build_jobs(
                 "command": cmd,
                 "command_string": " ".join(shlex.quote(c) for c in cmd),
                 "cache_mode": cache_mode,
+                "cert_profile": cert_profile,
                 "recommended_v2_cache_blocks": recommended_fp16_cache_blocks(context),
             })
     return jobs
@@ -245,6 +285,14 @@ def main() -> int:
     parser.add_argument("--benches", nargs="+", choices=DEFAULT_BENCHES, default=DEFAULT_BENCHES)
     parser.add_argument("--cache-mode", choices=["full-bounded", "v2-bounded", "full-mirror"],
                         default="full-bounded")
+    parser.add_argument("--cert-profile", choices=["certified", "naive-int8k-int4v"],
+                        default="certified",
+                        help=(
+                            "Certified runs use the paper fallback stack. "
+                            "naive-int8k-int4v uses INT8 keys + INT4 values with "
+                            "adaptive promotion, ranking fallback, score canary, "
+                            "exploration, and FP16 scratch caches disabled."
+                        ))
     parser.add_argument("--niah-trials-per-slice", type=int, default=1,
                         help="Number of paired NIAH trials to run for each distributed slice.")
     parser.add_argument("--output-dir", type=Path, default=Path("runs/paper_v2_distributed"))
@@ -268,6 +316,7 @@ def main() -> int:
             benches=list(args.benches),
             output_dir=args.output_dir,
             cache_mode=args.cache_mode,
+            cert_profile=args.cert_profile,
             niah_trials_per_slice=args.niah_trials_per_slice,
         )
     except ValueError as exc:
@@ -278,6 +327,7 @@ def main() -> int:
         "mode": args.mode,
         "model": MODEL,
         "cache_mode": args.cache_mode,
+        "cert_profile": args.cert_profile,
         "niah_trials_per_slice": int(args.niah_trials_per_slice),
         "created": dt.datetime.now(dt.timezone.utc).isoformat(),
         "provenance": _manifest_provenance(),
