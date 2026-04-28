@@ -394,6 +394,10 @@ def _summarize_step_aggs(step_aggs: list[dict[str, Any]]) -> dict[str, Any]:
     value_overflow_decode_steps = sum(
         1 for s in step_aggs if int(s.get("fp16_value_cache_overflow_step", 0) or 0) > 0
     )
+    mixedv_splitk_fallback_layer_steps = total("mixedv_splitk_fallback_step")
+    mixedv_splitk_fallback_decode_steps = sum(
+        1 for s in step_aggs if int(s.get("mixedv_splitk_fallback_step", 0) or 0) > 0
+    )
     value_needed_vals = [
         int(s["fp16_value_cache_needed_blocks_step"])
         for s in step_aggs
@@ -435,6 +439,10 @@ def _summarize_step_aggs(step_aggs: list[dict[str, Any]]) -> dict[str, Any]:
         "fp16_value_cache_overflow_layers_per_step": float(value_overflow_layer_steps / n),
         "fp16_value_cache_needed_blocks_mean": _mean([float(v) for v in value_needed_vals]),
         "fp16_value_cache_needed_blocks_max": int(max(value_needed_vals)) if value_needed_vals else 0,
+        "mixedv_splitk_fallback_steps": mixedv_splitk_fallback_decode_steps,
+        "mixedv_splitk_fallback_rate": float(mixedv_splitk_fallback_decode_steps / n),
+        "mixedv_splitk_fallback_layer_steps": mixedv_splitk_fallback_layer_steps,
+        "mixedv_splitk_fallback_layers_per_step": float(mixedv_splitk_fallback_layer_steps / n),
     }
 
 

@@ -1140,6 +1140,7 @@ def certified_attention_layer(
     fp16_value_cache_evictions_step = 0
     fp16_value_cache_needed_blocks = 0
     fp16_value_cache_overflow_step = 0
+    mixedv_splitk_fallback_step = 0
     prefetched_keys_fp16_gpu: torch.Tensor | None = None
     prefetched_key_block_slots: torch.Tensor | None = None
     int8_token_scores: torch.Tensor | None = None
@@ -2188,6 +2189,7 @@ def certified_attention_layer(
 
                     if (not gpu_mask_pagein) and use_one_step_value_pagein:
                         dynamic_one_step_value_scratch = True
+                        mixedv_splitk_fallback_step = 1
                         value_block_slots[unsafe_block_ids] = torch.arange(
                             n_value_slots,
                             dtype=torch.int32,
@@ -2603,6 +2605,7 @@ def certified_attention_layer(
             stats["fp16_value_cache_evictions_step"] = int(fp16_value_cache_evictions_step)
             stats["fp16_value_cache_needed_blocks_step"] = int(fp16_value_cache_needed_blocks)
             stats["fp16_value_cache_overflow_step"] = int(fp16_value_cache_overflow_step)
+            stats["mixedv_splitk_fallback_step"] = int(mixedv_splitk_fallback_step)
             total_value_access = fp16_value_cache_hits_step + fp16_value_cache_misses_step
             stats["fp16_value_cache_hit_rate_step"] = (
                 float(fp16_value_cache_hits_step) / total_value_access
