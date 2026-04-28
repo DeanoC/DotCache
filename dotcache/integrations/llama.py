@@ -254,6 +254,9 @@ class CertifiedAttentionState:
             agg["fp16_value_cache_overflow_step"] = int(sum(
                 s.get("fp16_value_cache_overflow_step", 0) for s in entries
             ))
+            agg["mixedv_splitk_fallback_step"] = int(sum(
+                s.get("mixedv_splitk_fallback_step", 0) for s in entries
+            ))
         # Per-rung step flag: True if any layer triggered the rung this step.
         for rung_k in ("rung1_fired", "rung2_fired", "rung3_fired", "rung4_fired"):
             if any(rung_k in s for s in entries):
