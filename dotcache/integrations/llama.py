@@ -1047,7 +1047,7 @@ class LlamaDotCacheModelAdapter:
             tiered_caches = create_tiered_cache_from_model(
                 past_key_values, layer_ids, block_size=block_size,
                 max_new_tokens=max_new_tokens,
-                fp16_key_cache_capacity=None,
+                fp16_key_cache_capacity=fp16_key_cache_capacity,
             )
 
         self.certified_state = CertifiedAttentionState(

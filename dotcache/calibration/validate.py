@@ -92,10 +92,14 @@ def validate_profile(
                     out_oracle[qh] = w @ vf
                 del kf, vf
 
-            # Certified
+            # Certified. block_epsilon was removed from the kernel signature
+            # (see dotcache/kernels/certified_attention.py: it is permanently
+            # pinned to 0.0). `eps` from the profile is retained for
+            # downstream telemetry but no longer affects skipping.
+            _ = eps  # acknowledge legacy variable; kernel ignores it now
             out_cert, stats = certified_attention_layer(
                 cache, q_all, gqa, q_scale,
-                block_epsilon=eps, collect_stats=True,
+                collect_stats=True,
                 v_tolerance=0.5,  # legacy default for non-paper calibration
             )
 

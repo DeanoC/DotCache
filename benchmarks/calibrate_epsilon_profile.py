@@ -63,8 +63,13 @@ def calibrate_layer(
     best_skip = 0.0
 
     for eps in EPSILON_CANDIDATES:
+        # block_epsilon is permanently pinned to 0.0 inside the kernel
+        # (see dotcache/kernels/certified_attention.py). The sweep over
+        # `eps` is preserved for the existing calibration loop shape,
+        # but the kernel no longer uses it for skip decisions.
+        _ = eps
         out_cert, stats = certified_attention_layer(
-            cache, q_all, gqa, q_scale, block_epsilon=eps, collect_stats=True,
+            cache, q_all, gqa, q_scale, collect_stats=True,
             v_tolerance=0.5,
         )
         cos = torch.nn.functional.cosine_similarity(out_dense, out_cert, dim=1)
