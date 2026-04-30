@@ -34,9 +34,9 @@ for cap in "${CAPS[@]}"; do
 done
 
 echo "=== collating ==="
-python3 - <<'PY'
-import re, pathlib
-OUT_DIR = pathlib.Path("benchmarks/results/perf_tests_20260423")
+OUT_DIR="$OUT_DIR" python3 - <<'PY'
+import os, re, pathlib
+OUT_DIR = pathlib.Path(os.environ["OUT_DIR"])
 lines = ["# 64K capacity sweep (per-KV-group, split-K kernel, OrderedDict LRU)", "",
          "| cap | mean ms/step | p50 ms/step | p95 ms/step | tok/s |",
          "|---|---:|---:|---:|---:|"]

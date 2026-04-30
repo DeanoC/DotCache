@@ -32,6 +32,7 @@ for TAU in 0.99 0.995 0.999; do
     --k-max 128 \
     --ranking-fallback \
     --ranking-r 1 \
+    --score-consistency-check \
     --eps-guard 0.01 \
     --exploration-rate 0.02 \
     --rung1-threshold 0.02 \

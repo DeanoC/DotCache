@@ -1,0 +1,7 @@
+
+=== 2026-04-23T23:55:18Z :: PG-19 ctx=131072 SMOKE (1 chunk, 3h budget) ===
+
+=== 2026-04-24T02:55:21Z :: PG-19 ctx=131072 SMOKE exit=124 ===
+
+=== 2026-04-24T02:55:21Z :: SMOKE FAILED — aborting full 128K run ===
+smoke log: /workspace/DotCache/benchmarks/results/pg19_rerun_20260423/pg19_ctx131072_smoke.log
