@@ -1,0 +1,43 @@
+
+=== 2026-04-23T22:23:53Z :: E_key short pass start ===
+
+=== 2026-04-23T22:23:53Z :: ctx=8192 (5 chunks, instrumented) ===
+
+=== 2026-04-23T22:54:44Z :: ctx=8192 exit=0 ===
+  bits/token (full): 2.7342 (95% CI [2.6984, 2.7690])
+  bits/token (certified suffix only): 2.6829 (95% CI [2.5422, 2.8053])
+
+==================================================
+Summary
+==================================================
+Context: 8192 tokens, 5 chunks
+Dense perplexity:     6.6483
+Certified perplexity: 6.6540
+Ratio (cert/dense):   1.000844
+Delta:                +0.0056
+INT8-tail rate:       0.5529 (4457280858/8060928000 blocks served from cheap INT8-key path; every block attended)
+Concentration thr:    0.0
+
+JSON -> /workspace/DotCache/benchmarks/results/pg19_ekey_short_20260423/pg19_ctx8192_ekey.json
+
+=== 2026-04-23T22:54:44Z :: ctx=16384 (5 chunks, instrumented) ===
+
+=== 2026-04-23T23:55:18Z :: ctx=16384 exit=0 ===
+  bits/token (full): 3.2821 (95% CI [2.7218, 3.8425])
+  bits/token (certified suffix only): 3.2721 (95% CI [2.7307, 3.8135])
+
+==================================================
+Summary
+==================================================
+Context: 16384 tokens, 5 chunks
+Dense perplexity:     9.7247
+Certified perplexity: 9.7277
+Ratio (cert/dense):   1.000311
+Delta:                +0.0030
+INT8-tail rate:       0.7351 (23689746668/32227983360 blocks served from cheap INT8-key path; every block attended)
+Concentration thr:    0.0
+
+JSON -> /workspace/DotCache/benchmarks/results/pg19_ekey_short_20260423/pg19_ctx16384_ekey.json
+
+=== 2026-04-23T23:55:18Z :: E_key short pass done ===
+Results in /workspace/DotCache/benchmarks/results/pg19_ekey_short_20260423

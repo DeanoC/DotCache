@@ -119,18 +119,19 @@ tail -50 "$OUT_DIR/ruler_summary.log" || true
 # ── Final summary ─────────────────────────────────────────────────
 banner "writing SUMMARY.md"
 "$PY" - <<PY > "$OUT_DIR/SUMMARY.md" 2>&1 || true
+import json
 import re
 from pathlib import Path
 
 OUT = Path("$OUT_DIR")
 
-def tail_match(path, pattern, limit=200):
+def tail_match(path, pattern, limit=200, flags=0):
     """Return first regex match in the last \`limit\` lines of \`path\`, or None."""
     if not Path(path).exists():
         return None
     lines = Path(path).read_text().splitlines()
     blob = "\n".join(lines[-limit:])
-    m = re.search(pattern, blob)
+    m = re.search(pattern, blob, flags)
     return m.groupdict() if m else None
 
 def collect_cap_sweep():
@@ -147,14 +148,36 @@ def collect_cap_sweep():
     return rows
 
 def collect_value_error(ctx):
-    r = tail_match(
+    # Prefer the JSON output; fall back to the multi-line log if the
+    # JSON is missing. The bench writes loose/tight/ratio on separate
+    # lines, so the regex must span newlines (re.DOTALL).
+    j = OUT / f"value_error_sweep_ctx{ctx}.json"
+    if j.exists():
+        try:
+            data = json.loads(j.read_text())
+            s = data["summary"]
+            return {
+                "l": f"{s['loose_mean']:.4f}",
+                "t": f"{s['tight_mean']:.4f}",
+                "ratio": f"{s['ratio_mean']:.4f}",
+            }
+        except (KeyError, json.JSONDecodeError):
+            pass
+    return tail_match(
         OUT / f"value_error_sweep_ctx{ctx}.log",
         r"loose bound\s+mean=(?P<l>[\d.]+).*?tight bound\s+mean=(?P<t>[\d.]+).*?tight / loose ratio\s+mean=(?P<ratio>[\d.]+)",
         limit=60,
+        flags=re.DOTALL,
     )
-    return r
 
 print("# Overnight 2026-04-23 — summary")
+print()
+print("> **Vocabulary note (Paper 1):** the certified path attends *every*")
+print("> block. Top-K* blocks use FP16 keys; the tail uses INT8 keys. The")
+print("> metric formerly logged as `skip_rate` is the **INT8-tail rate** —")
+print("> the fraction of blocks served from the cheap INT8-key path, not a")
+print("> drop rate. Logs from runs predating commit b7ec3165 still print the")
+print("> word \"skip\"; read it as \"int8_tail\".")
 print()
 print("## Perf stage")
 print()
@@ -166,6 +189,18 @@ for row in collect_cap_sweep():
     print(row)
 print()
 print("### 1c. Context-scaling summary (tail of log)")
+print()
+print("> ⚠️ **REJECTED — measured the wrong algorithm.** This sweep ran")
+print("> \`bench_certified_64k.py\` *before* the Paper-1 fix. That harness")
+print("> called \`adapter.load_certified_cache(...)\` without forwarding")
+print("> \`tau_cov\`, so \`CertifiedAttentionState.tau_cov\` defaulted to \`None\`")
+print("> and the kernel dispatch (\`certified_attention.py:960-1083\`) fell")
+print("> through to the legacy SDPA-with-skip branch — Paper-2 block-")
+print("> skipping semantics, not Paper-1 hybrid attend-all. The 80% \"skip")
+print("> rate\" here is real block dropping, and the broken \`cert_text\`")
+print("> samples in \`certified_64k_int8model.json\` confirm the Paper-2 §9")
+print("> non-monotonicity failure mode. The bench is patched on this")
+print("> branch; rerun pending.")
 print()
 log = OUT / "context_scaling.log"
 if log.exists():

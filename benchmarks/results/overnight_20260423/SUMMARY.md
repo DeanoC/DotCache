@@ -1,5 +1,12 @@
 # Overnight 2026-04-23 — summary
 
+> **Vocabulary note (Paper 1):** the certified path attends *every*
+> block. Top-K* blocks use FP16 keys; the tail uses INT8 keys. The
+> metric formerly logged as `skip_rate` is the **INT8-tail rate** —
+> the fraction of blocks served from the cheap INT8-key path, not a
+> drop rate. Logs from runs predating commit b7ec3165 still print the
+> word "skip"; read it as "int8_tail".
+
 ## Perf stage
 
 ### 1b. 64K cap sweep (per-KV-group)
@@ -12,6 +19,18 @@
 | 2048 | 897.69 | 899.70 | 937.65 | 1.11 |
 
 ### 1c. Context-scaling summary (tail of log)
+
+> ⚠️ **REJECTED — measured the wrong algorithm.** This sweep ran
+> `bench_certified_64k.py` *before* the Paper-1 fix. That harness
+> called `adapter.load_certified_cache(...)` without forwarding
+> `tau_cov`, so `CertifiedAttentionState.tau_cov` defaulted to `None`
+> and the kernel dispatch (`certified_attention.py:960-1083`) fell
+> through to the legacy SDPA-with-skip branch — Paper-2 block-
+> skipping semantics, not Paper-1 hybrid attend-all. The 80% "skip
+> rate" here is real block dropping, and the broken `cert_text`
+> samples in `certified_64k_int8model.json` (e.g. 32K's `\"layer  \`
+> layer  \`layer  ...\"`) confirm the Paper-2 §9 non-monotonicity
+> failure mode. The bench is patched on this branch; rerun pending.
 
 ```
   Dense:     42.6 ms/step, peak 13.46 GB
@@ -63,8 +82,8 @@ JSON -> benchmarks/results/certified_64k_int8model.json
 
 | context | loose mean | tight mean | tight/loose |
 |---|---:|---:|---:|
-| 16384 | — | — | (run failed) |
-| 32768 | — | — | (run failed) |
+| 16384 | 0.2892 | 0.1764 | 0.6364 |
+| 32768 | 0.2703 | 0.1577 | 0.6087 |
 
 ## Quality stage
 
