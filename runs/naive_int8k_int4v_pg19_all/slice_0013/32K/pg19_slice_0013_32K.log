@@ -1,0 +1,169 @@
+started: 2026-04-29T03:12:58.029038+00:00
+cmd: /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 13 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0013/32K/pg19_slice_0013_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+---
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|                                                                                                        | 0/291 [00:00<?, ?it/s]Loading weights:   0%|▎                                                                                               | 1/291 [00:00<01:18,  3.71it/s]Loading weights:   1%|▋                                                                                               | 2/291 [00:00<01:07,  4.27it/s]Loading weights:   1%|█▎                                                                                              | 4/291 [00:00<00:34,  8.33it/s]Loading weights:   2%|█▉                                                                                              | 6/291 [00:00<00:31,  8.95it/s]Loading weights:   4%|████▏                                                                                          | 13/291 [00:01<00:15, 18.17it/s]Loading weights:   5%|████▉                                                                                          | 15/291 [00:01<00:18, 15.11it/s]Loading weights:   7%|██████▏                                                                                        | 19/291 [00:01<00:14, 19.19it/s]Loading weights:   8%|███████▏                                                                                       | 22/291 [00:01<00:14, 18.88it/s]Loading weights:   9%|████████▏                                                                                      | 25/291 [00:01<00:15, 17.25it/s]Loading weights:  11%|██████████                                                                                     | 31/291 [00:01<00:12, 21.01it/s]Loading weights:  12%|███████████                                                                                    | 34/291 [00:02<00:13, 18.80it/s]Loading weights:  13%|████████████                                                                                   | 37/291 [00:02<00:12, 20.79it/s]Loading weights:  14%|█████████████                                                                                  | 40/291 [00:02<00:12, 19.92it/s]Loading weights:  15%|██████████████                                                                                 | 43/291 [00:02<00:13, 17.94it/s]Loading weights:  17%|███████████████▉                                                                               | 49/291 [00:02<00:11, 21.45it/s]Loading weights:  18%|████████████████▉                                                                              | 52/291 [00:03<00:12, 18.75it/s]Loading weights:  20%|██████████████████▉                                                                            | 58/291 [00:03<00:11, 20.39it/s]Loading weights:  21%|███████████████████▉                                                                           | 61/291 [00:03<00:12, 17.88it/s]Loading weights:  23%|█████████████████████▊                                                                         | 67/291 [00:03<00:11, 19.59it/s]Loading weights:  24%|██████████████████████▌                                                                        | 69/291 [00:04<00:13, 16.76it/s]Loading weights:  25%|███████████████████████▊                                                                       | 73/291 [00:04<00:10, 19.85it/s]Loading weights:  26%|████████████████████████▊                                                                      | 76/291 [00:04<00:11, 19.12it/s]Loading weights:  27%|█████████████████████████▊                                                                     | 79/291 [00:04<00:12, 17.52it/s]Loading weights:  28%|██████████████████████████▊                                                                    | 82/291 [00:04<00:10, 19.48it/s]Loading weights:  29%|███████████████████████████▋                                                                   | 85/291 [00:04<00:10, 19.54it/s]Loading weights:  30%|████████████████████████████▋                                                                  | 88/291 [00:04<00:11, 17.67it/s]Loading weights:  32%|██████████████████████████████▋                                                                | 94/291 [00:05<00:09, 20.92it/s]Loading weights:  33%|███████████████████████████████▋                                                               | 97/291 [00:05<00:10, 18.75it/s]Loading weights:  34%|████████████████████████████████▎                                                             | 100/291 [00:05<00:09, 20.39it/s]Loading weights:  35%|█████████████████████████████████▎                                                            | 103/291 [00:05<00:09, 19.63it/s]Loading weights:  36%|██████████████████████████████████▏                                                           | 106/291 [00:05<00:10, 17.68it/s]Loading weights:  37%|███████████████████████████████████▏                                                          | 109/291 [00:06<00:09, 19.44it/s]Loading weights:  38%|████████████████████████████████████▏                                                         | 112/291 [00:06<00:08, 21.26it/s]Loading weights:  40%|█████████████████████████████████████▏                                                        | 115/291 [00:06<00:09, 18.55it/s]Loading weights:  42%|███████████████████████████████████████                                                       | 121/291 [00:06<00:08, 20.75it/s]Loading weights:  43%|████████████████████████████████████████                                                      | 124/291 [00:06<00:08, 18.73it/s]Loading weights:  45%|█████████████████████████████████████████▉                                                    | 130/291 [00:07<00:07, 21.68it/s]Loading weights:  46%|██████████████████████████████████████████▉                                                   | 133/291 [00:07<00:09, 17.41it/s]Loading weights:  47%|███████████████████████████████████████████▉                                                  | 136/291 [00:07<00:08, 19.01it/s]Loading weights:  48%|████████████████████████████████████████████▉                                                 | 139/291 [00:07<00:08, 18.70it/s]Loading weights:  48%|█████████████████████████████████████████████▌                                                | 141/291 [00:07<00:09, 15.60it/s]Loading weights:  51%|███████████████████████████████████████████████▊                                              | 148/291 [00:08<00:06, 21.14it/s]Loading weights:  52%|████████████████████████████████████████████████▊                                             | 151/291 [00:08<00:07, 18.95it/s]Loading weights:  53%|█████████████████████████████████████████████████▋                                            | 154/291 [00:08<00:06, 20.65it/s]Loading weights:  54%|██████████████████████████████████████████████████▋                                           | 157/291 [00:08<00:06, 20.00it/s]Loading weights:  55%|███████████████████████████████████████████████████▋                                          | 160/291 [00:08<00:07, 17.95it/s]Loading weights:  57%|█████████████████████████████████████████████████████▌                                        | 166/291 [00:08<00:05, 21.40it/s]Loading weights:  58%|██████████████████████████████████████████████████████▌                                       | 169/291 [00:09<00:06, 19.03it/s]Loading weights:  59%|███████████████████████████████████████████████████████▌                                      | 172/291 [00:09<00:05, 20.85it/s]Loading weights:  60%|████████████████████████████████████████████████████████▌                                     | 175/291 [00:09<00:05, 20.11it/s]Loading weights:  61%|█████████████████████████████████████████████████████████▍                                    | 178/291 [00:09<00:06, 18.04it/s]Loading weights:  62%|██████████████████████████████████████████████████████████▍                                   | 181/291 [00:09<00:05, 20.10it/s]Loading weights:  63%|███████████████████████████████████████████████████████████▍                                  | 184/291 [00:09<00:05, 19.02it/s]Loading weights:  64%|████████████████████████████████████████████████████████████▍                                 | 187/291 [00:10<00:06, 17.24it/s]Loading weights:  66%|██████████████████████████████████████████████████████████████▎                               | 193/291 [00:10<00:04, 21.15it/s]Loading weights:  67%|███████████████████████████████████████████████████████████████▎                              | 196/291 [00:10<00:05, 18.88it/s]Loading weights:  69%|█████████████████████████████████████████████████████████████████▎                            | 202/291 [00:10<00:04, 20.01it/s]Loading weights:  70%|██████████████████████████████████████████████████████████████████▏                           | 205/291 [00:11<00:04, 18.32it/s]Loading weights:  73%|████████████████████████████████████████████████████████████████████▏                         | 211/291 [00:11<00:03, 21.33it/s]Loading weights:  74%|█████████████████████████████████████████████████████████████████████▏                        | 214/291 [00:11<00:04, 17.75it/s]Loading weights:  76%|███████████████████████████████████████████████████████████████████████                       | 220/291 [00:11<00:03, 20.60it/s]Loading weights:  77%|████████████████████████████████████████████████████████████████████████                      | 223/291 [00:11<00:03, 18.87it/s]Loading weights:  78%|█████████████████████████████████████████████████████████████████████████                     | 226/291 [00:12<00:03, 20.34it/s]Loading weights:  79%|█████████████████████████████████████████████████████████████████████████▉                    | 229/291 [00:12<00:03, 19.22it/s]Loading weights:  80%|██████████████████████████████████████████████████████████████████████████▉                   | 232/291 [00:12<00:03, 17.54it/s]Loading weights:  81%|███████████████████████████████████████████████████████████████████████████▉                  | 235/291 [00:12<00:02, 19.54it/s]Loading weights:  82%|████████████████████████████████████████████████████████████████████████████▉                 | 238/291 [00:12<00:02, 18.97it/s]Loading weights:  83%|█████████████████████████████████████████████████████████████████████████████▊                | 241/291 [00:12<00:02, 17.33it/s]Loading weights:  85%|███████████████████████████████████████████████████████████████████████████████▊              | 247/291 [00:13<00:02, 21.05it/s]Loading weights:  86%|████████████████████████████████████████████████████████████████████████████████▊             | 250/291 [00:13<00:02, 18.80it/s]Loading weights:  88%|██████████████████████████████████████████████████████████████████████████████████▋           | 256/291 [00:13<00:01, 20.17it/s]Loading weights:  89%|███████████████████████████████████████████████████████████████████████████████████▋          | 259/291 [00:13<00:01, 18.47it/s]Loading weights:  91%|█████████████████████████████████████████████████████████████████████████████████████▌        | 265/291 [00:14<00:01, 21.36it/s]Loading weights:  92%|██████████████████████████████████████████████████████████████████████████████████████▌       | 268/291 [00:14<00:01, 19.21it/s]Loading weights:  93%|███████████████████████████████████████████████████████████████████████████████████████▌      | 271/291 [00:14<00:00, 20.99it/s]Loading weights:  94%|████████████████████████████████████████████████████████████████████████████████████████▌     | 274/291 [00:14<00:00, 20.31it/s]Loading weights:  95%|█████████████████████████████████████████████████████████████████████████████████████████▍    | 277/291 [00:14<00:00, 17.61it/s]Loading weights:  96%|██████████████████████████████████████████████████████████████████████████████████████████▍   | 280/291 [00:14<00:00, 18.87it/s]Loading weights:  97%|███████████████████████████████████████████████████████████████████████████████████████████▍  | 283/291 [00:15<00:00, 18.32it/s]Loading weights:  98%|████████████████████████████████████████████████████████████████████████████████████████████  | 285/291 [00:15<00:00, 15.24it/s]Loading weights:  99%|█████████████████████████████████████████████████████████████████████████████████████████████▎| 289/291 [00:15<00:00, 19.27it/s]Loading weights: 100%|██████████████████████████████████████████████████████████████████████████████████████████████| 291/291 [00:15<00:00, 18.93it/s]
+Model: 9.09 GB
+
+Loading PG-19 test set: 1 chunks × 32768 tokens (start=13)...
+Loaded 1 chunks in 3.7s
+
+==================================================
+Dense perplexity
+==================================================
+  Dense [1/1]: ppl=9.90
+Dense: ppl=9.90 (32767 tokens, 3.3s)
+  bits/token: 3.3072 (95% bootstrap CI [3.3072, 3.3072], n=1 chunks)
+
+==================================================
+Certified perplexity
+==================================================
+  Certified [1/1] prefill_ms=1102.1
+  Certified [1/1] prefix_nll_ms=79.7
+  Certified [1/1] warmup_steps=128 warmup_ms=28333.6
+  Certified [1/1] cache_build_ms=3484.2
+  Certified [1/1] cache_cleanup_ms=3693.5
+    certified progress chunk=1/1 tokens=128/16383 tok/s=6.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=256/16383 tok/s=6.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=384/16383 tok/s=6.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=512/16383 tok/s=6.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=640/16383 tok/s=6.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=768/16383 tok/s=6.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=896/16383 tok/s=6.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1024/16383 tok/s=6.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1152/16383 tok/s=6.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1280/16383 tok/s=6.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1408/16383 tok/s=6.07 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1536/16383 tok/s=6.05 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1664/16383 tok/s=6.04 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1792/16383 tok/s=6.03 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1920/16383 tok/s=6.02 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2048/16383 tok/s=6.01 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2176/16383 tok/s=5.99 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2304/16383 tok/s=5.98 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2432/16383 tok/s=5.97 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2560/16383 tok/s=5.96 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2688/16383 tok/s=5.94 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2816/16383 tok/s=5.93 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2944/16383 tok/s=5.92 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3072/16383 tok/s=5.91 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3200/16383 tok/s=5.90 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3328/16383 tok/s=5.89 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3456/16383 tok/s=5.88 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3584/16383 tok/s=5.87 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3712/16383 tok/s=5.86 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3840/16383 tok/s=5.85 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3968/16383 tok/s=5.84 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4096/16383 tok/s=5.83 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4224/16383 tok/s=5.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4352/16383 tok/s=5.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4480/16383 tok/s=5.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4608/16383 tok/s=5.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4736/16383 tok/s=5.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4864/16383 tok/s=5.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4992/16383 tok/s=5.76 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5120/16383 tok/s=5.75 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5248/16383 tok/s=5.74 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5376/16383 tok/s=5.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5504/16383 tok/s=5.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5632/16383 tok/s=5.71 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5760/16383 tok/s=5.70 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5888/16383 tok/s=5.69 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6016/16383 tok/s=5.68 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6144/16383 tok/s=5.67 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6272/16383 tok/s=5.66 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6400/16383 tok/s=5.65 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6528/16383 tok/s=5.64 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6656/16383 tok/s=5.63 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6784/16383 tok/s=5.62 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6912/16383 tok/s=5.61 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7040/16383 tok/s=5.60 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7168/16383 tok/s=5.59 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7296/16383 tok/s=5.58 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7424/16383 tok/s=5.57 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7552/16383 tok/s=5.56 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7680/16383 tok/s=5.55 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7808/16383 tok/s=5.54 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7936/16383 tok/s=5.54 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8064/16383 tok/s=5.53 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8192/16383 tok/s=5.52 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8320/16383 tok/s=5.51 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8448/16383 tok/s=5.50 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8576/16383 tok/s=5.49 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8704/16383 tok/s=5.48 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8832/16383 tok/s=5.47 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8960/16383 tok/s=5.46 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9088/16383 tok/s=5.45 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9216/16383 tok/s=5.44 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9344/16383 tok/s=5.43 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9472/16383 tok/s=5.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9600/16383 tok/s=5.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9728/16383 tok/s=5.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9856/16383 tok/s=5.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9984/16383 tok/s=5.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10112/16383 tok/s=5.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10240/16383 tok/s=5.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10368/16383 tok/s=5.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10496/16383 tok/s=5.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10624/16383 tok/s=5.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10752/16383 tok/s=5.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10880/16383 tok/s=5.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11008/16383 tok/s=5.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11136/16383 tok/s=5.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11264/16383 tok/s=5.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11392/16383 tok/s=5.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11520/16383 tok/s=5.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11648/16383 tok/s=5.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11776/16383 tok/s=5.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11904/16383 tok/s=5.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12032/16383 tok/s=5.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12160/16383 tok/s=5.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12288/16383 tok/s=5.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12416/16383 tok/s=5.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12544/16383 tok/s=5.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12672/16383 tok/s=5.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12800/16383 tok/s=5.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12928/16383 tok/s=5.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13056/16383 tok/s=5.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13184/16383 tok/s=5.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13312/16383 tok/s=5.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13440/16383 tok/s=5.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13568/16383 tok/s=5.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13696/16383 tok/s=5.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13824/16383 tok/s=5.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13952/16383 tok/s=5.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14080/16383 tok/s=5.07 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14208/16383 tok/s=5.06 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14336/16383 tok/s=5.05 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14464/16383 tok/s=5.04 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14592/16383 tok/s=5.03 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14720/16383 tok/s=5.02 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14848/16383 tok/s=5.01 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14976/16383 tok/s=5.00 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15104/16383 tok/s=4.99 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15232/16383 tok/s=4.99 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15360/16383 tok/s=4.98 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15488/16383 tok/s=4.97 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15616/16383 tok/s=4.96 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15744/16383 tok/s=4.95 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15872/16383 tok/s=4.94 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16000/16383 tok/s=4.93 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16128/16383 tok/s=4.92 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16256/16383 tok/s=4.91 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+  Certified [1/1]: chunk_ppl=44.58, suffix_ppl=192.44, running_ppl=44.58, skip=0.000 (overall 0.000)
+Certified: ppl=44.58 (32766 tokens, 3377.8s)
+  bits/token (full): 5.4785 (95% CI [5.4785, 5.4785])
+  bits/token (certified suffix only): 7.5883 (95% CI [7.5883, 7.5883])
+
+==================================================
+Summary
+==================================================
+Context: 32768 tokens, 1 chunks
+Dense perplexity:     9.8984
+Certified perplexity: 44.5847
+Ratio (cert/dense):   4.504226
+Delta:                +34.6863
+Per-chunk Δppl:       +34.6863 (95% CI [+34.6863, +34.6863], n=1)
+
+JSON -> runs/naive_int8k_int4v_pg19_all/slice_0013/32K/pg19_slice_0013_32K.json

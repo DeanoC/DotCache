@@ -80,15 +80,17 @@ class LlamaReplayRecord:
 
 @dataclass
 class CertifiedAttentionState:
-    """Runtime state for certified attention mode."""
+    """Runtime state for certified attention mode.
+
+    The paper flow attends every block (top-K* + E_key tail bound). There
+    is intentionally no per-layer epsilon / block_epsilon / concentration
+    knob here — those drove the legacy block-skipping path and are gone.
+    """
     tiered_caches: dict  # layer_id → TieredKeyCacheLayer
-    layer_epsilons: dict[int, float]  # per-layer epsilon overrides
-    default_epsilon: float = 1e-4
     block_size: int = 16
     collect_stats: bool = True  # set False during timed runs to avoid GPU syncs
     append_kv: bool = False  # append new K/V tokens to tiered cache during decode
     top_k_fp16_keys: int = 4  # top-K blocks use FP16 keys for quality
-    concentration_threshold: float = 0.0  # if max block mass < this, don't skip (diffuse attention safety)
     # Rung-3 ranking-consistency fallback (detect INT8 vs FP16 ranking disagreement
     # on the top-K blocks and, on disagreement, recompute that head with full FP16
     # keys + values). See docs: Ranking-Consistency Fallback Spec.
@@ -110,8 +112,19 @@ class CertifiedAttentionState:
     # Score-consistency check (paper §6): defence-in-depth per-block Δ bound.
     # Expected trigger rate is exactly 0 on well-behaved runs; non-zero counts
     # indicate Theorem-2 was empirically violated (stale metadata / corruption).
-    score_consistency_check: bool = False
+    score_consistency_check: bool = True
+    # 1 = exact every decode step. Larger values run the score-consistency
+    # canary every N decode steps to avoid a CPU synchronisation on every
+    # layer/token during production benchmark sweeps.
+    score_consistency_interval: int = 1
     eps_guard: float = 0.01
+    # INT4 value tolerance (paper §3.4 / §7). The runtime decides INT4 vs
+    # FP16 values per layer per step by comparing the per-head value-error
+    # bound (Σ_b ρ_b · η_b) against this threshold; below → INT4, above →
+    # Rung-2 escalation to FP16. Paper §7 specifies 0.05. The kernel
+    # requires this to be passed explicitly — no silent default — so paper
+    # benches must set this on the state. Legacy callers should set 0.5.
+    v_tolerance: float = -1.0  # sentinel; validated in __post_init__
     # Exploration budget (paper §6): per-step Bernoulli promotion of a small
     # fraction of non-top-K* blocks to FP16. Monitoring only; 0.0 disables.
     exploration_rate: float = 0.0
@@ -146,10 +159,18 @@ class CertifiedAttentionState:
     # throughput measurements. Accumulates across layers and across steps;
     # the harness should snapshot + reset between steps for per-step series.
     phase_timings: dict | None = None
+    _score_consistency_step: int = 0
 
     def __post_init__(self):
         if self.step_stats is None:
             self.step_stats = []
+        if self.v_tolerance < 0.0:
+            raise ValueError(
+                "CertifiedAttentionState requires explicit v_tolerance "
+                "(paper §7 spec: 0.05). Set v_tolerance=... at construction. "
+                "No silent default — see docs/paper_code_audit_20260424.md "
+                "for the v_tolerance plumbing bug this guard prevents."
+            )
 
     def clear_step_stats(self) -> list[dict]:
         stats = self.step_stats
@@ -217,6 +238,25 @@ class CertifiedAttentionState:
             agg["vram_fp16_value_cache_bytes"] = int(sum(
                 s.get("vram_fp16_value_cache_bytes", 0) for s in entries
             ))
+        if any("fp16_value_cache_hits_step" in s for s in entries):
+            agg["fp16_value_cache_hits_step"] = int(sum(
+                s.get("fp16_value_cache_hits_step", 0) for s in entries
+            ))
+            agg["fp16_value_cache_misses_step"] = int(sum(
+                s.get("fp16_value_cache_misses_step", 0) for s in entries
+            ))
+            agg["fp16_value_cache_evictions_step"] = int(sum(
+                s.get("fp16_value_cache_evictions_step", 0) for s in entries
+            ))
+            agg["fp16_value_cache_needed_blocks_step"] = int(sum(
+                s.get("fp16_value_cache_needed_blocks_step", 0) for s in entries
+            ))
+            agg["fp16_value_cache_overflow_step"] = int(sum(
+                s.get("fp16_value_cache_overflow_step", 0) for s in entries
+            ))
+            agg["mixedv_splitk_fallback_step"] = int(sum(
+                s.get("mixedv_splitk_fallback_step", 0) for s in entries
+            ))
         # Per-rung step flag: True if any layer triggered the rung this step.
         for rung_k in ("rung1_fired", "rung2_fired", "rung3_fired", "rung4_fired"):
             if any(rung_k in s for s in entries):
@@ -224,6 +264,19 @@ class CertifiedAttentionState:
                 agg[rung_k.replace("fired", "fired_layers")] = int(sum(
                     1 for s in entries if bool(s.get(rung_k))
                 ))
+        # Eq. 30 boundary verification (paper §6.1, §8.6 expects 0 across all
+        # cells). Aggregate per-step the same way as the rungs: a step
+        # 'fires' if any layer triggered, with a per-step layer count.
+        if any("boundary_check_fired" in s for s in entries):
+            agg["boundary_check_fired"] = any(
+                bool(s.get("boundary_check_fired")) for s in entries
+            )
+            agg["boundary_check_fired_layers"] = int(sum(
+                1 for s in entries if bool(s.get("boundary_check_fired"))
+            ))
+            agg["boundary_check_triggered_heads_total"] = int(sum(
+                int(s.get("boundary_check_triggered_heads", 0)) for s in entries
+            ))
         # FP16 key cache rollup (paper §3.2 tiered memory). Sum hits/misses
         # across layers for this step; capacity is a constant per layer.
         if any("fp16_cache_capacity_blocks" in s for s in entries):
@@ -243,7 +296,81 @@ class CertifiedAttentionState:
         if k_star_means:
             agg["k_star_mean"] = float(sum(k_star_means) / len(k_star_means))
             agg["k_star_max"] = int(max(s.get("k_star_max", 0) for s in entries))
+        # Tail mass rollup (paper §3.3 ᾱ_T) — mean over layers per step,
+        # max across layers for the worst-case bound.
+        tail_means = [
+            s.get("tail_mass_int8_est_mean") for s in entries
+            if s.get("tail_mass_int8_est_mean") is not None
+        ]
+        if tail_means:
+            agg["tail_mass_int8_est_step_mean"] = float(sum(tail_means) / len(tail_means))
+            agg["tail_mass_int8_est_step_max"] = float(max(
+                s.get("tail_mass_int8_est_max", 0.0) for s in entries
+            ))
+        # Δ bound rollup (paper Eq. 4) — only emitted when score-consistency
+        # was enabled (otherwise δ wasn't computed for telemetry).
+        delta_means = [
+            s.get("delta_bound_mean") for s in entries
+            if s.get("delta_bound_mean") is not None
+        ]
+        if delta_means:
+            agg["delta_bound_step_mean"] = float(sum(delta_means) / len(delta_means))
+        # Paper §4.5 E_key contract — the key-error bound assembled per step
+        # per head and reduced to mean/max here. v_max_layer is the per-
+        # layer V_max = max_b ν_b; we emit the global max across layers
+        # since the paper bound uses the worst-case across the whole cache.
+        e_key_means = [
+            s.get("e_key_step_mean") for s in entries
+            if s.get("e_key_step_mean") is not None
+        ]
+        if e_key_means:
+            agg["e_key_step_mean"] = float(sum(e_key_means) / len(e_key_means))
+            agg["e_key_step_max"] = float(max(
+                s.get("e_key_step_max", 0.0) for s in entries
+            ))
+        e_val_means = [
+            s.get("e_val_mean") for s in entries
+            if s.get("e_val_mean") is not None
+        ]
+        if e_val_means:
+            agg["e_val_mean"] = float(sum(e_val_means) / len(e_val_means))
+            agg["e_val_max"] = float(max(
+                s.get("e_val_max", 0.0) for s in entries
+            ))
+        e_val_pre_means = [
+            s.get("e_val_pre_rung2_mean") for s in entries
+            if s.get("e_val_pre_rung2_mean") is not None
+        ]
+        if e_val_pre_means:
+            agg["e_val_pre_rung2_mean"] = float(sum(e_val_pre_means) / len(e_val_pre_means))
+            agg["e_val_pre_rung2_max"] = float(max(
+                s.get("e_val_pre_rung2_max", 0.0) for s in entries
+            ))
+        if any("value_fallback_blocks" in s for s in entries):
+            agg["value_fallback_blocks"] = int(sum(
+                s.get("value_fallback_blocks", 0) for s in entries
+            ))
+            agg["value_fallback_head_blocks"] = int(sum(
+                s.get("value_fallback_head_blocks", 0) for s in entries
+            ))
+        v_max_layers = [
+            s.get("v_max_layer") for s in entries
+            if s.get("v_max_layer") is not None
+        ]
+        if v_max_layers:
+            agg["v_max_global"] = float(max(v_max_layers))
         return agg
+
+    def score_consistency_enabled_for_layer(self, layer_id: int) -> bool:
+        if not self.score_consistency_check:
+            return False
+        interval = max(1, int(self.score_consistency_interval))
+        if interval <= 1:
+            return True
+        first_layer = min(int(x) for x in self.tiered_caches.keys())
+        if int(layer_id) == first_layer:
+            self._score_consistency_step += 1
+        return ((self._score_consistency_step - 1) % interval) == 0
 
 
 @dataclass(slots=True)
@@ -595,31 +722,41 @@ class DotCacheLlamaAttention(nn.Module):
         if cache is None:
             raise ValueError(f"No tiered cache for layer {self.layer_idx}")
 
+        profile_runtime = self.adapter.runtime_profile_enabled
+        if profile_runtime:
+            t_qkv0 = time.perf_counter()
         # Project Q, K, V with RoPE (need K/V for append)
         (query_states, key_states), value_states = self._project_qkv(hidden_states, position_embeddings)
+        if profile_runtime:
+            t_qkv1 = time.perf_counter()
         # query_states: [1, num_q_heads, 1, head_dim]
         # Keep query in model's native dtype (BF16) — SDPA attend matches dense precision
         q_all = query_states[0, :, 0, :]  # [num_q, head_dim]
 
         # Append new K/V to tiered cache (grows context for future steps)
         # Preserve model's native dtype (BF16) — don't force FP16
+        if profile_runtime:
+            t_append0 = time.perf_counter()
         if cert_state.append_kv:
             cache.append_token(
                 key_states[0],    # [kv_heads, 1, head_dim]
                 value_states[0],  # [kv_heads, 1, d_v]
             )
+        if profile_runtime:
+            t_append1 = time.perf_counter()
 
         # Certified attention: Phase 1 (INT8 score+certify) + Phase 2 (selective attend)
-        epsilon = cert_state.layer_epsilons.get(self.layer_idx, cert_state.default_epsilon)
         gqa_group = self.config.num_attention_heads // self.config.num_key_value_heads
         q_scale = float(self.base_attention.scaling)
 
         collect = cert_state.collect_stats
+        if profile_runtime:
+            t_decode0 = time.perf_counter()
         context_states, stats = certified_attention_layer(
-            cache, q_all, gqa_group, q_scale, block_epsilon=epsilon,
+            cache, q_all, gqa_group, q_scale,
             collect_stats=collect,
+            v_tolerance=cert_state.v_tolerance,
             top_k_fp16_keys=cert_state.top_k_fp16_keys,
-            concentration_threshold=cert_state.concentration_threshold,
             ranking_fallback=cert_state.ranking_fallback,
             ranking_r=cert_state.ranking_r,
             ranking_fallback_mode=cert_state.ranking_fallback_mode,
@@ -628,13 +765,15 @@ class DotCacheLlamaAttention(nn.Module):
             k_max=cert_state.k_max,
             rung1_threshold=cert_state.rung1_threshold,
             rung1_multiplier=cert_state.rung1_multiplier,
-            score_consistency_check=cert_state.score_consistency_check,
+            score_consistency_check=cert_state.score_consistency_enabled_for_layer(self.layer_idx),
             eps_guard=cert_state.eps_guard,
             exploration_rate=cert_state.exploration_rate,
             phase_timings=cert_state.phase_timings,
             per_kv_group_topk=cert_state.per_kv_group_topk,
             value_error_mode=cert_state.value_error_mode,
         )
+        if profile_runtime:
+            t_decode1 = time.perf_counter()
 
         # Accumulate stats (only if collection enabled)
         if collect and stats:
@@ -642,7 +781,18 @@ class DotCacheLlamaAttention(nn.Module):
 
         # Output projection
         context_tensor = context_states.to(dtype=hidden_states.dtype, device=hidden_states.device).unsqueeze(0)
+        if profile_runtime:
+            t_out0 = time.perf_counter()
         projected_output = self.base_attention.o_proj(context_tensor.reshape(1, 1, -1).contiguous())
+        if profile_runtime:
+            t_out1 = time.perf_counter()
+            self.adapter.record_layer_runtime(
+                self.layer_idx,
+                qkv_projection_ms=(t_qkv1 - t_qkv0) * 1000.0,
+                append_ms=(t_append1 - t_append0) * 1000.0,
+                decode_ms=(t_decode1 - t_decode0) * 1000.0,
+                output_projection_ms=(t_out1 - t_out0) * 1000.0,
+            )
 
         return projected_output, None
 
@@ -827,6 +977,9 @@ class LlamaDotCacheModelAdapter:
         self.qkv_projection_ms_total = 0.0
         self.output_projection_ms_total = 0.0
         self.layer_runtime_profiles = [LlamaLayerRuntimeProfile(layer_id=layer_id) for layer_id in range(model.config.num_hidden_layers)]
+        self.runtime_profile_enabled = os.environ.get(
+            "DOTCACHE_RUNTIME_PROFILE", "0",
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._current_token_index_override: int | None = None
         self.certified_state: CertifiedAttentionState | None = None
         self._install_wrappers()
@@ -850,23 +1003,34 @@ class LlamaDotCacheModelAdapter:
         self,
         past_key_values,
         *,
-        layer_epsilons: dict[int, float] | None = None,
-        epsilon_profile: Any = None,
-        context_length: int | None = None,
-        default_epsilon: float = 1e-4,
+        v_tolerance: float,
         block_size: int = 16,
         use_int4_values: bool = False,
+        group_size: int = 16,
+        max_new_tokens: int = 512,
+        fp16_key_cache_capacity: int | None = 512,
+        fp16_value_cache_capacity: int | None = 64,
     ) -> None:
         """Build tiered caches from prefill KV and prepare for certified decode.
 
         Args:
             past_key_values: HF DynamicCache from prefill
-            layer_epsilons: per-layer epsilon dict (simple mode)
-            epsilon_profile: EpsilonProfile instance (context-aware mode)
-            context_length: context length for profile lookup (required if epsilon_profile set)
-            default_epsilon: fallback epsilon for uncalibrated layers
+            v_tolerance: INT4-vs-FP16 value-format threshold (paper §7: 0.05).
+                Required — no silent default. The kernel rejects any path
+                that doesn't carry this through explicitly.
             block_size: tokens per block for INT8 quantisation
             use_int4_values: if True, use INT4 per-group values (45% less VRAM)
+            group_size: INT4 value group size (paper §7: 16). Ignored when
+                use_int4_values is False.
+            max_new_tokens: decode budget to reserve in the cache buffers so
+                append_token() can quantise additional tokens without
+                overflowing per-block annotation tensors.
+            fp16_key_cache_capacity: bounded FP16 key fallback scratch/cache
+                capacity in blocks. Defaults to 512; pass None only for
+                legacy full-mirror debugging.
+            fp16_value_cache_capacity: bounded FP16 value fallback scratch
+                capacity in blocks. Defaults to 64 for paper-exact bounded
+                scratch; pass None only for legacy full-mirror debugging.
         """
         _ensure_certified_imports()
         layer_ids = list(range(self.model.config.num_hidden_layers))
@@ -875,31 +1039,21 @@ class LlamaDotCacheModelAdapter:
             from ..kernels.tiered_kv_cache import create_tiered_cache_int4v_from_model
             tiered_caches = create_tiered_cache_int4v_from_model(
                 past_key_values, layer_ids, block_size=block_size,
+                group_size=group_size, max_new_tokens=max_new_tokens,
+                fp16_key_cache_capacity=fp16_key_cache_capacity,
+                fp16_value_cache_capacity=fp16_value_cache_capacity,
             )
         else:
             tiered_caches = create_tiered_cache_from_model(
                 past_key_values, layer_ids, block_size=block_size,
+                max_new_tokens=max_new_tokens,
+                fp16_key_cache_capacity=fp16_key_cache_capacity,
             )
-
-        # Resolve layer epsilons
-        if epsilon_profile is not None:
-            if context_length is None:
-                # Infer from KV cache length
-                if hasattr(past_key_values, "layers"):
-                    context_length = past_key_values.layers[0].keys[0].shape[1]
-                else:
-                    context_length = 8192  # fallback
-            resolved_epsilons = epsilon_profile.get_layer_epsilons(context_length)
-        elif layer_epsilons is not None:
-            resolved_epsilons = layer_epsilons
-        else:
-            resolved_epsilons = {}
 
         self.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
-            layer_epsilons=resolved_epsilons,
-            default_epsilon=default_epsilon,
             block_size=block_size,
+            v_tolerance=v_tolerance,
         )
 
     def set_capture(self, enabled: bool) -> None:
@@ -984,8 +1138,10 @@ class LlamaDotCacheModelAdapter:
             self.qkv_projection_ms_total += qkv_projection_ms
         if append_ms > 0.0:
             profile.append_ms_total += append_ms
+            self.append_runtime_ms_total += append_ms
         if decode_ms > 0.0:
             profile.decode_ms_total += decode_ms
+            self.decode_runtime_ms_total += decode_ms
         if output_projection_ms > 0.0:
             profile.output_projection_ms_total += output_projection_ms
             self.output_projection_ms_total += output_projection_ms

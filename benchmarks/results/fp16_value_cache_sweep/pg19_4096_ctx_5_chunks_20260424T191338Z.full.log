@@ -1,0 +1,206 @@
+cmd: /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 4096 --num-chunks 5 --telemetry-mode summary --output /workspace/DotCache/benchmarks/results/fp16_value_cache_sweep/pg19_4096_ctx_5_chunks_20260424T191338Z.full.native.json --v-tolerance 0.05 --use-int4-values --group-size 16 --tau-cov 0.995 --k-min 2 --k-max 128 --ranking-fallback --ranking-r 1 --ranking-fallback-mode full --score-consistency-check --eps-guard 0.01 --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0
+started: 2026-04-24T21:48:47.613351+00:00
+---
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|                                                                                                        | 0/291 [00:00<?, ?it/s]Loading weights:   0%|▎                                                                                               | 1/291 [00:00<01:20,  3.62it/s]Loading weights:   1%|▋                                                                                               | 2/291 [00:00<01:10,  4.07it/s]Loading weights:   1%|█▎                                                                                              | 4/291 [00:00<00:35,  8.12it/s]Loading weights:   2%|█▉                                                                                              | 6/291 [00:00<00:31,  9.07it/s]Loading weights:   4%|████▏                                                                                          | 13/291 [00:00<00:12, 22.11it/s]Loading weights:   5%|█████▏                                                                                         | 16/291 [00:01<00:13, 19.69it/s]Loading weights:   8%|███████▏                                                                                       | 22/291 [00:01<00:09, 27.16it/s]Loading weights:   9%|████████▍                                                                                      | 26/291 [00:01<00:10, 24.67it/s]Loading weights:  11%|██████████                                                                                     | 31/291 [00:01<00:09, 28.87it/s]Loading weights:  12%|███████████▍                                                                                   | 35/291 [00:01<00:09, 25.86it/s]Loading weights:  14%|█████████████                                                                                  | 40/291 [00:01<00:08, 29.74it/s]Loading weights:  15%|██████████████▎                                                                                | 44/291 [00:02<00:09, 26.37it/s]Loading weights:  17%|███████████████▉                                                                               | 49/291 [00:02<00:08, 30.10it/s]Loading weights:  18%|█████████████████▎                                                                             | 53/291 [00:02<00:08, 26.59it/s]Loading weights:  20%|██████████████████▉                                                                            | 58/291 [00:02<00:07, 30.29it/s]Loading weights:  21%|████████████████████▏                                                                          | 62/291 [00:02<00:08, 26.69it/s]Loading weights:  23%|█████████████████████▊                                                                         | 67/291 [00:02<00:07, 30.34it/s]Loading weights:  24%|███████████████████████▏                                                                       | 71/291 [00:03<00:08, 26.81it/s]Loading weights:  26%|████████████████████████▊                                                                      | 76/291 [00:03<00:07, 30.43it/s]Loading weights:  27%|██████████████████████████                                                                     | 80/291 [00:03<00:07, 26.99it/s]Loading weights:  29%|███████████████████████████▋                                                                   | 85/291 [00:03<00:06, 30.58it/s]Loading weights:  31%|█████████████████████████████                                                                  | 89/291 [00:03<00:07, 26.96it/s]Loading weights:  32%|██████████████████████████████▋                                                                | 94/291 [00:03<00:06, 30.57it/s]Loading weights:  34%|███████████████████████████████▉                                                               | 98/291 [00:03<00:07, 26.92it/s]Loading weights:  35%|█████████████████████████████████▎                                                            | 103/291 [00:04<00:06, 30.44it/s]Loading weights:  37%|██████████████████████████████████▌                                                           | 107/291 [00:04<00:06, 26.54it/s]Loading weights:  38%|████████████████████████████████████▏                                                         | 112/291 [00:04<00:05, 30.16it/s]Loading weights:  40%|█████████████████████████████████████▍                                                        | 116/291 [00:04<00:06, 26.76it/s]Loading weights:  42%|███████████████████████████████████████                                                       | 121/291 [00:04<00:05, 30.32it/s]Loading weights:  43%|████████████████████████████████████████▍                                                     | 125/291 [00:04<00:06, 26.83it/s]Loading weights:  45%|█████████████████████████████████████████▉                                                    | 130/291 [00:05<00:05, 30.36it/s]Loading weights:  46%|███████████████████████████████████████████▎                                                  | 134/291 [00:05<00:05, 26.67it/s]Loading weights:  48%|████████████████████████████████████████████▉                                                 | 139/291 [00:05<00:05, 30.30it/s]Loading weights:  49%|██████████████████████████████████████████████▏                                               | 143/291 [00:05<00:05, 26.89it/s]Loading weights:  51%|███████████████████████████████████████████████▊                                              | 148/291 [00:05<00:04, 30.47it/s]Loading weights:  52%|█████████████████████████████████████████████████                                             | 152/291 [00:05<00:05, 26.95it/s]Loading weights:  54%|██████████████████████████████████████████████████▋                                           | 157/291 [00:05<00:04, 30.48it/s]Loading weights:  55%|████████████████████████████████████████████████████                                          | 161/291 [00:06<00:04, 26.92it/s]Loading weights:  57%|█████████████████████████████████████████████████████▌                                        | 166/291 [00:06<00:04, 30.49it/s]Loading weights:  58%|██████████████████████████████████████████████████████▉                                       | 170/291 [00:06<00:04, 26.95it/s]Loading weights:  60%|████████████████████████████████████████████████████████▌                                     | 175/291 [00:06<00:03, 30.52it/s]Loading weights:  62%|█████████████████████████████████████████████████████████▊                                    | 179/291 [00:06<00:04, 26.86it/s]Loading weights:  63%|███████████████████████████████████████████████████████████▍                                  | 184/291 [00:06<00:03, 30.45it/s]Loading weights:  65%|████████████████████████████████████████████████████████████▋                                 | 188/291 [00:07<00:03, 26.71it/s]Loading weights:  66%|██████████████████████████████████████████████████████████████▎                               | 193/291 [00:07<00:03, 30.32it/s]Loading weights:  68%|███████████████████████████████████████████████████████████████▋                              | 197/291 [00:07<00:03, 26.85it/s]Loading weights:  69%|█████████████████████████████████████████████████████████████████▎                            | 202/291 [00:07<00:02, 30.46it/s]Loading weights:  71%|██████████████████████████████████████████████████████████████████▌                           | 206/291 [00:07<00:03, 26.81it/s]Loading weights:  73%|████████████████████████████████████████████████████████████████████▏                         | 211/291 [00:07<00:02, 30.42it/s]Loading weights:  74%|█████████████████████████████████████████████████████████████████████▍                        | 215/291 [00:08<00:02, 26.90it/s]Loading weights:  76%|███████████████████████████████████████████████████████████████████████                       | 220/291 [00:08<00:02, 30.47it/s]Loading weights:  77%|████████████████████████████████████████████████████████████████████████▎                     | 224/291 [00:08<00:02, 26.88it/s]Loading weights:  79%|█████████████████████████████████████████████████████████████████████████▉                    | 229/291 [00:08<00:02, 30.28it/s]Loading weights:  80%|███████████████████████████████████████████████████████████████████████████▎                  | 233/291 [00:08<00:02, 26.69it/s]Loading weights:  82%|████████████████████████████████████████████████████████████████████████████▉                 | 238/291 [00:08<00:01, 30.30it/s]Loading weights:  83%|██████████████████████████████████████████████████████████████████████████████▏               | 242/291 [00:08<00:01, 26.76it/s]Loading weights:  85%|███████████████████████████████████████████████████████████████████████████████▊              | 247/291 [00:09<00:01, 30.35it/s]Loading weights:  86%|█████████████████████████████████████████████████████████████████████████████████             | 251/291 [00:09<00:01, 26.85it/s]Loading weights:  88%|██████████████████████████████████████████████████████████████████████████████████▋           | 256/291 [00:09<00:01, 30.45it/s]Loading weights:  89%|███████████████████████████████████████████████████████████████████████████████████▉          | 260/291 [00:09<00:01, 26.93it/s]Loading weights:  91%|█████████████████████████████████████████████████████████████████████████████████████▌        | 265/291 [00:09<00:00, 30.49it/s]Loading weights:  92%|██████████████████████████████████████████████████████████████████████████████████████▉       | 269/291 [00:09<00:00, 26.95it/s]Loading weights:  94%|████████████████████████████████████████████████████████████████████████████████████████▌     | 274/291 [00:10<00:00, 30.55it/s]Loading weights:  96%|█████████████████████████████████████████████████████████████████████████████████████████▊    | 278/291 [00:10<00:00, 26.92it/s]Loading weights:  97%|███████████████████████████████████████████████████████████████████████████████████████████▍  | 283/291 [00:10<00:00, 30.45it/s]Loading weights:  99%|████████████████████████████████████████████████████████████████████████████████████████████▋ | 287/291 [00:10<00:00, 26.76it/s]Loading weights: 100%|██████████████████████████████████████████████████████████████████████████████████████████████| 291/291 [00:10<00:00, 27.47it/s]
+Model: 9.09 GB
+
+Loading PG-19 test set: 5 chunks × 4096 tokens...
+Loaded 5 chunks in 4.0s
+
+==================================================
+Dense perplexity
+==================================================
+  Dense [5/5]: ppl=6.84
+Dense: ppl=6.84 (20475 tokens, 2.4s)
+  bits/token: 2.7739 (95% bootstrap CI [2.7051, 2.8330], n=5 chunks)
+
+==================================================
+Certified perplexity
+==================================================
+  Certified [1/5] prefill_ms=140.1
+  Certified [1/5] prefix_nll_ms=11.9
+  Certified [1/5] cache_build_ms=1001.5
+  Certified [1/5] cache_cleanup_ms=1124.8
+    certified progress chunk=1/5 tokens=128/2047 tok/s=5.93 qkv_ms/layer=0.754 append_ms/layer=0.460 attn_ms/layer=3.002 out_ms/layer=0.271
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22697 head_blocks=172549 h2d_value_mb=0.00 e_val_pre_max=0.0760 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=256/2047 tok/s=5.95 qkv_ms/layer=0.759 append_ms/layer=0.460 attn_ms/layer=2.979 out_ms/layer=0.273
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22308 head_blocks=170336 h2d_value_mb=0.00 e_val_pre_max=0.0765 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=384/2047 tok/s=5.84 qkv_ms/layer=0.795 append_ms/layer=0.466 attn_ms/layer=3.024 out_ms/layer=0.277
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22329 head_blocks=170232 h2d_value_mb=0.00 e_val_pre_max=0.0758 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=512/2047 tok/s=5.88 qkv_ms/layer=0.785 append_ms/layer=0.460 attn_ms/layer=3.020 out_ms/layer=0.273
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=25738 head_blocks=178332 h2d_value_mb=0.00 e_val_pre_max=0.0763 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=640/2047 tok/s=5.89 qkv_ms/layer=0.775 append_ms/layer=0.456 attn_ms/layer=3.035 out_ms/layer=0.270
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=26913 head_blocks=180660 h2d_value_mb=0.00 e_val_pre_max=0.0755 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=768/2047 tok/s=5.87 qkv_ms/layer=0.769 append_ms/layer=0.454 attn_ms/layer=3.057 out_ms/layer=0.269
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=27702 head_blocks=183546 h2d_value_mb=0.00 e_val_pre_max=0.0757 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=896/2047 tok/s=5.86 qkv_ms/layer=0.765 append_ms/layer=0.453 attn_ms/layer=3.081 out_ms/layer=0.268
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=33366 head_blocks=194141 h2d_value_mb=0.00 e_val_pre_max=0.0764 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=1024/2047 tok/s=5.83 qkv_ms/layer=0.768 append_ms/layer=0.453 attn_ms/layer=3.103 out_ms/layer=0.268
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=26627 head_blocks=180934 h2d_value_mb=0.00 e_val_pre_max=0.0757 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=1152/2047 tok/s=5.83 qkv_ms/layer=0.761 append_ms/layer=0.451 attn_ms/layer=3.114 out_ms/layer=0.267
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=26397 head_blocks=182448 h2d_value_mb=0.00 e_val_pre_max=0.0756 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=1280/2047 tok/s=5.82 qkv_ms/layer=0.761 append_ms/layer=0.450 attn_ms/layer=3.125 out_ms/layer=0.267
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=31598 head_blocks=192779 h2d_value_mb=0.00 e_val_pre_max=0.0767 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=1408/2047 tok/s=5.80 qkv_ms/layer=0.763 append_ms/layer=0.450 attn_ms/layer=3.140 out_ms/layer=0.266
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=29304 head_blocks=185361 h2d_value_mb=0.00 e_val_pre_max=0.0758 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=1536/2047 tok/s=5.79 qkv_ms/layer=0.764 append_ms/layer=0.450 attn_ms/layer=3.155 out_ms/layer=0.266
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=34598 head_blocks=196489 h2d_value_mb=0.00 e_val_pre_max=0.0755 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=1664/2047 tok/s=5.77 qkv_ms/layer=0.761 append_ms/layer=0.450 attn_ms/layer=3.171 out_ms/layer=0.266
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=35914 head_blocks=202877 h2d_value_mb=0.00 e_val_pre_max=0.0749 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=1792/2047 tok/s=5.76 qkv_ms/layer=0.760 append_ms/layer=0.450 attn_ms/layer=3.187 out_ms/layer=0.266
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=33983 head_blocks=198863 h2d_value_mb=0.00 e_val_pre_max=0.0757 e_val_post_max=0.0500
+    certified progress chunk=1/5 tokens=1920/2047 tok/s=5.74 qkv_ms/layer=0.761 append_ms/layer=0.450 attn_ms/layer=3.202 out_ms/layer=0.266
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=35173 head_blocks=201396 h2d_value_mb=0.00 e_val_pre_max=0.0756 e_val_post_max=0.0500
+  Certified [2/5] prefill_ms=140.1
+  Certified [2/5] prefix_nll_ms=11.9
+  Certified [2/5] cache_build_ms=135.8
+  Certified [2/5] cache_cleanup_ms=326.4
+    certified progress chunk=2/5 tokens=128/2047 tok/s=6.20 qkv_ms/layer=0.798 append_ms/layer=0.444 attn_ms/layer=2.780 out_ms/layer=0.262
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=17738 head_blocks=163921 h2d_value_mb=0.00 e_val_pre_max=0.0775 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=256/2047 tok/s=6.20 qkv_ms/layer=0.788 append_ms/layer=0.442 attn_ms/layer=2.799 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=19880 head_blocks=165739 h2d_value_mb=0.00 e_val_pre_max=0.0775 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=384/2047 tok/s=6.18 qkv_ms/layer=0.787 append_ms/layer=0.442 attn_ms/layer=2.819 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=19484 head_blocks=167047 h2d_value_mb=0.00 e_val_pre_max=0.0756 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=512/2047 tok/s=6.13 qkv_ms/layer=0.783 append_ms/layer=0.444 attn_ms/layer=2.860 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22238 head_blocks=173752 h2d_value_mb=0.00 e_val_pre_max=0.0757 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=640/2047 tok/s=6.09 qkv_ms/layer=0.782 append_ms/layer=0.444 attn_ms/layer=2.890 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22701 head_blocks=175349 h2d_value_mb=0.00 e_val_pre_max=0.0749 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=768/2047 tok/s=6.07 qkv_ms/layer=0.774 append_ms/layer=0.445 attn_ms/layer=2.916 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=23092 head_blocks=174267 h2d_value_mb=0.00 e_val_pre_max=0.0747 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=896/2047 tok/s=6.05 qkv_ms/layer=0.772 append_ms/layer=0.444 attn_ms/layer=2.938 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=23574 head_blocks=176536 h2d_value_mb=0.00 e_val_pre_max=0.0752 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=1024/2047 tok/s=6.04 qkv_ms/layer=0.765 append_ms/layer=0.444 attn_ms/layer=2.958 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=26357 head_blocks=180392 h2d_value_mb=0.00 e_val_pre_max=0.0753 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=1152/2047 tok/s=6.01 qkv_ms/layer=0.766 append_ms/layer=0.444 attn_ms/layer=2.979 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=25339 head_blocks=177555 h2d_value_mb=0.00 e_val_pre_max=0.0766 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=1280/2047 tok/s=5.98 qkv_ms/layer=0.770 append_ms/layer=0.443 attn_ms/layer=2.998 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=26351 head_blocks=179760 h2d_value_mb=0.00 e_val_pre_max=0.0749 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=1408/2047 tok/s=5.96 qkv_ms/layer=0.771 append_ms/layer=0.444 attn_ms/layer=3.020 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=29918 head_blocks=188691 h2d_value_mb=0.00 e_val_pre_max=0.0759 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=1536/2047 tok/s=5.93 qkv_ms/layer=0.771 append_ms/layer=0.444 attn_ms/layer=3.039 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=31063 head_blocks=192392 h2d_value_mb=0.00 e_val_pre_max=0.0757 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=1664/2047 tok/s=5.91 qkv_ms/layer=0.772 append_ms/layer=0.444 attn_ms/layer=3.056 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=34038 head_blocks=199039 h2d_value_mb=0.00 e_val_pre_max=0.0763 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=1792/2047 tok/s=5.89 qkv_ms/layer=0.774 append_ms/layer=0.445 attn_ms/layer=3.074 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=31555 head_blocks=195780 h2d_value_mb=0.00 e_val_pre_max=0.0760 e_val_post_max=0.0500
+    certified progress chunk=2/5 tokens=1920/2047 tok/s=5.87 qkv_ms/layer=0.775 append_ms/layer=0.445 attn_ms/layer=3.090 out_ms/layer=0.262
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=30385 head_blocks=189892 h2d_value_mb=0.00 e_val_pre_max=0.0756 e_val_post_max=0.0500
+  Certified [3/5] prefill_ms=141.1
+  Certified [3/5] prefix_nll_ms=11.8
+  Certified [3/5] cache_build_ms=131.9
+  Certified [3/5] cache_cleanup_ms=318.9
+    certified progress chunk=3/5 tokens=128/2047 tok/s=6.13 qkv_ms/layer=0.766 append_ms/layer=0.453 attn_ms/layer=2.842 out_ms/layer=0.266
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=21206 head_blocks=170630 h2d_value_mb=0.00 e_val_pre_max=0.0751 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=256/2047 tok/s=6.17 qkv_ms/layer=0.748 append_ms/layer=0.450 attn_ms/layer=2.838 out_ms/layer=0.265
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22395 head_blocks=173781 h2d_value_mb=0.00 e_val_pre_max=0.0755 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=384/2047 tok/s=6.17 qkv_ms/layer=0.739 append_ms/layer=0.451 attn_ms/layer=2.846 out_ms/layer=0.265
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=20054 head_blocks=167988 h2d_value_mb=0.00 e_val_pre_max=0.0759 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=512/2047 tok/s=6.15 qkv_ms/layer=0.736 append_ms/layer=0.450 attn_ms/layer=2.863 out_ms/layer=0.265
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22387 head_blocks=172567 h2d_value_mb=0.00 e_val_pre_max=0.0762 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=640/2047 tok/s=6.12 qkv_ms/layer=0.735 append_ms/layer=0.450 attn_ms/layer=2.891 out_ms/layer=0.265
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=25701 head_blocks=181232 h2d_value_mb=0.00 e_val_pre_max=0.0762 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=768/2047 tok/s=6.08 qkv_ms/layer=0.737 append_ms/layer=0.449 attn_ms/layer=2.920 out_ms/layer=0.265
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=26840 head_blocks=182680 h2d_value_mb=0.00 e_val_pre_max=0.0751 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=896/2047 tok/s=6.04 qkv_ms/layer=0.738 append_ms/layer=0.450 attn_ms/layer=2.953 out_ms/layer=0.265
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=27963 head_blocks=186077 h2d_value_mb=0.00 e_val_pre_max=0.0763 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=1024/2047 tok/s=6.02 qkv_ms/layer=0.737 append_ms/layer=0.449 attn_ms/layer=2.975 out_ms/layer=0.264
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28711 head_blocks=185842 h2d_value_mb=0.00 e_val_pre_max=0.0756 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=1152/2047 tok/s=6.00 qkv_ms/layer=0.740 append_ms/layer=0.448 attn_ms/layer=2.992 out_ms/layer=0.264
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=24704 head_blocks=178987 h2d_value_mb=0.00 e_val_pre_max=0.0761 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=1280/2047 tok/s=5.97 qkv_ms/layer=0.743 append_ms/layer=0.448 attn_ms/layer=3.016 out_ms/layer=0.264
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28744 head_blocks=187255 h2d_value_mb=0.00 e_val_pre_max=0.0759 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=1408/2047 tok/s=5.95 qkv_ms/layer=0.747 append_ms/layer=0.448 attn_ms/layer=3.034 out_ms/layer=0.264
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=30125 head_blocks=190450 h2d_value_mb=0.00 e_val_pre_max=0.0750 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=1536/2047 tok/s=5.93 qkv_ms/layer=0.746 append_ms/layer=0.449 attn_ms/layer=3.053 out_ms/layer=0.264
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28882 head_blocks=187414 h2d_value_mb=0.00 e_val_pre_max=0.0763 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=1664/2047 tok/s=5.91 qkv_ms/layer=0.744 append_ms/layer=0.448 attn_ms/layer=3.066 out_ms/layer=0.264
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=30721 head_blocks=191676 h2d_value_mb=0.00 e_val_pre_max=0.0752 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=1792/2047 tok/s=5.91 qkv_ms/layer=0.744 append_ms/layer=0.447 attn_ms/layer=3.078 out_ms/layer=0.264
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=29053 head_blocks=190385 h2d_value_mb=0.00 e_val_pre_max=0.0751 e_val_post_max=0.0500
+    certified progress chunk=3/5 tokens=1920/2047 tok/s=5.89 qkv_ms/layer=0.746 append_ms/layer=0.447 attn_ms/layer=3.091 out_ms/layer=0.263
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28447 head_blocks=190418 h2d_value_mb=0.00 e_val_pre_max=0.0774 e_val_post_max=0.0500
+  Certified [4/5] prefill_ms=139.1
+  Certified [4/5] prefix_nll_ms=11.7
+  Certified [4/5] cache_build_ms=78.9
+  Certified [4/5] cache_cleanup_ms=258.1
+    certified progress chunk=4/5 tokens=128/2047 tok/s=6.22 qkv_ms/layer=0.776 append_ms/layer=0.446 attn_ms/layer=2.785 out_ms/layer=0.262
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=21395 head_blocks=171356 h2d_value_mb=0.00 e_val_pre_max=0.0759 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=256/2047 tok/s=6.23 qkv_ms/layer=0.785 append_ms/layer=0.444 attn_ms/layer=2.782 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=16765 head_blocks=162916 h2d_value_mb=0.00 e_val_pre_max=0.0757 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=384/2047 tok/s=6.20 qkv_ms/layer=0.792 append_ms/layer=0.444 attn_ms/layer=2.802 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=20791 head_blocks=171302 h2d_value_mb=0.00 e_val_pre_max=0.0762 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=512/2047 tok/s=6.17 qkv_ms/layer=0.781 append_ms/layer=0.443 attn_ms/layer=2.836 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22460 head_blocks=174259 h2d_value_mb=0.00 e_val_pre_max=0.0767 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=640/2047 tok/s=6.14 qkv_ms/layer=0.783 append_ms/layer=0.443 attn_ms/layer=2.860 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=20129 head_blocks=169262 h2d_value_mb=0.00 e_val_pre_max=0.0754 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=768/2047 tok/s=6.10 qkv_ms/layer=0.783 append_ms/layer=0.443 attn_ms/layer=2.893 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=27361 head_blocks=183516 h2d_value_mb=0.00 e_val_pre_max=0.0761 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=896/2047 tok/s=6.07 qkv_ms/layer=0.779 append_ms/layer=0.444 attn_ms/layer=2.920 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=24740 head_blocks=180803 h2d_value_mb=0.00 e_val_pre_max=0.0755 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=1024/2047 tok/s=6.04 qkv_ms/layer=0.780 append_ms/layer=0.443 attn_ms/layer=2.943 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=25334 head_blocks=180575 h2d_value_mb=0.00 e_val_pre_max=0.0766 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=1152/2047 tok/s=6.01 qkv_ms/layer=0.779 append_ms/layer=0.444 attn_ms/layer=2.971 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28791 head_blocks=188370 h2d_value_mb=0.00 e_val_pre_max=0.0755 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=1280/2047 tok/s=5.99 qkv_ms/layer=0.779 append_ms/layer=0.443 attn_ms/layer=2.987 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=27971 head_blocks=187045 h2d_value_mb=0.00 e_val_pre_max=0.0758 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=1408/2047 tok/s=5.97 qkv_ms/layer=0.778 append_ms/layer=0.443 attn_ms/layer=3.007 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28210 head_blocks=185614 h2d_value_mb=0.00 e_val_pre_max=0.0758 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=1536/2047 tok/s=5.95 qkv_ms/layer=0.777 append_ms/layer=0.443 attn_ms/layer=3.024 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=29712 head_blocks=190628 h2d_value_mb=0.00 e_val_pre_max=0.0758 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=1664/2047 tok/s=5.94 qkv_ms/layer=0.777 append_ms/layer=0.443 attn_ms/layer=3.041 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=34294 head_blocks=198552 h2d_value_mb=0.00 e_val_pre_max=0.0767 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=1792/2047 tok/s=5.91 qkv_ms/layer=0.777 append_ms/layer=0.443 attn_ms/layer=3.058 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=30204 head_blocks=192496 h2d_value_mb=0.00 e_val_pre_max=0.0758 e_val_post_max=0.0500
+    certified progress chunk=4/5 tokens=1920/2047 tok/s=5.90 qkv_ms/layer=0.777 append_ms/layer=0.443 attn_ms/layer=3.072 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=30601 head_blocks=193167 h2d_value_mb=0.00 e_val_pre_max=0.0756 e_val_post_max=0.0500
+  Certified [5/5] prefill_ms=141.5
+  Certified [5/5] prefix_nll_ms=11.8
+  Certified [5/5] cache_build_ms=130.7
+  Certified [5/5] cache_cleanup_ms=327.8
+    certified progress chunk=5/5 tokens=128/2047 tok/s=6.32 qkv_ms/layer=0.735 append_ms/layer=0.442 attn_ms/layer=2.760 out_ms/layer=0.259
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=23667 head_blocks=175571 h2d_value_mb=0.00 e_val_pre_max=0.0763 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=256/2047 tok/s=6.27 qkv_ms/layer=0.745 append_ms/layer=0.444 attn_ms/layer=2.790 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=24730 head_blocks=177304 h2d_value_mb=0.00 e_val_pre_max=0.0762 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=384/2047 tok/s=6.21 qkv_ms/layer=0.745 append_ms/layer=0.445 attn_ms/layer=2.830 out_ms/layer=0.260
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=23912 head_blocks=174630 h2d_value_mb=0.00 e_val_pre_max=0.0759 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=512/2047 tok/s=6.17 qkv_ms/layer=0.743 append_ms/layer=0.446 attn_ms/layer=2.867 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=25044 head_blocks=178018 h2d_value_mb=0.00 e_val_pre_max=0.0761 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=640/2047 tok/s=6.13 qkv_ms/layer=0.742 append_ms/layer=0.446 attn_ms/layer=2.898 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=26858 head_blocks=180027 h2d_value_mb=0.00 e_val_pre_max=0.0761 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=768/2047 tok/s=6.10 qkv_ms/layer=0.744 append_ms/layer=0.446 attn_ms/layer=2.925 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=23760 head_blocks=176306 h2d_value_mb=0.00 e_val_pre_max=0.0761 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=896/2047 tok/s=6.06 qkv_ms/layer=0.748 append_ms/layer=0.446 attn_ms/layer=2.950 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=24131 head_blocks=176743 h2d_value_mb=0.00 e_val_pre_max=0.0760 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=1024/2047 tok/s=6.04 qkv_ms/layer=0.747 append_ms/layer=0.446 attn_ms/layer=2.974 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28371 head_blocks=186203 h2d_value_mb=0.00 e_val_pre_max=0.0758 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=1152/2047 tok/s=6.02 qkv_ms/layer=0.746 append_ms/layer=0.445 attn_ms/layer=2.990 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28562 head_blocks=187656 h2d_value_mb=0.00 e_val_pre_max=0.0756 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=1280/2047 tok/s=6.01 qkv_ms/layer=0.745 append_ms/layer=0.445 attn_ms/layer=3.005 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=26190 head_blocks=183786 h2d_value_mb=0.00 e_val_pre_max=0.0756 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=1408/2047 tok/s=5.98 qkv_ms/layer=0.744 append_ms/layer=0.445 attn_ms/layer=3.024 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=32440 head_blocks=194476 h2d_value_mb=0.00 e_val_pre_max=0.0758 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=1536/2047 tok/s=5.96 qkv_ms/layer=0.745 append_ms/layer=0.445 attn_ms/layer=3.040 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=23064 head_blocks=178540 h2d_value_mb=0.00 e_val_pre_max=0.0755 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=1664/2047 tok/s=5.94 qkv_ms/layer=0.748 append_ms/layer=0.445 attn_ms/layer=3.057 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=28987 head_blocks=188948 h2d_value_mb=0.00 e_val_pre_max=0.0764 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=1792/2047 tok/s=5.93 qkv_ms/layer=0.748 append_ms/layer=0.445 attn_ms/layer=3.069 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=30991 head_blocks=193402 h2d_value_mb=0.00 e_val_pre_max=0.0757 e_val_post_max=0.0500
+    certified progress chunk=5/5 tokens=1920/2047 tok/s=5.91 qkv_ms/layer=0.747 append_ms/layer=0.445 attn_ms/layer=3.081 out_ms/layer=0.261
+    certified value_fallback layers(r2/int4/mixed/fp16)=4096/0/4096/0 blocks=22788 head_blocks=178473 h2d_value_mb=0.00 e_val_pre_max=0.0764 e_val_post_max=0.0500
+  Certified [5/5]: chunk_ppl=6.90, suffix_ppl=7.08, running_ppl=6.84, skip=0.404 (overall 0.401)
+Certified: ppl=6.84 (20470 tokens, 1756.3s)
+  bits/token (full): 2.7749 (95% CI [2.7079, 2.8327])
+  bits/token (certified suffix only): 2.7873 (95% CI [2.7367, 2.8277])
+
+==================================================
+Summary
+==================================================
+Context: 4096 tokens, 5 chunks
+Dense perplexity:     6.8395
+Certified perplexity: 6.8444
+Ratio (cert/dense):   1.000716
+Delta:                +0.0049
+
+JSON -> /workspace/DotCache/benchmarks/results/fp16_value_cache_sweep/pg19_4096_ctx_5_chunks_20260424T191338Z.full.native.json

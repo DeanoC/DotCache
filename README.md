@@ -1,997 +1,290 @@
-# DotCache
+# DotCache Paper Benchmark Runner
 
-This repository is a software-first prototype of DotCache: executing decode-time attention directly on compressed KV-cache pages.
+This repo is currently focused on regenerating the paper benchmarks for
+DotCache with the corrected certified attention implementation.
 
-The current bootstrap intentionally focuses on the boring, load-bearing pieces first:
-
-- a readable CPU reference path
-- `M0` affine and symmetric grouped quantization
-- `M3` high-precision escape pages
-- Selective Key Precision via model-specific sensitivity maps
-- page packing and metadata round-trips
-- streaming `score_page` and `mix_page` that avoid full-page materialization by default
-- tests that compare compressed-domain execution against an explicit dequantized baseline built from the same quantized pages
-
-## Selector smoke suite
-
-For the local selector-oracle path, the checked-in smoke suite config lives at:
-
-- [configs/selector_split_suites/local_smoke_suite.json](/Users/deanocalver/Documents/Projects/DotCache/configs/selector_split_suites/local_smoke_suite.json)
-
-If you already have an oracle label bundle with `labels.jsonl`, `selector_dataset.jsonl`, and `selector_candidate_dataset.jsonl`, the shortest end-to-end command is:
+The benchmark entrypoint is:
 
 ```bash
-bash scripts/run_page_selector_local_smoke_suite.sh /path/to/oracle_bundle
+benchmarks/paper/run_distributed_quality_slice.py
 ```
 
-That wrapper materializes the checked-in local smoke split suite, runs the manifest-driven batch selector eval, and prints the resulting summary paths.
+It is designed for running independent paper-quality slices across one or more
+GPU machines.
 
-## Serving selector profiles
+## Hardware Target
 
-Serving entrypoints now support named learned-selector profiles so we do not have to keep passing model-specific bias flags by hand:
+Validated target:
 
-- `--learned-page-selector-profile quality`
-  uses the unbiased learned selector operating point
-- `--learned-page-selector-profile systems`
-  uses the current systems-tuned operating point
-  for Qwen3.5 lanes this resolves to `M3/affine/4/float16` with `+2.0` logit bias
-  for the current Llama lane it resolves to the unbiased selector because that selector is already saturated to `M3`
-- `--learned-page-selector-profile manual`
-  respects explicit `--learned-page-selector-target-candidate` and `--learned-page-selector-logit-offset`
+- NVIDIA RTX PRO 6000, 96 GB VRAM
+- CUDA-visible PyTorch
+- Python 3.11+
+- `NousResearch/Meta-Llama-3.1-8B`
+- INT8 model weights via bitsandbytes
 
-Qwen serving entrypoints now default to the `systems` profile. Use `--learned-page-selector-profile quality` when you want the unbiased research/eval operating point.
+64K paper-quality slices currently take about 95-98 minutes each on the RTX PRO
+6000. PG-19 dominates the runtime.
 
-The standard Qwen backend-truth wrappers also default their learned lane to the `systems` profile.
-
-The current cross-family promotion checkpoint is summarized in:
-
-- [selector_profile_promotion_checkpoint_20260402.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/selector_profile_promotion_checkpoint_20260402/selector_profile_promotion_checkpoint.md)
-
-That report now packages the current decision across the completed Qwen family matrix:
-
-- Qwen3.5 `4B`, `9B`, and native `27B` should default to `systems`
-- Llama 3.2 3B is already effectively saturated, so `quality` and `systems` are equivalent today
-
-The checkpoint now includes the full Qwen `4B / 9B / 27B` matrix, including:
-
-- compact held-out task rows where `systems` preserves the currently trusted task success profile while materially reducing decode
-- the fixed Qwen LongBench QA mini-pack, where `systems` stays quality-neutral on the current pack while sharply improving decode
-- the broader Qwen3.5 9B LongBench medium pack, where `systems` remains quality-neutral relative to `exact` and `quality`, now with real teacher-forced perplexity ratios
-- the revalidated native Qwen3.5 27B backend-truth row on the intended newer `transformers` stack, where the learned selector remains the clear decode winner over both exact and shortlist baselines
-
-The main matrix artifacts are:
-
-- [qwen_results_matrix.md](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.md)
-- [qwen_results_matrix.json](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/qwen_results_matrix_20260404/qwen_results_matrix.json)
-
-For broader LongBench coverage, the repo now also supports named pack tiers:
-
-- `mini`
-  the current 4-row checkpoint pack
-- `medium`
-  a 12-row broader pack across the same supported QA datasets
-- `full`
-  a 20-row broader pack across the same supported QA datasets
-
-Run those via:
+## Fresh Machine Setup
 
 ```bash
-bash scripts/run_qwen35_9b_longbench_pack.sh /path/to/output_dir --pack medium
-```
+git clone git@github.com:DeanoC/DotCache.git
+cd DotCache
+git checkout port-to-paper-20260424
 
-There is now also a 27B convenience wrapper:
-
-```bash
-bash scripts/run_qwen35_27b_longbench_pack.sh /path/to/output_dir --pack medium
-```
-
-## Larger-machine selector suite
-
-For the first stronger-model selector-oracle run, the checked-in comprehensive suite config lives at:
-
-- [configs/selector_split_suites/larger_machine_comprehensive_suite.json](/Users/deanocalver/Documents/Projects/DotCache/configs/selector_split_suites/larger_machine_comprehensive_suite.json)
-
-The fastest way to run the full capture-to-bakeoff path on a CUDA box is:
-
-```bash
-bash scripts/run_page_selector_larger_machine_suite.sh /path/to/output_root
-```
-
-If Qwen3.5 4B is the first stronger-model lane you want to standardize on, there is also a dedicated wrapper:
-
-```bash
-bash scripts/run_page_selector_qwen35_4b_suite.sh /path/to/output_root
-```
-
-For the first non-Qwen replication lane, use the dedicated Llama 3.2 3B wrapper:
-
-```bash
-bash scripts/run_page_selector_llama32_3b_suite.sh /path/to/output_root
-```
-
-That path requires `HF_TOKEN` or `HUGGINGFACE_HUB_TOKEN` because `meta-llama/Llama-3.2-3B-Instruct` is gated.
-
-By default that wrapper runs:
-
-- model `Qwen/Qwen3.5-4B`
-- device `cuda`
-- dtype `float16`
-- prompt families `cache`, `reasoning`, `instruction`, `retrieval`
-- prompt lengths `128`, `256`, `512`, `1024`
-- decode steps `4`, `8`
-- `tokens_per_page=16`
-- oracle sampling cap `max_per_stage_kind=256`
-
-It writes a stable output layout under the chosen root:
-
-- `capture/`
-  merged trace manifest plus per-run trace directories
-- `labels/`
-  oracle labels, selector datasets, and label summary
-- `suite/`
-  frozen comprehensive split suite plus split manifest
-- `batch_eval/`
-  aggregate and per-split selector bakeoff reports
-
-If you want a lighter first pass on a new GPU box, start with:
-
-```bash
-bash scripts/run_page_selector_larger_machine_suite.sh /path/to/output_root \
-  --prompt-length 128 \
-  --prompt-length 256 \
-  --decode-steps 4 \
-  --max-per-stage-kind 128
-```
-
-## Reference docs
-
-- [dotcache_full.tex](./dotcache_full.tex)
-- [DotCacheArXiv.tex](./DotCacheArXiv.tex)
-- [references.bib](./references.bib)
-- [scripts/bootstrap_amd_rocm_dev.sh](./scripts/bootstrap_amd_rocm_dev.sh)
-- [scripts/bootstrap_nvidia_llama_dev.sh](./scripts/bootstrap_nvidia_llama_dev.sh)
-- [scripts/env_cuda.sh](./scripts/env_cuda.sh)
-- [docs/benchmark_report.md](./docs/benchmark_report.md)
-- [docs/performance_journal.md](./docs/performance_journal.md)
-- [docs/model_roadmap.md](./docs/model_roadmap.md)
-- [docs/local_layer_profiles.md](./docs/local_layer_profiles.md)
-- [docs/cuda_next_steps.md](./docs/cuda_next_steps.md)
-- [docs/turboquant_comparison_plan.md](./docs/turboquant_comparison_plan.md)
-- [docs/state_cache_roadmap.md](./docs/state_cache_roadmap.md)
-
-## Quick start on NVIDIA Linux / 5090-class CUDA pods
-
-This repo now has a `torch_cuda` backend for NVIDIA development, so the practical CUDA path today is:
-
-- run both the dense Hugging Face model and DotCache exact decode on `cuda`
-- use the CUDA unit tests plus the HF compare harnesses to verify parity on this machine
-- use the 5090 pod as the first larger-model HF scale-up lane
-- use the optional vLLM adapter only when you are ready for the Phase 6 offline benchmark path
-
-Bootstrap the local environment with:
-
-```bash
-source scripts/env_cuda.sh
-bash scripts/bootstrap_nvidia_llama_dev.sh
-```
-
-The sourced env script normalizes `CUDA_HOME`, `CUDA_PATH`, `PATH`, `LD_LIBRARY_PATH`, and a shared Hugging Face cache under `/workspace/.cache/huggingface`, so a pod move does not depend on whatever the new login shell happens to export.
-
-The bootstrap script then creates `.venv`, reuses a working system CUDA PyTorch when the pod already has one, otherwise installs a current `torch>=2.8` wheel, then installs the dev and Hugging Face dependencies and fails fast if `torch.cuda.is_available()` is false.
-
-For gated Hugging Face checkpoints such as Llama 3.2, export your token before running the model benchmarks:
-
-```bash
 export HF_TOKEN=...
 source scripts/env_cuda.sh
-```
-
-The env script mirrors `HF_TOKEN` and `HUGGINGFACE_HUB_TOKEN`, and the current harnesses / benchmark entrypoints now pass that token into `from_pretrained(...)`.
-
-After a pod move, the minimal recovery flow is:
-
-```bash
-cd /workspace/DotCache
-source scripts/env_cuda.sh
+sudo apt-get update
+sudo apt-get install -y \
+  libcusparse-dev-13-1 \
+  libcublas-dev-13-1 \
+  libcusolver-dev-13-1
 bash scripts/bootstrap_nvidia_llama_dev.sh
 ```
 
-### Qwen3.5 fast-path (optional, for the paper benchmarks)
+The bootstrap script creates `.venv`, installs the repo with the required dev
+and Hugging Face dependencies, and fails if CUDA is not visible inside the
+virtualenv.
 
-The paper benchmarks on `feature/interval-ellipsoidal-bounds` expect the Qwen3.5 linear-attention fast path (`flash-attn` + `causal-conv1d` + `flash-linear-attention`). When any of those three are missing, `fla` prints `The fast path is not available because one of the required library is not installed. Falling back to torch implementation.` and the benchmark numbers become torch-fallback numbers, not fast-path numbers.
+The CUDA dev packages above provide the headers required to build the native
+Blackwell extension:
 
-Two pod-specific gotchas are baked into the install scripts:
+- `libcusparse-dev-13-1`: `cusparse.h`
+- `libcublas-dev-13-1`: `cublas_v2.h`
+- `libcusolver-dev-13-1`: `cusolverDn.h`
 
-- `causal-conv1d==1.6.1`'s `setup.py` hard-codes a `-gencode` flag for every supported SM and the usual `TORCH_CUDA_ARCH_LIST` env var does **not** override them — a fresh install would compile for every arch and take an unreasonable amount of time. `scripts/install_causal_conv1d_patched.sh` clones the release tag, patches `setup.py` to emit only the pod's actual SM (detected from `torch.cuda`), and installs from source.
-- `flash-attn==2.8.3` honors `FLASH_ATTN_CUDA_ARCHS`, but on runpod-style pods its prebuilt-wheel download hits `Invalid cross-device link` because `/tmp` (overlay) and `/workspace/.cache` (MooseFS) are different mounts. `scripts/install_flash_attn_cuda.sh` sets `TMPDIR` inside the repo tree so pip can finalize the wheel.
-
-After the base bootstrap, install the fast-path stack with:
-
-```bash
-bash scripts/install_causal_conv1d_patched.sh
-bash scripts/install_flash_attn_cuda.sh
-.venv/bin/pip install "flash-linear-attention==0.4.2" "fla-core==0.4.2"
-```
-
-Both scripts auto-detect the SM from `torch.cuda.get_device_properties(0)` (override with `SM=...` if needed), print a tiny forward smoke at the end, and are safe to rerun.
-
-For a local no-download smoke run on this machine, use:
+Check the environment:
 
 ```bash
-.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend cpu_ref --device cuda --max-new-tokens 4
+.venv/bin/python - <<'PY'
+import torch
+import transformers
+import bitsandbytes
+
+print("torch", torch.__version__)
+print("transformers", transformers.__version__)
+print("bitsandbytes", bitsandbytes.__version__)
+print("cuda", torch.cuda.is_available(), torch.cuda.get_device_name(0))
+PY
 ```
 
-For a real checkpoint on NVIDIA, start with:
+Run the focused tests:
 
 ```bash
-.venv/bin/python benchmarks/bench_llama_decode.py --backend cpu_ref --device cuda --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --prompt "Write one short sentence about cache locality." --max-new-tokens 8
+.venv/bin/python -m pytest \
+  tests/test_hybrid_int4_attention.py \
+  tests/test_adaptive_topk.py \
+  tests/test_experiment_v2_sweep_runner.py \
+  -q
 ```
 
-For the 5090-era HF scale-up lane on this pod, start with:
+Expected on the current branch: `36 passed`.
 
-```bash
-bash scripts/run_qwen25_compare_cuda.sh
-bash scripts/run_qwen25_7b_compare_cuda.sh
-bash scripts/run_llama32_compare_cuda.sh
-```
+## Slice Semantics
 
-On Qwen2.5 CUDA lanes, those public wrappers now default to `K=M3 / V=M0`. That is the current recommended path on the 5090 pod because `M0/M0` loses agreement at `1024/2048` while the key-exact lane restores parity.
+One `--slice-id` maps to one deterministic unit of each benchmark:
 
-DotCache now also has a more surgical capability behind the same runtime: Selective Key Precision. A model-specific Sensitivity Map can keep exact key pages only in fragile layers or KV groups while the rest of the cache stays compressed.
+- PG-19: held-out chunk index.
+- NIAH: paired trial index, valid `0..99`.
+- RULER: deterministic sample index.
 
-The companion reporting artifact is now the compressibility profile:
-
-```bash
-.venv/bin/python scripts/report_compressibility_profiles.py --backend torch_cuda
-```
-
-That report summarizes, per model and prompt length:
-
-- whether the model tolerates all-`M0`
-- whether it benefits from Selective Key Precision
-- what fraction of K pages must stay exact
-- the KV-memory tradeoff versus full exact-K
-- the observed decode throughput for each recorded policy
-
-For automated sensitivity-map suggestions on a single model/prompt, use:
-
-```bash
-.venv/bin/python scripts/suggest_selective_k_policy.py \
-  --family qwen2 \
-  --model-id Qwen/Qwen2.5-1.5B-Instruct \
-  --backend torch_cuda \
-  --device cuda \
-  --prompt-length 2048
-```
-
-That tool runs one offline fidelity capture, scores selective exact-K candidates, and emits a budget-aware recommended policy plus a ready-to-run benchmark command.
-
-To batch that validated search across the current public CUDA model set and emit one compact table, use:
-
-```bash
-.venv/bin/python scripts/build_compressibility_map.py --backend torch_cuda --device cuda
-```
-
-That batch report validates `all M0`, validates the top selective candidates, and emits a compact per-model row with the chosen policy, exact-K fraction, KV-memory ratio, and decode throughput.
-
-For local Apple MPS investigation of the revised paper's layer/page policy idea, see the first-pass handwritten profiles and probe tools in:
-
-- [local_layer_profiles.md](/Users/deanocalver/Documents/Projects/DotCache/docs/local_layer_profiles.md)
-- [bench_layer_sensitivity.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_layer_sensitivity.py)
-- [inspect_policy_prefill.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/inspect_policy_prefill.py)
-
-For a narrow high-context CUDA slice that fits this pod cleanly, use:
-
-```bash
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True .venv/bin/python scripts/build_compressibility_map.py \
-  --spec 'qwen2|Qwen/Qwen2.5-3B-Instruct|4096' \
-  --spec 'llama|HuggingFaceTB/SmolLM2-360M-Instruct|4096' \
-  --backend torch_cuda \
-  --device cuda
-```
-
-That is the current practical route to a `4096` public-model data point here: Qwen2.5 3B selective plus a SmolLM2 360M tolerant reference.
-
-And summarize recorded benchmark history with:
-
-```bash
-.venv/bin/python scripts/report_model_benchmarks.py --benchmark qwen2_compare
-```
-
-Canonical Qwen CUDA record labels on the 5090 pod:
-
-```bash
-.venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda-k-exact -- bash scripts/run_qwen25_compare_cuda.sh
-.venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda-selective -- bash scripts/run_qwen25_compare_cuda_selective.sh
-.venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-k-exact -- bash scripts/run_qwen25_7b_compare_cuda.sh
-.venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda-selective -- bash scripts/run_qwen25_7b_compare_cuda_selective.sh
-```
-
-For the old `M0/M0` comparison lane, override the wrapper defaults:
-
-```bash
-.venv/bin/python scripts/record_benchmark.py --label qwen25-3b-cuda -- bash scripts/run_qwen25_compare_cuda.sh --default-mode-k M0 --default-mode-v M0
-.venv/bin/python scripts/record_benchmark.py --label qwen25-7b-cuda -- bash scripts/run_qwen25_7b_compare_cuda.sh --default-mode-k M0 --default-mode-v M0
-```
-
-The first validated selective policy is Qwen2.5 3B on CUDA:
-
-- exact K on `layer 0`
-- exact K on `layer 27`, `KV1`
-- `M0` for all other key pages
-- `M0` for all value pages
-
-Run that lane with:
-
-```bash
-bash scripts/run_qwen25_compare_cuda_selective.sh
-bash scripts/run_qwen25_7b_compare_cuda_selective.sh
-```
-
-## Quick start on AMD ROCm Linux
-
-On ROCm, this repo uses the same PyTorch runtime surface as the NVIDIA lane:
-
-- use `--backend torch_cuda` for the shared torch accelerator backend
-- use `--device cuda` for Hugging Face model placement
-- expect `torch.cuda.*` APIs to report the ROCm device, because that is how PyTorch exposes HIP/ROCm
-
-Bootstrap the local environment with:
-
-```bash
-source scripts/env_rocm.sh
-bash scripts/bootstrap_amd_rocm_dev.sh
-```
-
-That flow first looks for an existing ROCm venv at `~/venvs/torch-rocm` or `DOTCACHE_ROCM_VENV=/path/to/venv`. If it finds a HIP-backed torch there, it reuses it by wiring repo-local `.venv` to that environment. Otherwise it creates `.venv`, installs a ROCm PyTorch wheel from the official `rocm7.1` index, installs the repo's dev and Hugging Face dependencies, and verifies that the resulting torch build is actually HIP-backed.
-
-The current laptop setup that this repo is validated against looks like this:
-
-- shared env reused through repo-local `.venv -> ~/venvs/torch-rocm`
-- Python `3.14.3`
-- `torch==2.11.0+rocm7.1`
-- `torch.version.hip == 7.1.52802`
-- device reported through `torch.cuda`: `AMD Radeon 890M Graphics`
-
-For Qwen3.5's optional fast path on this Fedora machine, the following system packages were needed to build the ROCm extensions:
-
-- `rocm-hip-devel`
-- `rocm-comgr-devel`
-- `rocm-runtime-devel`
-- `hipcub-devel`
-- `rocprim-devel`
-
-The Python-side fast path now used by the Qwen3.5 ROCm lane is:
-
-- `flash-linear-attention==0.4.2`
-- `fla-core==0.4.2`
-- `causal-conv1d==1.6.1`
-
-There is still one local caveat worth documenting explicitly:
-
-- PyTorch runtime is ROCm `7.1`
-- system `hipcc` is ROCm `6.4`
-
-And there is one repo-side ROCm workaround in the Qwen3.5 adapter:
-
-- on this laptop, the HIP gated-delta fast path was only stable when float32 `q/k/v` are downcast to fp16 before calling the `flash-linear-attention` fast kernel
-
-For a no-download smoke run on this machine, use:
-
-```bash
-.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend cpu_ref --device cuda --max-new-tokens 4
-```
-
-For the implemented DotCache accelerator path on ROCm, use the same backend flag the CUDA lane uses:
-
-```bash
-.venv/bin/python -m pytest -q tests/test_torch_cuda_backend.py
-.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend torch_cuda --device cuda --max-new-tokens 4
-```
-
-For the Qwen3.5 ROCm path specifically, the useful local smoke / benchmark commands are:
-
-```bash
-.venv/bin/python -m pytest -q tests/test_qwen35_integration.py -k 'rocm_fast_path_wrapper_downcasts_float32_qkv or test_qwen35_attention_subset_dotcache_serving_harness_runs_on_tiny_hybrid_model'
-.venv/bin/python scripts/run_qwen35_cuda_shortlist_probe.py --backend torch_cuda --device cuda --torch-dtype float16 --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml --contexts 2048 8192 --cases exact --max-new-tokens 4 --profile-backend
-.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_serving.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --torch-dtype float16 --target-prompt-lengths 512 2048 8192 --max-new-tokens 4 --bits 8 --state-stage readout_only_m0 --renorm-interval 0 --continue-on-error
-```
-
-The latest measured ROCm results on this `890M` are summarized in [docs/performance_journal.md](./docs/performance_journal.md).
-
-## Quick start on Apple Silicon
-
-1. Install Python 3.11+.
-2. Create a virtualenv:
-
-```bash
-python3.11 -m venv .venv
-.venv/bin/pip install --upgrade pip
-.venv/bin/pip install -e ".[dev]"
-```
-
-3. Run the tests:
-
-```bash
-./scripts/run_unit_tests.sh
-```
-
-4. Optional MPS dependency for the next stage:
-
-```bash
-.venv/bin/pip install -e ".[dev,mps]"
-```
-
-5. Optional Hugging Face dependency for the Phase 5 model-integration path:
-
-```bash
-.venv/bin/pip install -e ".[dev,mps,hf]"
-```
-
-6. Optional vLLM dependency for the Phase 6 CUDA runtime-integration path:
-
-```bash
-.venv/bin/pip install -e ".[dev,hf,vllm]"
-```
-
-7. Dedicated local Turbo3 smoke lane on MPS:
-
-```bash
-bash scripts/run_turbo3_mps_suite.sh tinyllama
-bash scripts/run_turbo3_mps_suite.sh smollm2
-```
-
-8. Stretch-model local HF lane on MPS:
-
-```bash
-bash scripts/run_llama32_compare.sh
-bash scripts/run_qwen25_compare.sh
-```
-
-9. Gemma 4 Apple smoke and short DotCache lane:
-
-```bash
-bash scripts/run_gemma4_apple_smoke.sh
-bash scripts/run_gemma4_mps_short_bench.sh
-.venv/bin/python scripts/report_gemma4_apple_smoke.py
-```
-
-Observed Apple compatibility notes for `google/gemma-4-E2B` live in [docs/gemma4_apple_compatibility.md](./docs/gemma4_apple_compatibility.md).
-
-For an opt-in local regression gate that runs the full test suite plus the tiny-random Gemma MPS test and the bounded Apple smoke, use:
-
-```bash
-RUN_GEMMA4_APPLE_SMOKE=1 ./scripts/run_unit_tests.sh
-```
-
-10. External GGUF / llama.cpp reference lane:
-
-```bash
-bash scripts/run_llama32_gguf_reference.sh
-bash scripts/run_qwen25_gguf_reference.sh
-```
-
-11. Optional mounted-HF fetch lane via `hf-mount`:
-
-```bash
-bash scripts/run_llama32_compare_mounted.sh
-bash scripts/run_qwen25_compare_mounted.sh
-```
-
-12. CUDA scale-up lane on a large NVIDIA pod:
-
-```bash
-bash scripts/run_qwen25_compare_cuda.sh
-bash scripts/run_qwen25_7b_compare_cuda.sh
-bash scripts/run_llama32_compare_cuda.sh
-```
-
-The Qwen CUDA wrappers in that lane intentionally default to `K=M3 / V=M0` today. Keep `M0/M0` as the baseline for Llama/SmolLM lanes.
-
-## Current package layout
+For PG-19 confidence intervals, each context needs 20 chunks:
 
 ```text
-configs/
-dotcache/
-  backends/
-  modes/
-tests/
-benchmarks/
-scripts/
+slices 0..19 = full 20-chunk PG-19 CI for one context
 ```
 
-## Status
+The runner default is `--cache-mode full-bounded`. This is the intended quality
+run mode: it uses a bounded GPU scratch/cache large enough to avoid page-in
+noise while still recording the bounded cache size in the manifest. Do not use
+`full-mirror` for paper quality runs.
 
-This is the CPU-reference bootstrap, not the final runtime. The next logical step on this M4 Mac is a `torch_mps` execution backend that reuses the same page format and correctness harness.
+## Run One Slice
 
-## Phase 5 Llama Integration
-
-The repo now includes a narrow Phase 5 model-integration path in [llama.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/llama.py):
-
-- one Llama-family architecture path only
-- dense prefill
-- exact full-context DotCache decode only
-- batch=1 greedy generation only
-- no `generate()` patching, beam search, sampling, or vLLM integration in this phase
-
-The public model-facing bridge is [model_kv_cache.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/model_kv_cache.py). It keeps per-layer, per-KV-head exact sessions and adds a tail-page builder so token-by-token append does not degenerate into persistent one-token pages.
-
-For a local no-download smoke benchmark, use:
+Dry-run first:
 
 ```bash
-.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend cpu_ref --device cpu --max-new-tokens 4
+.venv/bin/python benchmarks/paper/run_distributed_quality_slice.py \
+  --slice-id 7 \
+  --mode context \
+  --context 65536 \
+  --output-dir runs/paper_v2_distributed_64k_machineA \
+  --dry-run
 ```
 
-On this M4, the same harness can also run on MPS:
+Run the slice:
 
 ```bash
-.venv/bin/python benchmarks/bench_llama_decode.py --random-tiny --backend torch_mps --device mps --max-new-tokens 3
+PYTHONUNBUFFERED=1 .venv/bin/python benchmarks/paper/run_distributed_quality_slice.py \
+  --slice-id 7 \
+  --mode context \
+  --context 65536 \
+  --output-dir runs/paper_v2_distributed_64k_machineA \
+  --resume
 ```
 
-For the intended real-model path, the benchmark defaults to TinyLlama:
+This runs PG-19, NIAH, and RULER for context 64K and slice 7.
+
+To run only PG-19:
 
 ```bash
-.venv/bin/python benchmarks/bench_llama_decode.py --backend torch_mps --device mps --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --prompt "Write one short sentence about cache locality." --max-new-tokens 8
+PYTHONUNBUFFERED=1 .venv/bin/python benchmarks/paper/run_distributed_quality_slice.py \
+  --slice-id 7 \
+  --mode context \
+  --context 65536 \
+  --benches pg19 \
+  --output-dir runs/paper_v2_distributed_64k_machineA \
+  --resume
 ```
 
-On an NVIDIA Linux box, use the same harness with `--device cuda --backend cpu_ref` until the CUDA DotCache backend exists:
+## Run Slice Ranges Across Machines
+
+Assign disjoint slice ranges. Example: if slices `0..6` are already complete,
+the remaining 64K PG-19 CI slices are `7..19`.
+
+Machine A:
 
 ```bash
-.venv/bin/python benchmarks/bench_llama_decode.py --backend cpu_ref --device cuda --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --prompt "Write one short sentence about cache locality." --max-new-tokens 8
+for sid in 7 8 9 10 11 12; do
+  PYTHONUNBUFFERED=1 .venv/bin/python benchmarks/paper/run_distributed_quality_slice.py \
+    --slice-id "$sid" \
+    --mode context \
+    --context 65536 \
+    --output-dir runs/paper_v2_distributed_64k_machineA \
+    --resume
+done
 ```
 
-That benchmark reports:
-
-- prompt length
-- dense prefill time
-- prefill-cache ingest time
-- per-step decode time
-- internal append/decode runtime split inside the DotCache path
-- host-to-device bytes
-- resident bytes
-- greedy token agreement versus the dense path
-- teacher-forced logit drift versus the dense path
-
-For a small higher-context Llama-family checkpoint on this M4, use SmolLM2 360M:
+Machine B:
 
 ```bash
-bash scripts/run_smollm2_long_context_compare.sh
+for sid in 13 14 15 16 17 18 19; do
+  PYTHONUNBUFFERED=1 .venv/bin/python benchmarks/paper/run_distributed_quality_slice.py \
+    --slice-id "$sid" \
+    --mode context \
+    --context 65536 \
+    --output-dir runs/paper_v2_distributed_64k_machineB \
+    --resume
+done
 ```
 
-That wrapper runs [bench_llama_compare.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_llama_compare.py) against `HuggingFaceTB/SmolLM2-360M-Instruct` at an exact `2048`-token prompt so we can exercise the Phase 5 path beyond TinyLlama's `2048`-token context ceiling. Exact `3072` and `4096` probes hit dense MPS OOM on this machine.
+On comparable GPUs, this split should complete in about 10-12 hours, limited by
+the seven-slice machine.
 
-For the higher-context exact-length frontier on the same model, use:
+## Contexts
+
+Paper contexts:
+
+```text
+8192
+32768
+65536
+131072
+```
+
+The runner also supports running one slice across multiple contexts:
 
 ```bash
-bash scripts/run_smollm2_frontier_compare.sh
+PYTHONUNBUFFERED=1 .venv/bin/python benchmarks/paper/run_distributed_quality_slice.py \
+  --slice-id 0 \
+  --mode line \
+  --contexts 8192 32768 65536 \
+  --output-dir runs/paper_v2_distributed_line0 \
+  --resume
 ```
 
-That runner sweeps exact prompt lengths `256 512 1024 1536 2048` from one model load. On the current M4 checkpoint, DotCache is still slower than dense through `1536` tokens in the one-load sweep, but it already uses much less KV memory, and a fresh standalone `2048` rerun shows DotCache ahead on decode while keeping the same KV-memory win.
+Use 128K selectively; it is much more expensive.
 
-For the next "proper model" target on the same HF path, use Llama 3.2 3B:
+## Monitoring
+
+Each benchmark writes a JSON output and a log. Example:
 
 ```bash
-bash scripts/run_llama32_compare.sh
+tail -f runs/paper_v2_distributed_64k_machineA/slice_0007/64K/pg19_slice_0007_64K.log
+cat runs/paper_v2_distributed_64k_machineA/slice_0007/manifest.json
 ```
 
-That wrapper targets `meta-llama/Llama-3.2-3B-Instruct` with exact prompt lengths `1024 2048` and `--continue-on-error`, so it behaves like a real stretch-model lane on this Mac instead of assuming every longer prompt will fit. The same target is also exposed through the shared model matrix:
+The manifest records:
+
+- host
+- git commit and branch
+- dirty worktree status
+- exact commands
+- cache mode and cache block counts
+- output paths
+- exit codes
+- wall times
+
+## Expected 64K Timings
+
+Observed on RTX PRO 6000 96 GB:
+
+- PG-19 one chunk: about 89-92 minutes.
+- NIAH one paired trial: about 1 minute.
+- RULER one sample across seven subtasks: about 5-6 minutes.
+- Full context slice: about 95-98 minutes.
+
+## Result Checks
+
+Before using results in the paper:
+
+- Every assigned slice must have `exit_code: 0` in `manifest.json`.
+- PG-19 dense/certified perplexity ratios should be close to 1.0.
+- NIAH dense-pass/certified-fail critical failures should be zero.
+- RULER critical failures should be reviewed and aggregated before conclusions.
+
+Quick parse example:
 
 ```bash
-.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --output-format pretty
-.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf --run-supported --backend torch_mps --device mps
+.venv/bin/python - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("runs/paper_v2_distributed_64k_machineA")
+for manifest in sorted(root.glob("slice_*/manifest.json")):
+    m = json.loads(manifest.read_text())
+    sid = m["slice_id"]
+    ok = all(j["exit_code"] == 0 for j in m.get("completed", []))
+    print(f"slice {sid:04d}: ok={ok}")
+PY
 ```
 
-For the first non-Llama native-weight target on the same HF path, use Qwen2.5 3B:
+## Collecting Results
+
+Copy completed `runs/paper_v2_distributed_*` directories back to the main
+machine. Keep output directory names unique per machine to avoid overwriting
+manifests.
+
+Do not edit JSON outputs by hand. The paper table generation should consume the
+raw JSONs directly.
+
+## Pushing Result Archives
+
+After a machine completes its assigned slices, create and push a compressed
+archive of that machine's output directory. Result JSON/logs compress heavily,
+so this is cheap and gives us a stable artifact for later auditing.
+
+Example for machine A:
 
 ```bash
-bash scripts/run_qwen25_compare.sh
+mkdir -p runs/archives
+tar -czf runs/archives/paper_v2_64k_machineA_slices_7_12.tar.gz \
+  runs/paper_v2_distributed_64k_machineA
+
+git add runs/archives/paper_v2_64k_machineA_slices_7_12.tar.gz \
+  runs/paper_v2_distributed_64k_machineA
+git commit -m "Add 64K paper slices 7-12"
+git push origin port-to-paper-20260424
 ```
 
-That wrapper targets `Qwen/Qwen2.5-3B-Instruct` through the new Qwen2-specific attention adapter in [qwen2.py](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/qwen2.py), but reuses the same replay/generation/loss harness shape as the existing Llama path. It is treated as a stretch-model lane on this Mac and defaults to exact prompt lengths `1024 2048` with `--continue-on-error`.
+If the loose result directory is too noisy for a given machine, at minimum push
+the `.tar.gz` archive and the slice summary. Do not include old calibration,
+profile, cache, or debug artifacts unless they are explicitly needed.
 
-For the first runnable Qwen3.5 hybrid-family lane, use the new text-only dense smoke harness:
+## More Detail
 
-```bash
-.venv/bin/python benchmarks/bench_qwen35_text.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --max-new-tokens 2 --target-prompt-lengths 512
+The longer benchmark runbook is:
+
+```text
+docs/paper_v2_distributed_runbook.md
 ```
-
-That lane is intentionally dense-only and text-only. It proves the shared model matrix and benchmark surface can handle Qwen3.5 without pretending DotCache already supports the hybrid attention/delta state path.
-
-To inspect where DotCache could attach later, use the hybrid-state inspection runner:
-
-```bash
-.venv/bin/python benchmarks/bench_qwen35_hybrid_inspect.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 128
-```
-
-That runner reports:
-- which text layers are `full_attention` vs `linear_attention`
-- how much prefill state lives in attention KV vs convolution/recurrent state
-- whether an attention-subset-only DotCache path is a coherent next step or whether a broader hybrid-state abstraction is required
-
-For the next step after inspection, there is also a dense-only attention-subset capture runner:
-
-```bash
-.venv/bin/python benchmarks/bench_qwen35_attention_subset.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 128 --max-new-tokens 2
-```
-
-That runner only wraps the `full_attention` layers. It leaves every `linear_attention` / DeltaNet layer on the native dense path, and records decode-time Q/K/V/context for the attention subset so we can prototype partial DotCache support without pretending the recurrent state problem is solved.
-
-There is now also an attention-subset DotCache replay runner for the same six `full_attention` layers:
-
-```bash
-.venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 64 --max-new-tokens 2 --tokens-per-page 16
-```
-
-That lane seeds DotCache only from the native attention KV cache, leaves every DeltaNet / `linear_attention` layer on the native hybrid cache path, and measures replay/logit drift for the attention subset. It is the first partial DotCache integration point for Qwen3.5, but it is still not full hybrid-state support.
-
-There is now also a layer-aware profile family for that lane:
-
-```bash
-.venv/bin/python benchmarks/bench_qwen35_attention_subset_dotcache.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --repeat-counts --target-prompt-lengths 32 --max-new-tokens 1 --tokens-per-page 16 --layer-profile configs/layer_profiles/qwen35_0p8b_attention_subset_second_pass.yaml
-```
-
-For the parallel DeltaNet-side probe lane, use the new StateCache inspection and ablation runners:
-
-```bash
-.venv/bin/python benchmarks/bench_qwen35_deltanet_state_inspect.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 32 --max-new-tokens 2
-.venv/bin/python benchmarks/bench_qwen35_deltanet_state_ablation.py --model-id Qwen/Qwen3.5-0.8B --backend torch_mps --device mps --target-prompt-lengths 32 --max-new-tokens 2 --bits 8 4
-.venv/bin/python benchmarks/bench_state_cache_sim.py --state-rows 128 --state-cols 128 --steps 16 --bits 8 4 3 --modes M0 M3
-```
-
-To bridge real Qwen3.5 state into the simulator and sweep early/mid/late layers in one pass, use:
-
-```bash
-.venv/bin/python benchmarks/bench_qwen35_statecache_real_sweep.py --backend torch_mps --device mps --prompt-length 32 --max-new-tokens 4 --layers 0 12 22 --state-kinds recurrent conv
-```
-
-Those lanes are intentionally probe-only:
-
-- they inspect and perturb DeltaNet recurrent state
-- they do not implement a compressed recurrent-state runtime
-- they use `M0` low-bit and `M3` escape as the first codec pair
-- they are meant to guide the CUDA-side StateCache work, not replace the existing attention-side DotCache lane
-- the real-sweep wrapper now emits per-layer recommendation records so recurrent and conv state can be compared side by side
-
-For selective recurrent-state probes on top of the default `8b` lane, the StateCache readout and loss runners also accept per-layer bit overrides:
-
-```bash
-.venv/bin/python benchmarks/bench_qwen35_deltanet_statecache_readout.py --model-id Qwen/Qwen3.5-0.8B --backend torch_cuda --device cuda --repeat-counts --target-prompt-lengths 64 --max-new-tokens 4 --bits 8 --layer-bit-overrides 12:4 22:4 --state-stage post_update_m0 --renorm-interval 0 --continue-on-error
-```
-
-For a StateCache-first Qwen3.5 regression pass that avoids the paused DotCache attention path, use:
-
-```bash
-.venv/bin/python benchmarks/bench_qwen35_statecache_regression_suite.py \
-  --model-id Qwen/Qwen3.5-0.8B \
-  --backend torch_cuda \
-  --device cuda \
-  --cases 64:8 128:16 256:16 \
-  --statecache-scopes recurrent_only conv_only conv_plus_recurrent \
-  --localization-scopes recurrent_only conv_plus_recurrent \
-  --bits 8 \
-  --state-stage post_update_m0 \
-  --renorm-interval 0
-```
-
-That profile only applies to the six `full_attention` layers, disables the recent-window escape so the probe actually hits sealed static pages, and keeps the DeltaNet / `linear_attention` state on the native path. The safer second pass uses explicit `M0`-first value overrides for the fragile late attention layers instead of relying on generic value `strict` tiering.
-
-### ROCm 890M Snapshot
-
-The current checked-in ROCm laptop sweep and follow-up StateCache rerun are under:
-
-- [benchmarks/results/qwen35_rocm_890m_sweep_warm_20260330](./benchmarks/results/qwen35_rocm_890m_sweep_warm_20260330)
-- [benchmarks/results/qwen35_rocm_890m_dotcache_tuning_20260330](./benchmarks/results/qwen35_rocm_890m_dotcache_tuning_20260330)
-- [benchmarks/results/qwen35_rocm_890m_statecache_20260330](./benchmarks/results/qwen35_rocm_890m_statecache_20260330)
-- [benchmarks/results/qwen35_rocm_890m_statecache_discovery_20260331](./benchmarks/results/qwen35_rocm_890m_statecache_discovery_20260331)
-
-The short version is:
-
-- the shared ROCm lane works and the Qwen3.5 fast path is active
-- attention-subset DotCache is still not the right local path on this `890M`
-- the promoted local `0.8B` StateCache lane is `post_update_m0`, recurrent-only, `8b / M0`, `renorm=0`
-- the promoted local `4B` StateCache lane is `bnb_8bit`, `post_update_m0`, with recurrent `M3` escapes on layers `0/1/2`
-- `4B` still hits a real exact-length ceiling below `8192` on this machine
-- the best current ROCm DotCache profile is [qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml](./configs/layer_profiles/qwen35_0p8b_attention_subset_cuda_shortlist_baseline.yaml)
-- `0.8B` still OOMs at exact `16384`
-
-Current warm-cache StateCache serving snapshot on this laptop:
-
-| Model | Prompt | Preset Decode | Practical Read |
-|---|---:|---:|---|
-| `Qwen3.5-0.8B` | `512` | `53.34 ms/step` | `post_update_m0` wins locally |
-| `Qwen3.5-0.8B` | `2048` | `64.47 ms/step` | promoted local serving lane |
-| `Qwen3.5-0.8B` | `8192` | `180.79 ms/step` | promoted local serving lane |
-| `Qwen3.5-0.8B` | `16384` | OOM | real capacity ceiling |
-| `Qwen3.5-4B bnb_8bit` | `2048` | `223.00 ms/step` | preferred local `4B` lane |
-| `Qwen3.5-4B bnb_8bit` | `4096` | `242.74 ms/step` | preferred local `4B` lane |
-| `Qwen3.5-4B bnb_8bit` | `8192` | OOM | real capacity ceiling |
-
-The important implementation read from the ROCm DotCache tuning pass is still that shortlist helps a lot on this GPU, but it is not enough to make the attention-subset path competitive with the local StateCache lanes.
-
-The important machine-limit read is that `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is not supported on this ROCm stack, so the `16384` OOMs are still real capacity limits rather than an allocator workaround opportunity.
-
-For reproducible local 890M StateCache runs, use:
-
-```bash
-bash scripts/run_qwen35_0p8b_statecache_890m.sh
-bash scripts/run_qwen35_0p8b_statecache_890m.sh readout
-bash scripts/run_qwen35_4b_statecache_890m.sh
-bash scripts/run_qwen35_4b_statecache_890m.sh readout
-```
-
-Those wrappers encode the currently recommended local presets:
-
-- `0.8B`: `post_update_m0`, recurrent-only, `8b / M0`, `renorm=0`
-- `4B`: `bnb_8bit`, `post_update_m0`, recurrent `M3` escapes on `0/1/2`
-
-They intentionally default to the known-safe prompt ladders on this machine:
-
-- `0.8B` serving: `512 2048 8192`
-- `4B` serving: `2048 4096`
-
-Use the checked-in discovery bundle and [docs/performance_journal.md](./docs/performance_journal.md) if you want the exact negative boundary runs as well.
-
-If you want to test whether DotCache KV reduction buys more headroom for the same local StateCache lane, there is already a combined native wrapper on this machine:
-
-```bash
-bash scripts/run_qwen35_0p8b_hybrid_890m.sh
-```
-
-That wrapper uses:
-
-- the best checked-in 890M attention-subset profile
-- DotCache on the six `full_attention` layers
-- StateCache on the eighteen `linear_attention` layers
-
-It is the right next experiment for asking whether shrinking token-growing KV on this laptop creates useful extra room for the resident StateCache path.
-
-For the external GGUF / `llama.cpp` reference lane, use:
-
-```bash
-bash scripts/run_llama32_gguf_reference.sh
-bash scripts/run_qwen25_gguf_reference.sh
-```
-
-Those wrappers call [bench_gguf_external.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_gguf_external.py), which:
-
-- builds exact-length prompts with the matching Hugging Face tokenizer
-- runs `llama-cli -hf <repo>`
-- parses `llama.cpp` timing lines when they are available
-- emits a clean error record instead of crashing if `llama-cli` is not installed
-
-The same reference lanes are also exposed through the shared model matrix:
-
-```bash
-.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_gguf qwen25_3b_gguf --output-format pretty
-```
-
-If you want to avoid fully downloading large HF repos first, there is now an optional `hf-mount` lane:
-
-```bash
-bash scripts/run_llama32_compare_mounted.sh
-bash scripts/run_qwen25_compare_mounted.sh
-```
-
-Those wrappers call [bench_hf_mount_compare.py](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/bench_hf_mount_compare.py), which:
-
-- probes `hf-mount`
-- mounts the target HF repo as a local filesystem
-- runs the existing HF compare harness against the mounted path
-- stops the mount afterward unless you ask to keep it
-
-You can also ask the shared matrix to emit mounted-HF commands instead of direct Hub loads:
-
-```bash
-.venv/bin/python benchmarks/bench_model_matrix.py --model-keys llama32_3b_hf qwen25_3b_hf --mount-hf-models --output-format pretty
-```
-
-## Phase 6 vLLM Integration
-
-The repo now also has a correctness-first Phase 6 adapter surface in [dotcache/integrations/vllm_adapter](/Users/deanocalver/Documents/Projects/DotCache/dotcache/integrations/vllm_adapter):
-
-- Llama-family only
-- CUDA-only in the intended runtime path
-- exact full-context decode only
-- `dense`, `dotcache_shadow`, and `dotcache_active` modes
-- `tokens_per_page == block_size` enforced as a hard invariant
-- offline-engine benchmarking only for the first milestone
-
-The real vLLM hook targets the pinned `0.18.x` line and is intentionally conservative about unknown versions.
-Because `vllm 0.18.x` defaults `vllm.LLM` to a detached engine-core process, DotCache's current adapter path requires the in-process engine. Use `configure_vllm_inprocess_runtime()` before constructing `vllm.LLM`, or set `VLLM_ENABLE_V1_MULTIPROCESSING=0` yourself.
-
-```python
-from dotcache.integrations.vllm_adapter import configure_vllm_inprocess_runtime
-
-configure_vllm_inprocess_runtime()
-
-from vllm import LLM
-```
-
-For the new offline benchmark harness on a CUDA box with vLLM installed, use:
-
-```bash
-.venv-vllm/bin/python benchmarks/bench_vllm_offline.py --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --backend torch_cuda --block-size 16 --mode all --prompt-repeat-counts 1 8 32 --max-new-tokens 16
-```
-
-That benchmark prints dense, shadow, and active records with:
-
-- block size
-- prompt repeat count / tokenized prompt length
-- decode steps
-- wall-clock decode ms per step
-- DotCache block-encode / append / decode runtime totals
-- resident KV bytes
-- host-to-device bytes
-- greedy agreement versus dense when both paths are run
-
-The adapter and benchmark surface are implemented and unit-tested locally, but the real vLLM CUDA numbers still need to be collected on the cloud instance.
-
-## MPS Tuning Notes
-
-The current eager `torch_mps` path is sensitive to page size.
-
-Decode-step execution now batches compatible prepared pages on-device, so warm-cache performance is substantially better than the original per-page loop.
-Preparation also batches compatible page uploads and keeps stored affine metadata compact on-device, so benchmarked `prepare_ms` and host-to-device bytes reflect the real page tensors rather than widened staging copies.
-Runtime sketches for page-gating experiments are now computed at encode time, so session preload/append measurements no longer absorb on-the-fly sketch generation cost.
-
-- With the current M4-tuned unpack path, `torch_mps` already wins over `cpu_ref` at long context for `tokens_per_page=64`.
-- Larger pages still matter a lot because they let MPS amortize per-page overhead much better.
-- On this M4 Mac, `tokens_per_page=256` is a strong default for MPS experiments, and `512` can be significantly faster again when the runtime can tolerate fewer, larger pages.
-
-For a ready-made MPS-oriented profile, start from [configs/dotcache_m4_mps.yaml](./configs/dotcache_m4_mps.yaml).
-
-Benchmark scripts accept `--config <path>` and then let explicit CLI flags override the loaded values. For example:
-
-```bash
-.venv/bin/python benchmarks/bench_decode.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096
-```
-
-To measure repeated decode steps with runtime page reuse, use:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_reuse.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
-```
-
-That benchmark reports:
-
-- `no_cache_*`: re-preparing pages on every decode step
-- `cache_cold_*`: one cold cache fill amortized across repeated steps
-- `cache_warm_*`: steady-state decode with a warm prepared-page cache
-
-To measure growing-context decode where only newly appended pages are prepared, use:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_growth.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
-```
-
-That benchmark models a resident prepared-page cache, appends one page of fresh KV per decode step, and reports how much host-to-device work remains per step once old pages stay warm.
-
-To benchmark a more model-shaped runtime with distinct preload, append, and decode phases, use:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
-```
-
-That benchmark keeps a resident session object alive across steps and reports:
-
-- one-time preload latency and bytes
-- per-step append latency and bytes
-- per-step decode latency with resident pages
-- combined session runtime per generated step
-
-To evaluate a sink-plus-recent execution policy against the full-context oracle, add execution windows explicitly:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024
-```
-
-That reports active page/token counts and numerical error versus the full CPU reference, so you can see the speed/accuracy tradeoff directly.
-This policy is intentionally approximate in the current prototype; aggressive windows can cut decode cost sharply, but they can also introduce large output error versus full-context attention.
-
-To recover a few older pages by cheap query relevance on top of sink-plus-recent, add `--execution-relevance-top-k`:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4
-```
-
-This keeps the window policy as the base set, then admits a small number of older key/value page pairs whose page-summary vectors score highest against the current query.
-
-To make that first-pass signal less blunt, raise `--execution-relevance-sketch-size` above `1` so each page is represented by several sub-page mean vectors instead of one global mean:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4 --execution-relevance-sketch-size 4
-```
-
-To switch from sketch-based relevance to a stronger page-envelope score, use `--execution-relevance-mode envelope`:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4 --execution-relevance-mode envelope
-```
-
-This uses encode-time per-page min/max envelopes to form a query-dependent upper-bound style score for each old page. On the current M4 prototype, that envelope gate is materially better than the sketch gate at roughly the same latency budget.
-The best current M4 balance from our targeted sweep is `--execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 4 --execution-relevance-mode envelope`.
-
-To run that tuned M4 approximate profile directly, use:
-
-```bash
-bash scripts/run_m4_envelope_session.sh --contexts 4096
-```
-
-To run the faster fixed variant, use:
-
-```bash
-bash scripts/run_m4_envelope_fast_session.sh --contexts 4096
-```
-
-There is also an experimental context-aware variant:
-
-```bash
-bash scripts/run_m4_envelope_autoscaled_session.sh --contexts 4096 8192 16384
-```
-
-That profile scales the recent window and `top_k` with context length, but current validation says it is not yet a clear win over the simpler fixed `256/1024/4` profile.
-
-To sweep that envelope profile around different `sink/recent/top_k` settings, use:
-
-```bash
-bash scripts/run_envelope_sweep.sh --config configs/dotcache_m4_mps.yaml --contexts 4096 --execution-sink-windows 128 256 384 --execution-recent-windows 768 1024 1280 --execution-relevance-top-ks 2 4 6
-```
-
-That emits JSONL sweep records, tags Pareto-frontier points, and can be redirected into a file such as [envelope_sweep_4k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_sweep_4k.jsonl).
-At longer contexts like `8192` and `16384`, the same fixed `256/1024/4` profile keeps latency almost flat but max-abs error rises, so context-scaled tuning is still the next step rather than treating one window as universal.
-
-To tune `fast` and `balanced` long-context candidates under a runtime budget, use:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_envelope_tuner.py --config configs/dotcache_m4_mps.yaml --contexts 8192 16384 > benchmarks/results/envelope_tuner_8k_16k.jsonl
-```
-
-That emits all candidate rows plus a summary row per context. The latest committed tuner output is [envelope_tuner_8k_16k.jsonl](/Users/deanocalver/Documents/Projects/DotCache/benchmarks/results/envelope_tuner_8k_16k.jsonl).
-
-To refine that sketch shortlist with exact compressed-domain key scoring before final decode, add `--execution-exact-refine-top-k`:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-relevance-top-k 8 --execution-relevance-sketch-size 4 --execution-exact-refine-top-k 4
-```
-
-This is currently an experimental middle ground: it keeps sink and recent pages, admits a larger candidate pool from the chosen relevance mode, then uses exact page scoring to keep only the best old pages for the final decode. The current implementation reuses those exact shortlisted logits during final decode so it does not rescore the chosen old pages, but on the M4 prototype it is still much slower than the new envelope-only gate.
-
-To approximate dropped old pages instead of ignoring them entirely, add `--execution-approximate-old-pages`:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_session.py --backend torch_mps --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8 --execution-sink-window 256 --execution-recent-window 1024 --execution-approximate-old-pages
-```
-
-This uses exact decode on the active page set and a summary-based fallback contribution for older pages that stay outside the exact path.
-
-To sweep cache capacity under growing-context decode and compare FIFO, LRU, and newest-page pinning, use:
-
-```bash
-.venv/bin/python benchmarks/bench_decode_eviction.py --config configs/dotcache_m4_mps.yaml --contexts 4096 --decode-steps 8
-```
-
-That benchmark reports the tradeoff between:
-
-- cache capacity in appended page-pairs
-- eviction policy (`fifo`, `lru`, or `pinned_recent_fifo`)
-- optional newest-page pinning depth for the pinned policy
-- access pattern (`all` history vs recent-window-heavy working set)
-- hit rate and evictions
-- per-step host-to-device bytes
-- decode throughput versus CPU
-
-Useful capacity labels:
-
-- `initial`: enough resident space for the starting context only
-- `final`: enough resident space for the fully grown context
-- `unbounded`: no resident cap
-
-To isolate the workload-shaped policy, add `--cache-policies pinned_recent_fifo --pinned-recent-page-pairs 4`.
-
-To reproduce the crossover sweep:
-
-```bash
-bash scripts/run_mps_page_sweep.sh --config configs/dotcache_m4_mps.yaml
-```
-
-On this Mac setup, invoking the wrapper through `bash` is the most reliable path.

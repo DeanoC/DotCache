@@ -63,7 +63,11 @@ def main() -> int:
     ap.add_argument("--output", default="benchmarks/results/perf_tests_20260422/test2_phase_breakdown.json")
     args = ap.parse_args()
 
-    os.environ.setdefault("DOTCACHE_V_TOL", "0.05")
+    # DOTCACHE_V_TOL was attempted as a runtime override but the env var was
+    # never read by any kernel — every cell silently used v_tolerance=0.5.
+    # See docs/paper_code_audit_20260424.md. Use --v-tolerance on the paper
+    # benches; this perf bench hardcodes 0.5 in the CertifiedAttentionState
+    # construction below to match its prior measured behaviour.
 
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     from dotcache.integrations.llama import (
@@ -114,6 +118,7 @@ def main() -> int:
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered,
         layer_epsilons={},
+        v_tolerance=0.5,
         collect_stats=True,
         append_kv=True,
         top_k_fp16_keys=4,

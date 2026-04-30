@@ -1,0 +1,389 @@
+started: 2026-04-28T13:06:54.990528+00:00
+cmd: /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/niah.py --contexts 65536 --needles 10 --trial-start 0 --trial-count 100 --output runs/naive_int8k_int4v_niah_8k_32k_64k/slice_0000/64K/niah_slice_0000_64K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-fp16 0
+---
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|                                                  | 0/291 [00:00<?, ?it/s]Loading weights:   0%|▏                                         | 1/291 [00:00<01:26,  3.34it/s]Loading weights:   1%|▎                                         | 2/291 [00:00<01:25,  3.40it/s]Loading weights:   1%|▌                                         | 4/291 [00:00<00:43,  6.62it/s]Loading weights:   2%|▋                                         | 5/291 [00:00<00:40,  6.98it/s]Loading weights:   2%|▊                                         | 6/291 [00:00<00:39,  7.26it/s]Loading weights:   4%|█▊                                       | 13/291 [00:01<00:13, 21.12it/s]Loading weights:   5%|██▎                                      | 16/291 [00:01<00:14, 19.20it/s]Loading weights:   8%|███                                      | 22/291 [00:01<00:10, 26.72it/s]Loading weights:   9%|███▌                                     | 25/291 [00:01<00:11, 22.91it/s]Loading weights:  11%|████▎                                    | 31/291 [00:01<00:08, 29.59it/s]Loading weights:  12%|████▉                                    | 35/291 [00:01<00:09, 26.58it/s]Loading weights:  14%|█████▋                                   | 40/291 [00:02<00:08, 30.44it/s]Loading weights:  15%|██████▏                                  | 44/291 [00:02<00:09, 27.02it/s]Loading weights:  17%|██████▉                                  | 49/291 [00:02<00:07, 30.80it/s]Loading weights:  18%|███████▍                                 | 53/291 [00:02<00:08, 27.22it/s]Loading weights:  20%|████████▏                                | 58/291 [00:02<00:07, 30.93it/s]Loading weights:  21%|████████▋                                | 62/291 [00:02<00:08, 27.45it/s]Loading weights:  23%|█████████▍                               | 67/291 [00:02<00:07, 31.09it/s]Loading weights:  24%|██████████                               | 71/291 [00:03<00:08, 27.35it/s]Loading weights:  26%|██████████▋                              | 76/291 [00:03<00:06, 30.85it/s]Loading weights:  27%|███████████▎                             | 80/291 [00:03<00:07, 27.17it/s]Loading weights:  29%|███████████▉                             | 85/291 [00:03<00:06, 30.81it/s]Loading weights:  31%|████████████▌                            | 89/291 [00:03<00:07, 27.06it/s]Loading weights:  32%|█████████████▏                           | 94/291 [00:03<00:06, 30.70it/s]Loading weights:  34%|█████████████▊                           | 98/291 [00:04<00:07, 27.14it/s]Loading weights:  35%|██████████████▏                         | 103/291 [00:04<00:06, 30.52it/s]Loading weights:  37%|██████████████▋                         | 107/291 [00:04<00:06, 26.67it/s]Loading weights:  38%|███████████████▍                        | 112/291 [00:04<00:05, 30.02it/s]Loading weights:  40%|███████████████▉                        | 116/291 [00:04<00:06, 26.36it/s]Loading weights:  42%|████████████████▋                       | 121/291 [00:04<00:05, 29.72it/s]Loading weights:  43%|█████████████████▏                      | 125/291 [00:05<00:06, 25.85it/s]Loading weights:  45%|█████████████████▊                      | 130/291 [00:05<00:05, 29.21it/s]Loading weights:  46%|██████████████████▍                     | 134/291 [00:05<00:06, 25.37it/s]Loading weights:  48%|███████████████████                     | 139/291 [00:05<00:05, 28.68it/s]Loading weights:  49%|███████████████████▋                    | 143/291 [00:05<00:05, 25.49it/s]Loading weights:  51%|████████████████████▎                   | 148/291 [00:05<00:04, 29.20it/s]Loading weights:  52%|████████████████████▉                   | 152/291 [00:06<00:05, 25.89it/s]Loading weights:  54%|█████████████████████▌                  | 157/291 [00:06<00:04, 29.67it/s]Loading weights:  55%|██████████████████████▏                 | 161/291 [00:06<00:04, 26.35it/s]Loading weights:  57%|██████████████████████▊                 | 166/291 [00:06<00:04, 29.93it/s]Loading weights:  58%|███████████████████████▎                | 170/291 [00:06<00:04, 26.70it/s]Loading weights:  60%|████████████████████████                | 175/291 [00:06<00:03, 30.39it/s]Loading weights:  62%|████████████████████████▌               | 179/291 [00:06<00:04, 27.10it/s]Loading weights:  63%|█████████████████████████▎              | 184/291 [00:07<00:03, 30.82it/s]Loading weights:  65%|█████████████████████████▊              | 188/291 [00:07<00:03, 27.32it/s]Loading weights:  66%|██████████████████████████▌             | 193/291 [00:07<00:03, 30.93it/s]Loading weights:  68%|███████████████████████████             | 197/291 [00:07<00:03, 27.28it/s]Loading weights:  69%|███████████████████████████▊            | 202/291 [00:07<00:02, 31.00it/s]Loading weights:  71%|████████████████████████████▎           | 206/291 [00:07<00:03, 27.42it/s]Loading weights:  73%|█████████████████████████████           | 211/291 [00:08<00:02, 31.12it/s]Loading weights:  74%|█████████████████████████████▌          | 215/291 [00:08<00:02, 27.51it/s]Loading weights:  76%|██████████████████████████████▏         | 220/291 [00:08<00:02, 31.18it/s]Loading weights:  77%|██████████████████████████████▊         | 224/291 [00:08<00:02, 27.42it/s]Loading weights:  79%|███████████████████████████████▍        | 229/291 [00:08<00:01, 31.09it/s]Loading weights:  80%|████████████████████████████████        | 233/291 [00:08<00:02, 27.52it/s]Loading weights:  82%|████████████████████████████████▋       | 238/291 [00:08<00:01, 31.17it/s]Loading weights:  83%|█████████████████████████████████▎      | 242/291 [00:09<00:01, 27.53it/s]Loading weights:  85%|█████████████████████████████████▉      | 247/291 [00:09<00:01, 31.19it/s]Loading weights:  86%|██████████████████████████████████▌     | 251/291 [00:09<00:01, 27.61it/s]Loading weights:  88%|███████████████████████████████████▏    | 256/291 [00:09<00:01, 31.28it/s]Loading weights:  89%|███████████████████████████████████▋    | 260/291 [00:09<00:01, 27.58it/s]Loading weights:  91%|████████████████████████████████████▍   | 265/291 [00:09<00:00, 31.25it/s]Loading weights:  92%|████████████████████████████████████▉   | 269/291 [00:10<00:00, 27.60it/s]Loading weights:  94%|█████████████████████████████████████▋  | 274/291 [00:10<00:00, 31.28it/s]Loading weights:  96%|██████████████████████████████████████▏ | 278/291 [00:10<00:00, 27.61it/s]Loading weights:  97%|██████████████████████████████████████▉ | 283/291 [00:10<00:00, 31.22it/s]Loading weights:  99%|███████████████████████████████████████▍| 287/291 [00:10<00:00, 27.59it/s]Loading weights: 100%|████████████████████████████████████████| 291/291 [00:10<00:00, 27.20it/s]
+Model: 9.09 GB
+
+NIAH: contexts=[64]K, needles=10, top_k_fp16=0, adaptive=fixed, ranking_fallback=off
+[transformers] The following generation flags are not valid and may be ignored: ['top_p']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [1/200]      dense 64K d=0.0 n=0 -> OK
+  [2/200]  certified 64K d=0.0 n=0 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [3/200]      dense 64K d=0.0 n=1 -> OK
+  [4/200]  certified 64K d=0.0 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [5/200]      dense 64K d=0.0 n=2 -> FAIL
+  [6/200]  certified 64K d=0.0 n=2 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [7/200]      dense 64K d=0.0 n=3 -> FAIL
+  [8/200]  certified 64K d=0.0 n=3 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [9/200]      dense 64K d=0.0 n=4 -> OK
+  [10/200]  certified 64K d=0.0 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [11/200]      dense 64K d=0.0 n=5 -> OK
+  [12/200]  certified 64K d=0.0 n=5 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [13/200]      dense 64K d=0.0 n=6 -> OK
+  [14/200]  certified 64K d=0.0 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [15/200]      dense 64K d=0.0 n=7 -> OK
+  [16/200]  certified 64K d=0.0 n=7 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [17/200]      dense 64K d=0.0 n=8 -> OK
+  [18/200]  certified 64K d=0.0 n=8 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [19/200]      dense 64K d=0.0 n=9 -> FAIL
+  [20/200]  certified 64K d=0.0 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [21/200]      dense 64K d=0.1 n=0 -> OK
+  [22/200]  certified 64K d=0.1 n=0 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [23/200]      dense 64K d=0.1 n=1 -> OK
+  [24/200]  certified 64K d=0.1 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [25/200]      dense 64K d=0.1 n=2 -> FAIL
+  [26/200]  certified 64K d=0.1 n=2 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [27/200]      dense 64K d=0.1 n=3 -> FAIL
+  [28/200]  certified 64K d=0.1 n=3 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [29/200]      dense 64K d=0.1 n=4 -> OK
+  [30/200]  certified 64K d=0.1 n=4 -> OK
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [31/200]      dense 64K d=0.1 n=5 -> FAIL
+  [32/200]  certified 64K d=0.1 n=5 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [33/200]      dense 64K d=0.1 n=6 -> OK
+  [34/200]  certified 64K d=0.1 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [35/200]      dense 64K d=0.1 n=7 -> OK
+  [36/200]  certified 64K d=0.1 n=7 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [37/200]      dense 64K d=0.1 n=8 -> OK
+  [38/200]  certified 64K d=0.1 n=8 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [39/200]      dense 64K d=0.1 n=9 -> FAIL
+  [40/200]  certified 64K d=0.1 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [41/200]      dense 64K d=0.2 n=0 -> OK
+  [42/200]  certified 64K d=0.2 n=0 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [43/200]      dense 64K d=0.2 n=1 -> OK
+  [44/200]  certified 64K d=0.2 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [45/200]      dense 64K d=0.2 n=2 -> FAIL
+  [46/200]  certified 64K d=0.2 n=2 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [47/200]      dense 64K d=0.2 n=3 -> FAIL
+  [48/200]  certified 64K d=0.2 n=3 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [49/200]      dense 64K d=0.2 n=4 -> OK
+  [50/200]  certified 64K d=0.2 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [51/200]      dense 64K d=0.2 n=5 -> FAIL
+  [52/200]  certified 64K d=0.2 n=5 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [53/200]      dense 64K d=0.2 n=6 -> OK
+  [54/200]  certified 64K d=0.2 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [55/200]      dense 64K d=0.2 n=7 -> OK
+  [56/200]  certified 64K d=0.2 n=7 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [57/200]      dense 64K d=0.2 n=8 -> OK
+  [58/200]  certified 64K d=0.2 n=8 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [59/200]      dense 64K d=0.2 n=9 -> FAIL
+  [60/200]  certified 64K d=0.2 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [61/200]      dense 64K d=0.3 n=0 -> OK
+  [62/200]  certified 64K d=0.3 n=0 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [63/200]      dense 64K d=0.3 n=1 -> OK
+  [64/200]  certified 64K d=0.3 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [65/200]      dense 64K d=0.3 n=2 -> OK
+  [66/200]  certified 64K d=0.3 n=2 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [67/200]      dense 64K d=0.3 n=3 -> OK
+  [68/200]  certified 64K d=0.3 n=3 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [69/200]      dense 64K d=0.3 n=4 -> OK
+  [70/200]  certified 64K d=0.3 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [71/200]      dense 64K d=0.3 n=5 -> OK
+  [72/200]  certified 64K d=0.3 n=5 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [73/200]      dense 64K d=0.3 n=6 -> OK
+  [74/200]  certified 64K d=0.3 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [75/200]      dense 64K d=0.3 n=7 -> OK
+  [76/200]  certified 64K d=0.3 n=7 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [77/200]      dense 64K d=0.3 n=8 -> OK
+  [78/200]  certified 64K d=0.3 n=8 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [79/200]      dense 64K d=0.3 n=9 -> FAIL
+  [80/200]  certified 64K d=0.3 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [81/200]      dense 64K d=0.4 n=0 -> OK
+  [82/200]  certified 64K d=0.4 n=0 -> OK
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [83/200]      dense 64K d=0.4 n=1 -> OK
+  [84/200]  certified 64K d=0.4 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [85/200]      dense 64K d=0.4 n=2 -> OK
+  [86/200]  certified 64K d=0.4 n=2 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [87/200]      dense 64K d=0.4 n=3 -> OK
+  [88/200]  certified 64K d=0.4 n=3 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [89/200]      dense 64K d=0.4 n=4 -> OK
+  [90/200]  certified 64K d=0.4 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [91/200]      dense 64K d=0.4 n=5 -> FAIL
+  [92/200]  certified 64K d=0.4 n=5 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [93/200]      dense 64K d=0.4 n=6 -> OK
+  [94/200]  certified 64K d=0.4 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [95/200]      dense 64K d=0.4 n=7 -> FAIL
+  [96/200]  certified 64K d=0.4 n=7 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [97/200]      dense 64K d=0.4 n=8 -> OK
+  [98/200]  certified 64K d=0.4 n=8 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [99/200]      dense 64K d=0.4 n=9 -> FAIL
+  [100/200]  certified 64K d=0.4 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [101/200]      dense 64K d=0.5 n=0 -> OK
+  [102/200]  certified 64K d=0.5 n=0 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [103/200]      dense 64K d=0.5 n=1 -> OK
+  [104/200]  certified 64K d=0.5 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [105/200]      dense 64K d=0.5 n=2 -> OK
+  [106/200]  certified 64K d=0.5 n=2 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [107/200]      dense 64K d=0.5 n=3 -> OK
+  [108/200]  certified 64K d=0.5 n=3 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [109/200]      dense 64K d=0.5 n=4 -> OK
+  [110/200]  certified 64K d=0.5 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [111/200]      dense 64K d=0.5 n=5 -> FAIL
+  [112/200]  certified 64K d=0.5 n=5 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [113/200]      dense 64K d=0.5 n=6 -> OK
+  [114/200]  certified 64K d=0.5 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [115/200]      dense 64K d=0.5 n=7 -> FAIL
+  [116/200]  certified 64K d=0.5 n=7 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [117/200]      dense 64K d=0.5 n=8 -> FAIL
+  [118/200]  certified 64K d=0.5 n=8 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [119/200]      dense 64K d=0.5 n=9 -> FAIL
+  [120/200]  certified 64K d=0.5 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [121/200]      dense 64K d=0.6 n=0 -> OK
+  [122/200]  certified 64K d=0.6 n=0 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [123/200]      dense 64K d=0.6 n=1 -> OK
+  [124/200]  certified 64K d=0.6 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [125/200]      dense 64K d=0.6 n=2 -> OK
+  [126/200]  certified 64K d=0.6 n=2 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [127/200]      dense 64K d=0.6 n=3 -> OK
+  [128/200]  certified 64K d=0.6 n=3 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [129/200]      dense 64K d=0.6 n=4 -> OK
+  [130/200]  certified 64K d=0.6 n=4 -> OK
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [131/200]      dense 64K d=0.6 n=5 -> OK
+  [132/200]  certified 64K d=0.6 n=5 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [133/200]      dense 64K d=0.6 n=6 -> OK
+  [134/200]  certified 64K d=0.6 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [135/200]      dense 64K d=0.6 n=7 -> FAIL
+  [136/200]  certified 64K d=0.6 n=7 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [137/200]      dense 64K d=0.6 n=8 -> OK
+  [138/200]  certified 64K d=0.6 n=8 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [139/200]      dense 64K d=0.6 n=9 -> FAIL
+  [140/200]  certified 64K d=0.6 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [141/200]      dense 64K d=0.7 n=0 -> OK
+  [142/200]  certified 64K d=0.7 n=0 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [143/200]      dense 64K d=0.7 n=1 -> OK
+  [144/200]  certified 64K d=0.7 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [145/200]      dense 64K d=0.7 n=2 -> FAIL
+  [146/200]  certified 64K d=0.7 n=2 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [147/200]      dense 64K d=0.7 n=3 -> FAIL
+  [148/200]  certified 64K d=0.7 n=3 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [149/200]      dense 64K d=0.7 n=4 -> OK
+  [150/200]  certified 64K d=0.7 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [151/200]      dense 64K d=0.7 n=5 -> FAIL
+  [152/200]  certified 64K d=0.7 n=5 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [153/200]      dense 64K d=0.7 n=6 -> OK
+  [154/200]  certified 64K d=0.7 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [155/200]      dense 64K d=0.7 n=7 -> FAIL
+  [156/200]  certified 64K d=0.7 n=7 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [157/200]      dense 64K d=0.7 n=8 -> OK
+  [158/200]  certified 64K d=0.7 n=8 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [159/200]      dense 64K d=0.7 n=9 -> FAIL
+  [160/200]  certified 64K d=0.7 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [161/200]      dense 64K d=0.8 n=0 -> OK
+  [162/200]  certified 64K d=0.8 n=0 -> OK
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [163/200]      dense 64K d=0.8 n=1 -> OK
+  [164/200]  certified 64K d=0.8 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [165/200]      dense 64K d=0.8 n=2 -> FAIL
+  [166/200]  certified 64K d=0.8 n=2 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [167/200]      dense 64K d=0.8 n=3 -> OK
+  [168/200]  certified 64K d=0.8 n=3 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [169/200]      dense 64K d=0.8 n=4 -> OK
+  [170/200]  certified 64K d=0.8 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [171/200]      dense 64K d=0.8 n=5 -> FAIL
+  [172/200]  certified 64K d=0.8 n=5 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [173/200]      dense 64K d=0.8 n=6 -> OK
+  [174/200]  certified 64K d=0.8 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [175/200]      dense 64K d=0.8 n=7 -> FAIL
+  [176/200]  certified 64K d=0.8 n=7 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [177/200]      dense 64K d=0.8 n=8 -> FAIL
+  [178/200]  certified 64K d=0.8 n=8 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [179/200]      dense 64K d=0.8 n=9 -> FAIL
+  [180/200]  certified 64K d=0.8 n=9 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [181/200]      dense 64K d=0.9 n=0 -> OK
+  [182/200]  certified 64K d=0.9 n=0 -> OK
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [183/200]      dense 64K d=0.9 n=1 -> OK
+  [184/200]  certified 64K d=0.9 n=1 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [185/200]      dense 64K d=0.9 n=2 -> OK
+  [186/200]  certified 64K d=0.9 n=2 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [187/200]      dense 64K d=0.9 n=3 -> OK
+  [188/200]  certified 64K d=0.9 n=3 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [189/200]      dense 64K d=0.9 n=4 -> OK
+  [190/200]  certified 64K d=0.9 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [191/200]      dense 64K d=0.9 n=5 -> FAIL
+  [192/200]  certified 64K d=0.9 n=5 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [193/200]      dense 64K d=0.9 n=6 -> OK
+  [194/200]  certified 64K d=0.9 n=6 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [195/200]      dense 64K d=0.9 n=7 -> FAIL
+  [196/200]  certified 64K d=0.9 n=7 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [197/200]      dense 64K d=0.9 n=8 -> OK
+  [198/200]  certified 64K d=0.9 n=8 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [199/200]      dense 64K d=0.9 n=9 -> FAIL
+  [200/200]  certified 64K d=0.9 n=9 -> FAIL
+
+dense: 66/100 correct (66.0%)
+
+certified: 5/100 correct (5.0%)
+
+*** 61 CRITICAL FAILURES: dense OK but certified FAILED ***
+  64K d=0.0 n=0: expected 'Crimson Falcon', got ' The history of the history of the history of math'
+  64K d=0.0 n=1: expected '7429-DELTA', got ' The history of the history of mathematics spans t'
+  64K d=0.0 n=4: expected 'RX-9031', got ' RX- The history of mathematics spans thousands of'
+  64K d=0.0 n=5: expected 'Viper-Seven', got ' The history of the mathematics spans thousands of'
+  64K d=0.0 n=6: expected 'Hotel-Echo-4', got ' The history of the history of mathematics spans t'
+
+==================================================
+Dense accuracy:     66.0%
+Certified accuracy: 5.0%
+Critical failures:  61
+Paired Δ: -61.0 pp (95% bootstrap CI [-71.0, -51.0] pp, McNemar p=1.641e-15, n=100)
+JSON -> runs/naive_int8k_int4v_niah_8k_32k_64k/slice_0000/64K/niah_slice_0000_64K.json

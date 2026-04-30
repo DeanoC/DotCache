@@ -205,12 +205,14 @@ def _multihead_score_certify_kernel(
     # Data — all KV heads packed: K_int8[kv_head, N, head_dim]
     K_int8_ptr,      # [num_kv_heads * N, head_dim] int8 contiguous (heads packed)
     K_scale_ptr,     # [num_kv_heads, num_blocks, head_dim] float32
+    K_zp_ptr,        # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3 asymmetric)
     Q_ptr,           # [num_q_heads, head_dim] float32
     Corr_ptr,        # [num_kv_heads, num_blocks] float32
     # Output
     Skip_ptr,        # [num_q_heads, num_blocks] int32
     M_b_ptr,         # [num_q_heads, num_blocks] float32
     S_b_ptr,         # [num_q_heads, num_blocks] float32
+    Scores_ptr,      # [num_q_heads, num_blocks, block_size] float32 scratch
     # Sync
     Counter_ptr,     # [1] int32
     # Layout
@@ -227,6 +229,7 @@ def _multihead_score_certify_kernel(
     block_epsilon: tl.constexpr,
     TILE_D: tl.constexpr,
     TILE_N: tl.constexpr,
+    STORE_SCORES: tl.constexpr,
 ):
     """Score + certify ALL heads in one kernel launch.
 
@@ -268,9 +271,14 @@ def _multihead_score_certify_kernel(
                     d_mask = d_off < head_dim
                     q_tile = tl.load(Q_ptr + q_head_idx * head_dim + d_off, mask=d_mask, other=0.0).to(tl.float32)
                     ch_scale = tl.load(K_scale_ptr + scale_block_base + d_off, mask=d_mask, other=0.0).to(tl.float32)
+                    ch_zp = tl.load(K_zp_ptr + scale_block_base + d_off, mask=d_mask, other=0.0).to(tl.float32)
                     k_ptrs = row_ptrs[:, None] + d_off[None, :]
                     k_tile = tl.load(k_ptrs, mask=d_mask[None, :], other=0).to(tl.float32)
-                    k_fp = k_tile * ch_scale[None, :]
+                    # Asymmetric dequant (paper §2.3 Eq. 1): k̂ = q · s + z.
+                    # Expansion in dot product: q · k̂ = Σ q_c (Q_c s_c + z_c)
+                    #   = Σ q_c Q_c s_c  +  Σ q_c z_c
+                    # The +z_c term is the paper §5.2 L575 correction.
+                    k_fp = k_tile * ch_scale[None, :] + ch_zp[None, :]
                     scores += tl.sum(k_fp * q_tile[None, :], axis=1)
 
                 scores = scores * q_scale
@@ -279,6 +287,9 @@ def _multihead_score_certify_kernel(
                 out_idx = q_head_idx * num_blocks + bid
                 tl.store(M_b_ptr + out_idx, m_b)
                 tl.store(S_b_ptr + out_idx, s_b)
+                if STORE_SCORES:
+                    score_base = out_idx * block_size
+                    tl.store(Scores_ptr + score_base + t_offs, scores)
 
     # Barrier: last program does certify for ALL heads
     old_count = tl.atomic_add(Counter_ptr, 1)
@@ -319,19 +330,22 @@ def _multihead_score_certify_kernel(
                 tl.store(Skip_ptr + m_base + o, tl.where(mk, skip.to(tl.int32), 0), mask=mk)
 
 
-def fused_score_certify_multihead(
+def _fused_score_certify_multihead_triton(
     K_int8_packed: torch.Tensor,   # [num_kv_heads, N, head_dim] int8
     K_scale: torch.Tensor,         # [num_kv_heads, num_blocks, head_dim] float32
+    K_zero_points: torch.Tensor,   # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
     q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
     correction: torch.Tensor,      # [num_kv_heads, num_blocks] float32
     gqa_group: int,
     block_size: int = 16,
     q_scale: float = 1.0,
     block_epsilon: float = 0.001,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_token_scores: bool = False,
+) -> tuple[torch.Tensor, ...]:
     """Score + certify ALL heads in one kernel launch.
 
-    Returns (m_b, S_b, skip_mask) each [num_q_heads, num_blocks].
+    Returns (m_b, S_b, skip_mask), and optionally token_scores
+    [num_q_heads, num_blocks, block_size].
     """
     num_kv_heads, N, head_dim = K_int8_packed.shape
     num_q_heads = q_all.shape[0]
@@ -344,6 +358,11 @@ def fused_score_certify_multihead(
     m_b = torch.empty(num_q_heads, num_blocks, dtype=torch.float32, device=device)
     S_b = torch.empty(num_q_heads, num_blocks, dtype=torch.float32, device=device)
     skip_i32 = torch.empty(num_q_heads, num_blocks, dtype=torch.int32, device=device)
+    token_scores = (
+        torch.empty(num_q_heads, num_blocks, block_size, dtype=torch.float32, device=device)
+        if return_token_scores
+        else torch.empty(0, dtype=torch.float32, device=device)
+    )
     counter = torch.zeros(1, dtype=torch.int32, device=device)
 
     TILE_D = triton.next_power_of_2(head_dim)
@@ -353,8 +372,9 @@ def fused_score_certify_multihead(
     n_programs = num_q_heads * chunks_per_head
 
     _multihead_score_certify_kernel[(n_programs,)](
-        K_flat, K_scale.contiguous(), q_all.contiguous(), correction.contiguous(),
-        skip_i32, m_b, S_b, counter,
+        K_flat, K_scale.contiguous(), K_zero_points.contiguous(),
+        q_all.contiguous(), correction.contiguous(),
+        skip_i32, m_b, S_b, token_scores, counter,
         N=N,
         stride_k_n=head_dim,
         head_dim=head_dim,
@@ -368,8 +388,72 @@ def fused_score_certify_multihead(
         block_epsilon=block_epsilon,
         TILE_D=TILE_D,
         TILE_N=TILE_N,
+        STORE_SCORES=return_token_scores,
     )
+    if return_token_scores:
+        return m_b, S_b, skip_i32.bool(), token_scores
     return m_b, S_b, skip_i32.bool()
+
+
+def fused_score_certify_multihead(
+    K_int8_packed: torch.Tensor,   # [num_kv_heads, N, head_dim] int8
+    K_scale: torch.Tensor,         # [num_kv_heads, num_blocks, head_dim] float32
+    K_zero_points: torch.Tensor,   # [num_kv_heads, num_blocks, head_dim] float32 (paper §2.3)
+    q_all: torch.Tensor,           # [num_q_heads, head_dim] float32
+    correction: torch.Tensor,      # [num_kv_heads, num_blocks] float32
+    gqa_group: int,
+    block_size: int = 16,
+    q_scale: float = 1.0,
+    block_epsilon: float = 0.001,
+    return_token_scores: bool = False,
+) -> tuple[torch.Tensor, ...]:
+    """Score + certify ALL heads.
+
+    `DOTCACHE_SCORE_BACKEND=cutlass_sm120` probes the future tensor-core
+    backend boundary, but the Triton implementation remains the exact fallback
+    until `DOTCACHE_CUTLASS_SM120_ENABLE_SCORE=1` and the CUTLASS kernels pass
+    the phase-1 correctness/performance gates.
+    """
+    import os as _os
+
+    backend = _os.environ.get("DOTCACHE_SCORE_BACKEND", "triton").strip().lower()
+    if backend == "cutlass_sm120" and not return_token_scores:
+        try:
+            from dotcache.backends.cutlass_sm120 import (
+                cutlass_sm120_available,
+                score_certify_cutlass,
+            )
+
+            if (
+                _os.environ.get("DOTCACHE_CUTLASS_SM120_ENABLE_SCORE", "0") == "1"
+                and cutlass_sm120_available()
+            ):
+                return score_certify_cutlass(
+                    K_int8_packed=K_int8_packed,
+                    K_scale=K_scale,
+                    K_zero_points=K_zero_points,
+                    q_all=q_all,
+                    correction=correction,
+                    gqa_group=gqa_group,
+                    block_size=block_size,
+                    q_scale=q_scale,
+                    block_epsilon=block_epsilon,
+                )
+        except Exception:
+            pass
+
+    return _fused_score_certify_multihead_triton(
+        K_int8_packed=K_int8_packed,
+        K_scale=K_scale,
+        K_zero_points=K_zero_points,
+        q_all=q_all,
+        correction=correction,
+        gqa_group=gqa_group,
+        block_size=block_size,
+        q_scale=q_scale,
+        block_epsilon=block_epsilon,
+        return_token_scores=return_token_scores,
+    )
 
 
 def fused_score_certify(

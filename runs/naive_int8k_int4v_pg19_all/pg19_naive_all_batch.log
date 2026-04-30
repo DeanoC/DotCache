@@ -1,0 +1,244 @@
+[batch started] 2026-04-28T12:00:45+00:00
+[context 8192 slice 0 started] 2026-04-28T12:00:45+00:00
+[start] pg19 8K slice=0
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 0 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0000/8K/pg19_slice_0000_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=9.8m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0000/manifest.json
+[context 8192 slice 0 finished] 2026-04-28T12:10:32+00:00
+[context 8192 slice 1 started] 2026-04-28T12:10:32+00:00
+[start] pg19 8K slice=1
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 1 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0001/8K/pg19_slice_0001_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0001/manifest.json
+[context 8192 slice 1 finished] 2026-04-28T12:19:04+00:00
+[context 8192 slice 2 started] 2026-04-28T12:19:04+00:00
+[start] pg19 8K slice=2
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 2 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0002/8K/pg19_slice_0002_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0002/manifest.json
+[context 8192 slice 2 finished] 2026-04-28T12:27:35+00:00
+[context 8192 slice 3 started] 2026-04-28T12:27:35+00:00
+[start] pg19 8K slice=3
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 3 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0003/8K/pg19_slice_0003_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.4m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0003/manifest.json
+[context 8192 slice 3 finished] 2026-04-28T12:36:01+00:00
+[context 8192 slice 4 started] 2026-04-28T12:36:01+00:00
+[start] pg19 8K slice=4
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 4 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0004/8K/pg19_slice_0004_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.6m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0004/manifest.json
+[context 8192 slice 4 finished] 2026-04-28T12:44:37+00:00
+[context 8192 slice 5 started] 2026-04-28T12:44:37+00:00
+[start] pg19 8K slice=5
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 5 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0005/8K/pg19_slice_0005_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0005/manifest.json
+[context 8192 slice 5 finished] 2026-04-28T12:53:06+00:00
+[context 8192 slice 6 started] 2026-04-28T12:53:06+00:00
+[start] pg19 8K slice=6
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 6 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0006/8K/pg19_slice_0006_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0006/manifest.json
+[context 8192 slice 6 finished] 2026-04-28T13:01:38+00:00
+[context 8192 slice 7 started] 2026-04-28T13:01:38+00:00
+[start] pg19 8K slice=7
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 7 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0007/8K/pg19_slice_0007_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0007/manifest.json
+[context 8192 slice 7 finished] 2026-04-28T13:10:09+00:00
+[context 8192 slice 8 started] 2026-04-28T13:10:09+00:00
+[start] pg19 8K slice=8
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 8 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0008/8K/pg19_slice_0008_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.6m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0008/manifest.json
+[context 8192 slice 8 finished] 2026-04-28T13:18:47+00:00
+[context 8192 slice 9 started] 2026-04-28T13:18:47+00:00
+[start] pg19 8K slice=9
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 9 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0009/8K/pg19_slice_0009_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0009/manifest.json
+[context 8192 slice 9 finished] 2026-04-28T13:27:16+00:00
+[context 8192 slice 10 started] 2026-04-28T13:27:16+00:00
+[start] pg19 8K slice=10
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 10 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0010/8K/pg19_slice_0010_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.6m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0010/manifest.json
+[context 8192 slice 10 finished] 2026-04-28T13:35:50+00:00
+[context 8192 slice 11 started] 2026-04-28T13:35:50+00:00
+[start] pg19 8K slice=11
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 11 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0011/8K/pg19_slice_0011_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0011/manifest.json
+[context 8192 slice 11 finished] 2026-04-28T13:44:19+00:00
+[context 8192 slice 12 started] 2026-04-28T13:44:19+00:00
+[start] pg19 8K slice=12
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 12 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0012/8K/pg19_slice_0012_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0012/manifest.json
+[context 8192 slice 12 finished] 2026-04-28T13:52:47+00:00
+[context 8192 slice 13 started] 2026-04-28T13:52:47+00:00
+[start] pg19 8K slice=13
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 13 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0013/8K/pg19_slice_0013_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0013/manifest.json
+[context 8192 slice 13 finished] 2026-04-28T14:01:18+00:00
+[context 8192 slice 14 started] 2026-04-28T14:01:18+00:00
+[start] pg19 8K slice=14
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 14 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0014/8K/pg19_slice_0014_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.4m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0014/manifest.json
+[context 8192 slice 14 finished] 2026-04-28T14:09:45+00:00
+[context 8192 slice 15 started] 2026-04-28T14:09:45+00:00
+[start] pg19 8K slice=15
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 15 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0015/8K/pg19_slice_0015_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.6m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0015/manifest.json
+[context 8192 slice 15 finished] 2026-04-28T14:18:19+00:00
+[context 8192 slice 16 started] 2026-04-28T14:18:19+00:00
+[start] pg19 8K slice=16
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 16 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0016/8K/pg19_slice_0016_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.6m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0016/manifest.json
+[context 8192 slice 16 finished] 2026-04-28T14:26:53+00:00
+[context 8192 slice 17 started] 2026-04-28T14:26:53+00:00
+[start] pg19 8K slice=17
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 17 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0017/8K/pg19_slice_0017_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0017/manifest.json
+[context 8192 slice 17 finished] 2026-04-28T14:35:24+00:00
+[context 8192 slice 18 started] 2026-04-28T14:35:24+00:00
+[start] pg19 8K slice=18
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 18 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0018/8K/pg19_slice_0018_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0018/manifest.json
+[context 8192 slice 18 finished] 2026-04-28T14:43:53+00:00
+[context 8192 slice 19 started] 2026-04-28T14:43:53+00:00
+[start] pg19 8K slice=19
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 8192 --chunk-index 19 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0019/8K/pg19_slice_0019_8K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 8K exit=0 wall=8.4m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0019/manifest.json
+[context 8192 slice 19 finished] 2026-04-28T14:52:17+00:00
+[context 32768 slice 0 started] 2026-04-28T14:52:17+00:00
+[start] pg19 32K slice=0
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 0 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0000/32K/pg19_slice_0000_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=61.7m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0000/manifest.json
+[context 32768 slice 0 finished] 2026-04-28T15:54:01+00:00
+[context 32768 slice 1 started] 2026-04-28T15:54:01+00:00
+[start] pg19 32K slice=1
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 1 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0001/32K/pg19_slice_0001_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0001/manifest.json
+[context 32768 slice 1 finished] 2026-04-28T16:50:31+00:00
+[context 32768 slice 2 started] 2026-04-28T16:50:31+00:00
+[start] pg19 32K slice=2
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 2 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0002/32K/pg19_slice_0002_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.4m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0002/manifest.json
+[context 32768 slice 2 finished] 2026-04-28T17:46:54+00:00
+[context 32768 slice 3 started] 2026-04-28T17:46:54+00:00
+[start] pg19 32K slice=3
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 3 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0003/32K/pg19_slice_0003_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.7m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0003/manifest.json
+[context 32768 slice 3 finished] 2026-04-28T18:43:35+00:00
+[context 32768 slice 4 started] 2026-04-28T18:43:35+00:00
+[start] pg19 32K slice=4
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 4 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0004/32K/pg19_slice_0004_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0004/manifest.json
+[context 32768 slice 4 finished] 2026-04-28T19:40:06+00:00
+[context 32768 slice 5 started] 2026-04-28T19:40:06+00:00
+[start] pg19 32K slice=5
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 5 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0005/32K/pg19_slice_0005_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.6m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0005/manifest.json
+[context 32768 slice 5 finished] 2026-04-28T20:36:40+00:00
+[context 32768 slice 6 started] 2026-04-28T20:36:40+00:00
+[start] pg19 32K slice=6
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 6 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0006/32K/pg19_slice_0006_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.8m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0006/manifest.json
+[context 32768 slice 6 finished] 2026-04-28T21:33:27+00:00
+[context 32768 slice 7 started] 2026-04-28T21:33:27+00:00
+[start] pg19 32K slice=7
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 7 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0007/32K/pg19_slice_0007_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.8m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0007/manifest.json
+[context 32768 slice 7 finished] 2026-04-28T22:30:15+00:00
+[context 32768 slice 8 started] 2026-04-28T22:30:15+00:00
+[start] pg19 32K slice=8
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 8 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0008/32K/pg19_slice_0008_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=57.0m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0008/manifest.json
+[context 32768 slice 8 finished] 2026-04-28T23:27:16+00:00
+[context 32768 slice 9 started] 2026-04-28T23:27:16+00:00
+[start] pg19 32K slice=9
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 9 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0009/32K/pg19_slice_0009_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.4m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0009/manifest.json
+[context 32768 slice 9 finished] 2026-04-29T00:23:43+00:00
+[context 32768 slice 10 started] 2026-04-29T00:23:43+00:00
+[start] pg19 32K slice=10
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 10 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0010/32K/pg19_slice_0010_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0010/manifest.json
+[context 32768 slice 10 finished] 2026-04-29T01:20:13+00:00
+[context 32768 slice 11 started] 2026-04-29T01:20:13+00:00
+[start] pg19 32K slice=11
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 11 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0011/32K/pg19_slice_0011_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.3m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0011/manifest.json
+[context 32768 slice 11 finished] 2026-04-29T02:16:30+00:00
+[context 32768 slice 12 started] 2026-04-29T02:16:30+00:00
+[start] pg19 32K slice=12
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 12 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0012/32K/pg19_slice_0012_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0012/manifest.json
+[context 32768 slice 12 finished] 2026-04-29T03:12:57+00:00
+[context 32768 slice 13 started] 2026-04-29T03:12:57+00:00
+[start] pg19 32K slice=13
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 13 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0013/32K/pg19_slice_0013_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.8m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0013/manifest.json
+[context 32768 slice 13 finished] 2026-04-29T04:09:48+00:00
+[context 32768 slice 14 started] 2026-04-29T04:09:48+00:00
+[start] pg19 32K slice=14
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 14 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0014/32K/pg19_slice_0014_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.4m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0014/manifest.json
+[context 32768 slice 14 finished] 2026-04-29T05:06:14+00:00
+[context 32768 slice 15 started] 2026-04-29T05:06:14+00:00
+[start] pg19 32K slice=15
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 15 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0015/32K/pg19_slice_0015_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0015/manifest.json
+[context 32768 slice 15 finished] 2026-04-29T06:02:42+00:00
+[context 32768 slice 16 started] 2026-04-29T06:02:42+00:00
+[start] pg19 32K slice=16
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 16 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0016/32K/pg19_slice_0016_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0016/manifest.json
+[context 32768 slice 16 finished] 2026-04-29T06:59:10+00:00
+[context 32768 slice 17 started] 2026-04-29T06:59:10+00:00
+[start] pg19 32K slice=17
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 17 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0017/32K/pg19_slice_0017_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.2m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0017/manifest.json
+[context 32768 slice 17 finished] 2026-04-29T07:55:23+00:00
+[context 32768 slice 18 started] 2026-04-29T07:55:23+00:00
+[start] pg19 32K slice=18
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 18 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0018/32K/pg19_slice_0018_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=56.7m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0018/manifest.json
+[context 32768 slice 18 finished] 2026-04-29T08:52:07+00:00
+[context 32768 slice 19 started] 2026-04-29T08:52:07+00:00
+[start] pg19 32K slice=19
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 32768 --chunk-index 19 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0019/32K/pg19_slice_0019_32K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0
+[done] pg19 32K exit=0 wall=57.5m
+manifest -> runs/naive_int8k_int4v_pg19_all/slice_0019/manifest.json
+[context 32768 slice 19 finished] 2026-04-29T09:49:37+00:00
+[context 65536 slice 0 started] 2026-04-29T09:49:37+00:00
+[start] pg19 64K slice=0
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 65536 --chunk-index 0 --telemetry-mode summary --certified-warmup-steps 128 --output runs/naive_int8k_int4v_pg19_all/slice_0000/64K/pg19_slice_0000_64K.json --model NousResearch/Meta-Llama-3.1-8B --cert-profile naive-int8k-int4v --v-tolerance 1000000000.0 --use-int4-values --group-size 16 --tau-cov 0 --k-min 0 --k-max 0 --eps-guard 0.01 --exploration-rate 0.0 --rung1-threshold 1.0 --rung1-multiplier 1.0 --fp16-key-cache-blocks 0 --fp16-value-cache-blocks 0 --top-k-override 0

@@ -32,8 +32,10 @@ import random
 import string
 import sys
 import time
+import warnings
 from pathlib import Path
 
+import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -344,6 +346,72 @@ def score_string_match_all(generated: str, references: list[str]) -> float:
     return hits / len(references)
 
 
+def paired_ruler_stats(
+    results: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict:
+    """Paired RULER score delta summary for paper table generation.
+
+    Scores are continuous in [0, 1]. The CI is a bootstrap percentile interval
+    over per-sample (cert_score - dense_score), preserving the paired design.
+    """
+    n = len(results)
+    if n == 0:
+        return {
+            "n": 0,
+            "dense_mean": None,
+            "certified_mean": None,
+            "delta": None,
+            "delta_ci_lo": None,
+            "delta_ci_hi": None,
+        }
+    dense = np.asarray([float(r["dense_score"]) for r in results], dtype=np.float64)
+    cert = np.asarray([float(r["cert_score"]) for r in results], dtype=np.float64)
+    diffs = cert - dense
+    delta = float(diffs.mean())
+    if n > 1 and bootstrap_iters > 0:
+        rng = np.random.default_rng(seed)
+        boot = diffs[rng.integers(0, n, size=(int(bootstrap_iters), n))].mean(axis=1)
+        ci_lo = float(np.quantile(boot, 0.025))
+        ci_hi = float(np.quantile(boot, 0.975))
+    else:
+        ci_lo = ci_hi = delta
+    return {
+        "n": int(n),
+        "dense_mean": float(dense.mean()),
+        "certified_mean": float(cert.mean()),
+        "delta": delta,
+        "delta_ci_lo": ci_lo,
+        "delta_ci_hi": ci_hi,
+        "bootstrap_iters": int(bootstrap_iters),
+        "bootstrap_seed": int(seed),
+    }
+
+
+def paired_ruler_stats_by_context(results: list[dict]) -> dict[str, dict]:
+    contexts = sorted({int(r["ctx_tokens"]) for r in results})
+    return {
+        f"{ctx // 1024}K": paired_ruler_stats(
+            [r for r in results if int(r["ctx_tokens"]) == ctx],
+            seed=20260425 + idx,
+        )
+        for idx, ctx in enumerate(contexts)
+    }
+
+
+def paired_ruler_stats_by_task_context(results: list[dict]) -> dict[str, dict]:
+    keys = sorted({(str(r["subtask"]), int(r["ctx_tokens"])) for r in results})
+    return {
+        f"{task}_{ctx // 1024}K": paired_ruler_stats(
+            [r for r in results if str(r["subtask"]) == task and int(r["ctx_tokens"]) == ctx],
+            seed=20260425 + idx,
+        )
+        for idx, (task, ctx) in enumerate(keys)
+    }
+
+
 # ---------------------------------------------------------------------------
 # Generation paths — mirror niah.py run_niah_cell
 # ---------------------------------------------------------------------------
@@ -363,10 +431,14 @@ def generate_dense(model, tokenizer, adapter, prompt: str, max_new: int,
 
 
 def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
-                       calibrated_profile=None, default_epsilon: float = 1e-4,
+                       *,
+                       v_tolerance: float,
                        top_k_fp16_keys: int = 4,
-                       concentration_threshold: float = 0.02,
                        device: str = "cuda",
+                       use_int4_values: bool = False,
+                       group_size: int = 16,
+                       fp16_key_cache_blocks: int | str | None = None,
+                       fp16_value_cache_blocks: int | str | None = None,
                        # Paper-alignment features (T4/T7/Rung1/T9/T10).
                        tau_cov: float | None = None,
                        k_min: int = 2,
@@ -375,6 +447,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
                        ranking_r: int = 1,
                        ranking_fallback_mode: str = "full",
                        score_consistency_check: bool = False,
+                       score_consistency_interval: int = 1,
                        eps_guard: float = 0.01,
                        exploration_rate: float = 0.0,
                        rung1_threshold: float = 0.02,
@@ -383,7 +456,10 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     from dotcache.integrations.llama import (
         _ensure_certified_imports, CertifiedAttentionState,
     )
-    from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
+    from dotcache.kernels.tiered_kv_cache import (
+        create_tiered_cache_from_model,
+        create_tiered_cache_int4v_from_model,
+    )
 
     adapter.set_mode("dense")
     inputs = tokenizer(prompt, return_tensors="pt", truncation=False).to(device)
@@ -396,20 +472,26 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
 
     _ensure_certified_imports()
     layer_ids = list(range(model.config.num_hidden_layers))
-    _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
-    _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
-    tiered_caches = create_tiered_cache_from_model(
-        past_kv, layer_ids, max_new_tokens=max_new + 8,
-        fp16_key_cache_capacity=_cap,
-    )
+    _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
+    _env_value_cap = os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS")
+    from _provenance import resolve_fp16_key_cache_blocks, resolve_fp16_value_cache_blocks
+    _key_cap = resolve_fp16_key_cache_blocks(fp16_key_cache_blocks, _env_key_cap)
+    _value_cap = resolve_fp16_value_cache_blocks(fp16_value_cache_blocks, _env_value_cap)
+    if use_int4_values:
+        tiered_caches = create_tiered_cache_int4v_from_model(
+            past_kv, layer_ids, group_size=group_size,
+            max_new_tokens=max_new + 8,
+            fp16_key_cache_capacity=_key_cap,
+            fp16_value_cache_capacity=_value_cap,
+        )
+    else:
+        tiered_caches = create_tiered_cache_from_model(
+            past_kv, layer_ids, max_new_tokens=max_new + 8,
+            fp16_key_cache_capacity=None,
+        )
     del past_kv
     gc.collect()
     torch.cuda.empty_cache()
-
-    if calibrated_profile is not None:
-        layer_epsilons = calibrated_profile.get_layer_epsilons_min(seq_len)
-    else:
-        layer_epsilons = {}
 
     collect_stats = (
         bool(ranking_fallback)
@@ -419,12 +501,10 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
     )
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered_caches,
-        layer_epsilons=layer_epsilons,
-        default_epsilon=default_epsilon,
         collect_stats=collect_stats,
         append_kv=True,
         top_k_fp16_keys=top_k_fp16_keys,
-        concentration_threshold=concentration_threshold,
+        v_tolerance=v_tolerance,
         tau_cov=tau_cov,
         k_min=k_min,
         k_max=k_max,
@@ -432,6 +512,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
         ranking_r=ranking_r,
         ranking_fallback_mode=ranking_fallback_mode,
         score_consistency_check=score_consistency_check,
+        score_consistency_interval=score_consistency_interval,
         eps_guard=eps_guard,
         exploration_rate=exploration_rate,
         rung1_threshold=rung1_threshold,
@@ -441,7 +522,7 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
 
     cache_position = torch.tensor([seq_len], dtype=torch.long, device=device)
     current_input = first_token
-    gen_ids = [first_token.item()]
+    gen_token_tensors = [first_token]
     for _ in range(max_new - 1):
         with torch.inference_mode():
             out = model(
@@ -451,13 +532,14 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
             )
         if telemetry_collector is not None:
             telemetry_collector.record_step()
-        tid = out.logits[:, -1, :].argmax(dim=-1).item()
-        gen_ids.append(tid)
-        if tid == tokenizer.eos_token_id:
-            break
-        current_input = torch.tensor([[tid]], dtype=torch.long, device=device)
-        cache_position = cache_position + 1
+        tid = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        gen_token_tensors.append(tid)
+        current_input = tid
+        cache_position.add_(1)
 
+    gen_ids = torch.cat(gen_token_tensors, dim=1)[0].tolist()
+    if tokenizer.eos_token_id is not None and tokenizer.eos_token_id in gen_ids:
+        gen_ids = gen_ids[:gen_ids.index(tokenizer.eos_token_id) + 1]
     text = tokenizer.decode(gen_ids, skip_special_tokens=True)
     # Drain aggregate stats (ranking / adaptive / exploration / score-consistency)
     # before clearing state — the orchestrator pulls these for the arXiv v1 JSON.
@@ -476,9 +558,15 @@ def generate_certified(model, tokenizer, adapter, prompt: str, max_new: int,
 def run_ruler(
     model, tokenizer, adapter,
     subtasks: list[str], contexts: list[int], num_samples: int,
-    calibrated_profile=None, default_epsilon: float = 1e-4,
-    top_k_fp16_keys: int = 4, concentration_threshold: float = 0.02,
+    *,
+    v_tolerance: float,
+    top_k_fp16_keys: int = 4,
     seed_base: int = 20260416, device: str = "cuda",
+    sample_start: int = 0,
+    use_int4_values: bool = False,
+    group_size: int = 16,
+    fp16_key_cache_blocks: int | str | None = None,
+    fp16_value_cache_blocks: int | str | None = None,
     # Paper-alignment features.
     tau_cov: float | None = None,
     k_min: int = 2,
@@ -487,6 +575,7 @@ def run_ruler(
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
     score_consistency_check: bool = False,
+    score_consistency_interval: int = 1,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     rung1_threshold: float = 0.02,
@@ -494,6 +583,7 @@ def run_ruler(
     telemetry_collector=None,
 ) -> dict:
     results = []
+    sample_start = max(0, int(sample_start))
     total = len(subtasks) * len(contexts) * num_samples * 2
     done = 0
 
@@ -501,7 +591,7 @@ def run_ruler(
         for subtask in subtasks:
             builder = SUBTASK_BUILDERS[subtask]
             max_new = SUBTASK_MAX_NEW[subtask]
-            for sidx in range(num_samples):
+            for sidx in range(sample_start, sample_start + num_samples):
                 # Deterministic per (subtask, ctx, sample) — avoid Python's
                 # salted hash so seeds are stable across runs.
                 key = f"{subtask}|{ctx_len}|{sidx}".encode()
@@ -520,15 +610,18 @@ def run_ruler(
 
                 cert_text, seq_cert, cert_stats = generate_certified(
                     model, tokenizer, adapter, prompt, max_new,
-                    calibrated_profile=calibrated_profile,
-                    default_epsilon=default_epsilon,
+                    v_tolerance=v_tolerance,
+                    use_int4_values=use_int4_values,
+                    group_size=group_size,
+                    fp16_key_cache_blocks=fp16_key_cache_blocks,
+                    fp16_value_cache_blocks=fp16_value_cache_blocks,
                     top_k_fp16_keys=top_k_fp16_keys,
-                    concentration_threshold=concentration_threshold,
                     device=device,
                     tau_cov=tau_cov, k_min=k_min, k_max=k_max,
                     ranking_fallback=ranking_fallback, ranking_r=ranking_r,
                     ranking_fallback_mode=ranking_fallback_mode,
                     score_consistency_check=score_consistency_check,
+                    score_consistency_interval=score_consistency_interval,
                     eps_guard=eps_guard,
                     exploration_rate=exploration_rate,
                     rung1_threshold=rung1_threshold,
@@ -571,25 +664,31 @@ def run_ruler(
             "critical": agg["crit"],
             "n": len(agg["dense"]),
         }
-    return {"results": results, "summary": summary}
+    return {
+        "results": results,
+        "summary": summary,
+        "paired_stats": paired_ruler_stats(results),
+        "paired_stats_by_context": paired_ruler_stats_by_context(results),
+        "paired_stats_by_task_context": paired_ruler_stats_by_task_context(results),
+    }
 
 
 def main():
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     from dotcache.integrations.llama import LlamaDotCacheModelAdapter
     from dotcache.config import DotCacheConfig
-    from dotcache.calibration.calibrated_profile import CalibratedProfile
 
     parser = argparse.ArgumentParser(description="RULER (subset): dense vs certified")
     parser.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
     parser.add_argument("--contexts", type=int, nargs="+", default=[4096])
     parser.add_argument("--num-samples", type=int, default=10)
+    parser.add_argument("--sample-start", type=int, default=0,
+                        help="First deterministic sample index to run (for distributed shards).")
+    parser.add_argument("--sample-index", type=int, default=None,
+                        help="Alias for --sample-start with --num-samples 1.")
     parser.add_argument("--subtasks", nargs="+", default=list(SUBTASK_BUILDERS.keys()))
-    parser.add_argument("--profile", default=None)
     parser.add_argument("--output", default="benchmarks/results/ruler.json")
-    parser.add_argument("--default-epsilon", type=float, default=1e-4)
     parser.add_argument("--top-k-fp16", type=int, default=4)
-    parser.add_argument("--concentration-threshold", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=20260416)
     # Paper-alignment flags (T4/T7/Rung1/T9/T10).
     parser.add_argument("--tau-cov", type=float, default=0.0,
@@ -600,6 +699,8 @@ def main():
     parser.add_argument("--ranking-r", type=int, default=1)
     parser.add_argument("--ranking-fallback-mode", default="full", choices=["full", "measure"])
     parser.add_argument("--score-consistency-check", action="store_true")
+    parser.add_argument("--score-consistency-interval", type=int, default=1,
+                        help="Run score-consistency canary every N decode steps (1 = exact every step).")
     parser.add_argument("--eps-guard", type=float, default=0.01)
     parser.add_argument("--exploration-rate", type=float, default=0.0)
     parser.add_argument("--rung1-threshold", type=float, default=0.02)
@@ -608,18 +709,38 @@ def main():
                         help="Collect per-step page-in / rung / VRAM-cache telemetry (Test 3)")
     parser.add_argument("--telemetry-output", default=None,
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _provenance import (
+        add_paper_cache_args,
+        add_cert_profile_arg,
+        cache_config_dict,
+        configure_paper_runtime_defaults,
+    )
+    add_cert_profile_arg(parser)
+    add_paper_cache_args(parser)
     args = parser.parse_args()
+    if args.sample_index is not None:
+        args.sample_start = int(args.sample_index)
+        args.num_samples = 1
+    configure_paper_runtime_defaults()
 
     for st in args.subtasks:
         if st not in SUBTASK_BUILDERS:
             raise SystemExit(f"Unknown subtask: {st} (valid: {list(SUBTASK_BUILDERS.keys())})")
 
     token = os.environ.get("HF_TOKEN") or None
+    warnings.filterwarnings(
+        "ignore",
+        message=r"MatMul8bitLt: inputs will be cast from .* during quantization",
+        category=UserWarning,
+    )
     print(f"Loading {args.model} (INT8)...")
     tokenizer = AutoTokenizer.from_pretrained(args.model, token=token)
     quant_config = BitsAndBytesConfig(load_in_8bit=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, quantization_config=quant_config, device_map="auto", token=token,
+        args.model, quantization_config=quant_config, device_map="auto",
+        dtype=torch.float16, token=token,
     )
     model.eval()
     print(f"Model: {torch.cuda.memory_allocated()/1e9:.2f} GB")
@@ -628,15 +749,10 @@ def main():
     config = DotCacheConfig(head_dim=head_dim)
     adapter = LlamaDotCacheModelAdapter(model, config)
 
-    profile = None
-    if args.profile:
-        profile = CalibratedProfile.load(args.profile)
-        print(f"Loaded profile: {profile.summary()[:200]}")
-
     print(f"\nRULER: subtasks={args.subtasks}, "
           f"contexts={[c//1024 for c in args.contexts]}K, "
-          f"n={args.num_samples}, eps_default={args.default_epsilon}, "
-          f"top_k_fp16={args.top_k_fp16}, conc_thr={args.concentration_threshold}")
+          f"n={args.num_samples}, "
+          f"top_k_fp16={args.top_k_fp16}")
 
     telemetry_collector = None
     if args.pagein_telemetry:
@@ -650,11 +766,15 @@ def main():
     out = run_ruler(
         model, tokenizer, adapter,
         subtasks=args.subtasks, contexts=args.contexts,
-        num_samples=args.num_samples, calibrated_profile=profile,
-        default_epsilon=args.default_epsilon,
+        num_samples=args.num_samples,
+        v_tolerance=args.v_tolerance,
+        use_int4_values=args.use_int4_values,
+        group_size=args.group_size,
+        fp16_key_cache_blocks=args.fp16_key_cache_blocks,
+        fp16_value_cache_blocks=args.fp16_value_cache_blocks,
         top_k_fp16_keys=args.top_k_fp16,
-        concentration_threshold=args.concentration_threshold,
         seed_base=args.seed,
+        sample_start=args.sample_start,
         tau_cov=(args.tau_cov if args.tau_cov and args.tau_cov > 0 else None),
         k_min=args.k_min,
         k_max=args.k_max,
@@ -662,6 +782,7 @@ def main():
         ranking_r=args.ranking_r,
         ranking_fallback_mode=args.ranking_fallback_mode,
         score_consistency_check=args.score_consistency_check,
+        score_consistency_interval=args.score_consistency_interval,
         eps_guard=args.eps_guard,
         exploration_rate=args.exploration_rate,
         rung1_threshold=args.rung1_threshold,
@@ -698,6 +819,14 @@ def main():
     overall_c = sum(cmean) / len(cmean)
     print(f"\nOverall: dense={overall_d:.3f} cert={overall_c:.3f} "
           f"Δ={overall_c-overall_d:+.3f} critical={critical}/{len(dmean)}")
+    paired = out.get("paired_stats", {})
+    if paired.get("n"):
+        print(
+            "Paired Δ CI: "
+            f"{paired['delta']:+.3f} "
+            f"[{paired['delta_ci_lo']:+.3f}, {paired['delta_ci_hi']:+.3f}] "
+            f"n={paired['n']}"
+        )
 
     payload = {
         "benchmark": "ruler_subset",
@@ -705,16 +834,19 @@ def main():
         "subtasks": args.subtasks,
         "contexts": args.contexts,
         "num_samples": args.num_samples,
-        "default_epsilon": args.default_epsilon,
+        "sample_start": args.sample_start,
         "top_k_fp16": args.top_k_fp16,
-        "concentration_threshold": args.concentration_threshold,
         "seed": args.seed,
         "wall_minutes": wall / 60.0,
         "overall_dense": overall_d,
         "overall_cert": overall_c,
         "critical_failures": critical,
+        "paired_stats": out["paired_stats"],
+        "paired_stats_by_context": out["paired_stats_by_context"],
+        "paired_stats_by_task_context": out["paired_stats_by_task_context"],
         "summary": out["summary"],
         "results": out["results"],
+        "cache_config": cache_config_dict(args),
     }
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)

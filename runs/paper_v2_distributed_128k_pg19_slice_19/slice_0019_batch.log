@@ -1,0 +1,6 @@
+[slice 19 started] 2026-04-28T07:15:22+00:00
+[start] pg19 128K slice=19
+  /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 131072 --chunk-index 19 --telemetry-mode summary --certified-warmup-steps 128 --output runs/paper_v2_distributed_128k_pg19_slice_19/slice_0019/128K/pg19_slice_0019_128K.json --model NousResearch/Meta-Llama-3.1-8B --v-tolerance 0.05 --use-int4-values --group-size 16 --tau-cov 0.995 --k-min 2 --k-max 128 --ranking-fallback --ranking-r 1 --ranking-fallback-mode full --eps-guard 0.01 --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 --fp16-key-cache-blocks 9216 --fp16-value-cache-blocks 9216
+[done] pg19 128K exit=0 wall=264.9m
+manifest -> runs/paper_v2_distributed_128k_pg19_slice_19/slice_0019/manifest.json
+[slice 19 finished] 2026-04-28T11:40:14+00:00

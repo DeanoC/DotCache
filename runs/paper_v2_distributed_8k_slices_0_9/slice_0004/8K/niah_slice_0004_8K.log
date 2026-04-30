@@ -1,0 +1,56 @@
+started: 2026-04-27T07:19:17.527523+00:00
+cmd: /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/niah.py --contexts 8192 --needles 10 --trial-start 40 --trial-count 10 --output runs/paper_v2_distributed_8k_slices_0_9/slice_0004/8K/niah_slice_0004_8K.json --model NousResearch/Meta-Llama-3.1-8B --v-tolerance 0.05 --use-int4-values --group-size 16 --tau-cov 0.995 --k-min 2 --k-max 128 --ranking-fallback --ranking-r 1 --ranking-fallback-mode full --eps-guard 0.01 --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 --fp16-key-cache-blocks 1536 --fp16-value-cache-blocks 1536
+---
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Loading weights:   0%|                                 | 0/291 [00:00<?, ?it/s]Loading weights:   0%|                         | 1/291 [00:00<01:25,  3.37it/s]Loading weights:   1%|▏                        | 2/291 [00:00<01:25,  3.38it/s]Loading weights:   1%|▎                        | 4/291 [00:00<00:45,  6.30it/s]Loading weights:   2%|▍                        | 5/291 [00:00<00:44,  6.45it/s]Loading weights:   2%|▌                        | 6/291 [00:01<00:43,  6.63it/s]Loading weights:   4%|█                       | 13/291 [00:01<00:17, 15.47it/s]Loading weights:   5%|█▏                      | 15/291 [00:01<00:23, 11.80it/s]Loading weights:   8%|█▊                      | 22/291 [00:01<00:14, 18.38it/s]Loading weights:   8%|█▉                      | 24/291 [00:02<00:18, 14.12it/s]Loading weights:  11%|██▌                     | 31/291 [00:02<00:13, 19.59it/s]Loading weights:  12%|██▊                     | 34/291 [00:02<00:15, 16.37it/s]Loading weights:  14%|███▎                    | 40/291 [00:02<00:12, 19.59it/s]Loading weights:  15%|███▌                    | 43/291 [00:03<00:15, 16.43it/s]Loading weights:  17%|████                    | 49/291 [00:03<00:13, 17.71it/s]Loading weights:  18%|████▏                   | 51/291 [00:03<00:17, 14.02it/s]Loading weights:  20%|████▊                   | 58/291 [00:03<00:12, 18.54it/s]Loading weights:  21%|████▉                   | 60/291 [00:04<00:15, 14.86it/s]Loading weights:  23%|█████▌                  | 67/291 [00:04<00:11, 19.33it/s]Loading weights:  24%|█████▊                  | 70/291 [00:04<00:13, 16.42it/s]Loading weights:  26%|██████▎                 | 76/291 [00:04<00:11, 19.53it/s]Loading weights:  27%|██████▌                 | 79/291 [00:05<00:12, 16.40it/s]Loading weights:  29%|███████                 | 85/291 [00:05<00:10, 19.49it/s]Loading weights:  30%|███████▎                | 88/291 [00:05<00:12, 16.26it/s]Loading weights:  32%|███████▊                | 94/291 [00:05<00:09, 19.80it/s]Loading weights:  33%|████████                | 97/291 [00:06<00:11, 16.60it/s]Loading weights:  35%|████████▏              | 103/291 [00:06<00:09, 19.72it/s]Loading weights:  36%|████████▍              | 106/291 [00:06<00:11, 16.39it/s]Loading weights:  38%|████████▊              | 112/291 [00:06<00:09, 19.61it/s]Loading weights:  40%|█████████              | 115/291 [00:07<00:10, 16.47it/s]Loading weights:  42%|█████████▌             | 121/291 [00:07<00:08, 19.73it/s]Loading weights:  43%|█████████▊             | 124/291 [00:07<00:10, 16.44it/s]Loading weights:  45%|██████████▎            | 130/291 [00:07<00:08, 19.75it/s]Loading weights:  46%|██████████▌            | 133/291 [00:08<00:09, 16.58it/s]Loading weights:  48%|██████████▉            | 139/291 [00:08<00:07, 19.71it/s]Loading weights:  49%|███████████▏           | 142/291 [00:08<00:09, 16.53it/s]Loading weights:  51%|███████████▋           | 148/291 [00:08<00:07, 19.11it/s]Loading weights:  52%|███████████▉           | 151/291 [00:09<00:08, 16.00it/s]Loading weights:  54%|████████████▍          | 157/291 [00:09<00:06, 19.93it/s]Loading weights:  55%|████████████▋          | 160/291 [00:09<00:08, 16.37it/s]Loading weights:  57%|█████████████          | 166/291 [00:09<00:06, 19.77it/s]Loading weights:  58%|█████████████▎         | 169/291 [00:10<00:07, 16.25it/s]Loading weights:  60%|█████████████▊         | 175/291 [00:10<00:05, 19.79it/s]Loading weights:  61%|██████████████         | 178/291 [00:10<00:06, 16.50it/s]Loading weights:  63%|██████████████▌        | 184/291 [00:10<00:05, 19.69it/s]Loading weights:  64%|██████████████▊        | 187/291 [00:11<00:06, 16.21it/s]Loading weights:  66%|███████████████▎       | 193/291 [00:11<00:04, 20.05it/s]Loading weights:  67%|███████████████▍       | 196/291 [00:11<00:05, 16.52it/s]Loading weights:  69%|███████████████▉       | 202/291 [00:11<00:04, 19.27it/s]Loading weights:  70%|████████████████▏      | 205/291 [00:12<00:05, 16.14it/s]Loading weights:  73%|████████████████▋      | 211/291 [00:12<00:04, 19.57it/s]Loading weights:  74%|████████████████▉      | 214/291 [00:12<00:04, 15.98it/s]Loading weights:  76%|█████████████████▍     | 220/291 [00:12<00:03, 18.31it/s]Loading weights:  76%|█████████████████▌     | 222/291 [00:13<00:04, 14.54it/s]Loading weights:  79%|██████████████████     | 229/291 [00:13<00:03, 18.65it/s]Loading weights:  79%|██████████████████▎    | 231/291 [00:13<00:04, 14.73it/s]Loading weights:  82%|██████████████████▊    | 238/291 [00:14<00:02, 19.51it/s]Loading weights:  83%|███████████████████    | 241/291 [00:14<00:03, 16.52it/s]Loading weights:  85%|███████████████████▌   | 247/291 [00:14<00:02, 19.75it/s]Loading weights:  86%|███████████████████▊   | 250/291 [00:14<00:02, 16.31it/s]Loading weights:  88%|████████████████████▏  | 256/291 [00:15<00:01, 19.54it/s]Loading weights:  89%|████████████████████▍  | 259/291 [00:15<00:01, 16.56it/s]Loading weights:  91%|████████████████████▉  | 265/291 [00:15<00:01, 19.63it/s]Loading weights:  92%|█████████████████████▏ | 268/291 [00:15<00:01, 16.24it/s]Loading weights:  94%|█████████████████████▋ | 274/291 [00:15<00:00, 20.08it/s]Loading weights:  95%|█████████████████████▉ | 277/291 [00:16<00:00, 16.27it/s]Loading weights:  97%|██████████████████████▎| 283/291 [00:16<00:00, 19.48it/s]Loading weights:  98%|██████████████████████▌| 286/291 [00:16<00:00, 16.22it/s]Loading weights: 100%|███████████████████████| 291/291 [00:16<00:00, 17.27it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Model: 9.09 GB
+
+NIAH: contexts=[8]K, needles=10, top_k_fp16=4, adaptive=tau_cov=0.995 k=[2,128], ranking_fallback=full(r=1)
+[transformers] The following generation flags are not valid and may be ignored: ['top_p']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [1/20]      dense 8K d=0.4 n=0 -> OK
+  [2/20]  certified 8K d=0.4 n=0 -> OK
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [3/20]      dense 8K d=0.4 n=1 -> OK
+  [4/20]  certified 8K d=0.4 n=1 -> OK
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [5/20]      dense 8K d=0.4 n=2 -> FAIL
+  [6/20]  certified 8K d=0.4 n=2 -> OK
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [7/20]      dense 8K d=0.4 n=3 -> FAIL
+  [8/20]  certified 8K d=0.4 n=3 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [9/20]      dense 8K d=0.4 n=4 -> OK
+  [10/20]  certified 8K d=0.4 n=4 -> FAIL
+    *** CRITICAL: dense OK but certified FAILED ***
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [11/20]      dense 8K d=0.4 n=5 -> FAIL
+  [12/20]  certified 8K d=0.4 n=5 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [13/20]      dense 8K d=0.4 n=6 -> FAIL
+  [14/20]  certified 8K d=0.4 n=6 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [15/20]      dense 8K d=0.4 n=7 -> FAIL
+  [16/20]  certified 8K d=0.4 n=7 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [17/20]      dense 8K d=0.4 n=8 -> FAIL
+  [18/20]  certified 8K d=0.4 n=8 -> FAIL
+[transformers] Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation.
+  [19/20]      dense 8K d=0.4 n=9 -> FAIL
+  [20/20]  certified 8K d=0.4 n=9 -> FAIL
+
+dense: 3/10 correct (30.0%)
+
+certified: 3/10 correct (30.0%)
+
+*** 1 CRITICAL FAILURES: dense OK but certified FAILED ***
+  8K d=0.4 n=4: expected 'RX-9031', got ' The secret, code, location, budget, or ID mention'
+
+==================================================
+Dense accuracy:     30.0%
+Certified accuracy: 30.0%
+Critical failures:  1
+Paired Δ: +0.0 pp (95% bootstrap CI [-30.0, +30.0] pp, McNemar p=1, n=10)
+Ranking fallback: mode=full r=1 disagree_r1=0.1% disagree_r3=1.0% triggered=0.4% (2194/501760)
+JSON -> runs/paper_v2_distributed_8k_slices_0_9/slice_0004/8K/niah_slice_0004_8K.json

@@ -5,7 +5,10 @@ exit (~128 syncs/step), serialising kernel pipelining. This bench removes
 all phase timing and reports the production tok/s the paper would measure.
 
 Toggles the split-K hybrid kernel via DOTCACHE_FAST_ATTEND and runs both
-configurations from a single model load.
+configurations from a single model load. The optional "infinite" FP16 key cache
+is profiling-only: it prewarms a bounded scratch large enough for this run so
+the timed section excludes key H2D page-in cost. Do not use it for paper
+quality/memory results.
 """
 from __future__ import annotations
 
@@ -17,6 +20,20 @@ import time
 from pathlib import Path
 
 import torch
+
+
+def resolve_fp16_key_cache_blocks(spec: str, seq_len: int, decode_budget: int, block_size: int) -> int | None:
+    text = str(spec).strip().lower()
+    if text in ("", "paper"):
+        return 512
+    if text in ("full", "none"):
+        return None
+    if text in ("inf", "infinite"):
+        return (int(seq_len) + int(decode_budget) + int(block_size) - 1) // int(block_size)
+    cap = int(text)
+    if cap < 0:
+        raise ValueError(f"fp16 key cache blocks must be >= 0, got {cap}")
+    return cap
 
 
 def build_prefill(tokenizer, context_tokens: int) -> str:
@@ -71,13 +88,29 @@ def timed_decode(model, adapter, cache_position, first_token, device, steps: int
     return ms_list, current_input, cache_position
 
 
-def run_config(model, adapter, device, tokenizer, ctx_len: int, steps: int, warmup: int, fast: bool):
+def run_config(
+    model,
+    adapter,
+    device,
+    tokenizer,
+    ctx_len: int,
+    steps: int,
+    warmup: int,
+    fast: bool,
+    *,
+    use_int4_values: bool,
+    fp16_key_cache_blocks: str,
+    fp16_value_cache_blocks: str,
+):
     os.environ["DOTCACHE_FAST_ATTEND"] = "1" if fast else "0"
 
     from dotcache.integrations.llama import (
         CertifiedAttentionState, _ensure_certified_imports,
     )
-    from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
+    from dotcache.kernels.tiered_kv_cache import (
+        create_tiered_cache_from_model,
+        create_tiered_cache_int4v_from_model,
+    )
 
     prompt = build_prefill(tokenizer, ctx_len)
     ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=ctx_len).to(device)
@@ -94,15 +127,43 @@ def run_config(model, adapter, device, tokenizer, ctx_len: int, steps: int, warm
     _ensure_certified_imports()
     layer_ids = list(range(model.config.num_hidden_layers))
     _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
-    _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
-    tiered = create_tiered_cache_from_model(past_kv, layer_ids, fp16_key_cache_capacity=_cap)
+    _cap_spec = fp16_key_cache_blocks if _env_cap is None or _env_cap == "" else _env_cap
+    _decode_budget = int(steps) + int(warmup) + 8
+    _cap = resolve_fp16_key_cache_blocks(_cap_spec, seq_len, _decode_budget, block_size=16)
+    _value_cap = resolve_fp16_key_cache_blocks(
+        fp16_value_cache_blocks, seq_len, _decode_budget, block_size=16,
+    )
+    if use_int4_values:
+        tiered = create_tiered_cache_int4v_from_model(
+            past_kv,
+            layer_ids,
+            group_size=16,
+            max_new_tokens=_decode_budget,
+            fp16_key_cache_capacity=_cap,
+            fp16_value_cache_capacity=_value_cap,
+        )
+        if str(_cap_spec).strip().lower() in ("inf", "infinite"):
+            active_blocks = max(c.active_blocks for c in tiered.values())
+            for c in tiered.values():
+                c.ensure_fp16_keys_resident(range(active_blocks))
+        if str(fp16_value_cache_blocks).strip().lower() in ("inf", "infinite"):
+            active_blocks = max(c.active_blocks for c in tiered.values())
+            for c in tiered.values():
+                c.ensure_fp16_values_resident(range(active_blocks))
+    else:
+        tiered = create_tiered_cache_from_model(
+            past_kv,
+            layer_ids,
+            max_new_tokens=_decode_budget,
+            fp16_key_cache_capacity=None,
+        )
     del past_kv
     gc.collect(); torch.cuda.empty_cache()
 
     _per_kv_group = os.environ.get("DOTCACHE_PER_KV_GROUP_TOPK", "0") == "1"
     adapter.certified_state = CertifiedAttentionState(
         tiered_caches=tiered,
-        layer_epsilons={},
+        v_tolerance=0.05,
         collect_stats=False,  # << off
         append_kv=True,
         top_k_fp16_keys=4,
@@ -193,6 +254,14 @@ def main() -> int:
     ap.add_argument("--warmup-steps", type=int, default=16)
     ap.add_argument("--modes", default="dense,slow,fast",
                     help="comma-separated subset of {dense, slow, fast}")
+    ap.add_argument("--use-int4-values", action="store_true",
+                    help="Use the paper INT4-value certified path.")
+    ap.add_argument("--fp16-key-cache-blocks", default="3584",
+                    help="Certified profiling key cache blocks: integer, full, or infinite. "
+                         "'infinite' is profiling-only and prewarms H2D out of the timed loop.")
+    ap.add_argument("--fp16-value-cache-blocks", default="1536",
+                    help="Certified profiling value cache blocks: integer, full, or infinite. "
+                         "'infinite' is profiling-only and prewarms H2D out of the timed loop.")
     args = ap.parse_args()
 
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -225,12 +294,18 @@ def main() -> int:
 
     if "slow" in modes:
         ms, _ = run_config(model, adapter, device, tokenizer,
-                           args.context_length, args.decode_steps, args.warmup_steps, fast=False)
+                           args.context_length, args.decode_steps, args.warmup_steps, fast=False,
+                           use_int4_values=args.use_int4_values,
+                           fp16_key_cache_blocks=args.fp16_key_cache_blocks,
+                           fp16_value_cache_blocks=args.fp16_value_cache_blocks)
         results["slow"] = summarise("cert FAST_ATTEND=0", ms)
 
     if "fast" in modes:
         ms, _ = run_config(model, adapter, device, tokenizer,
-                           args.context_length, args.decode_steps, args.warmup_steps, fast=True)
+                           args.context_length, args.decode_steps, args.warmup_steps, fast=True,
+                           use_int4_values=args.use_int4_values,
+                           fp16_key_cache_blocks=args.fp16_key_cache_blocks,
+                           fp16_value_cache_blocks=args.fp16_value_cache_blocks)
         results["fast"] = summarise("cert FAST_ATTEND=1", ms)
 
     print(f"\n=== Ratios ===")

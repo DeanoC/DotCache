@@ -113,6 +113,7 @@ def measure_cosine(model, tokenizer, ctx_len, v_mode="fp16"):
         # Certified attention output
         out_cert, stats = certified_attention_layer(
             cache, q_all, gqa, q_scale, block_epsilon=eps, collect_stats=True,
+            v_tolerance=0.5,
         )
 
         cos = torch.nn.functional.cosine_similarity(out_dense, out_cert, dim=1)

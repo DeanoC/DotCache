@@ -5,7 +5,7 @@ Verifies that:
 - When a block fills to block_size tokens, _quantize_block() runs with
   per-channel scales computed from all tokens
 - INT8 data is write-once: never modified after quantisation
-- Dequant buffer is consistent for both INT8 and FP16 regions
+- Optional dequant buffer is consistent for both INT8 and FP16 regions
 """
 import torch
 import pytest
@@ -65,6 +65,7 @@ class TestDeferredPerChannelQuantisation:
         k = torch.randn(2, 1, 64, dtype=torch.float16, device="cuda")
         v = torch.randn(2, 1, 64, dtype=torch.float16, device="cuda")
         cache.append_token(k, v)
+        cache.precompute_dequant()
 
         # The dequant buffer at position 256 should match the original FP16 key
         k_f32 = k.squeeze(1).to(device="cuda", dtype=torch.float32)
@@ -99,7 +100,8 @@ class TestDeferredPerChannelQuantisation:
 
     def test_per_channel_scale_from_all_tokens(self):
         """When a block is quantized, per-channel scales should reflect all 16 tokens,
-        not just the first one."""
+        not just the first one. Paper §2.3 asymmetric: scale = (max - min) / 255,
+        zero-point = (max + min) / 2."""
         cache = _make_cache(N=256, block_size=16)
         block_idx = 16
 
@@ -112,21 +114,29 @@ class TestDeferredPerChannelQuantisation:
             cache.append_token(k, v)
             all_keys.append(k.squeeze(1).to("cuda", dtype=torch.float32))
 
-        # Block should now be quantized with per-channel scales
+        # Block should now be quantized with per-channel scales + zero points
         assert cache.num_quantized_blocks == 17
         scale = cache.keys_scale[:, block_idx, :]  # [kv_heads, head_dim]
+        zp = cache.keys_zero_points[:, block_idx, :]
         assert scale.shape == (2, 64)
+        assert zp.shape == (2, 64)
 
-        # The scale should match the per-channel max of all 16 tokens
+        # Asymmetric (paper §2.3): scale from per-channel range, zp from midpoint
         all_stacked = torch.stack(all_keys, dim=1)  # [kv_heads, 16, head_dim]
-        expected_max = all_stacked.abs().amax(dim=1).clamp(min=1e-8)
-        expected_scale = expected_max / 127.0
+        k_min = all_stacked.amin(dim=1)
+        k_max = all_stacked.amax(dim=1)
+        expected_scale = (k_max - k_min).clamp(min=1e-8) / 255.0
+        expected_zp = (k_min + k_max) / 2.0
         assert torch.allclose(scale, expected_scale, atol=1e-4), (
             f"Per-channel scale mismatch: got {scale[0, :3]}, expected {expected_scale[0, :3]}"
         )
+        assert torch.allclose(zp, expected_zp, atol=1e-4), (
+            f"Per-channel zero-point mismatch: got {zp[0, :3]}, expected {expected_zp[0, :3]}"
+        )
 
     def test_dequant_consistency_for_completed_blocks(self):
-        """After block fills, dequant buffer should match INT8 * per-channel scale."""
+        """After block fills, dequant buffer should match INT8 * scale + zp
+        (paper §2.3 Eq. 1 asymmetric formula)."""
         cache = _make_cache(N=256, block_size=16)
         block_idx = 16
 
@@ -138,11 +148,12 @@ class TestDeferredPerChannelQuantisation:
         # Block 16 should be quantized
         assert cache.num_quantized_blocks == 17
         scale = cache.keys_scale[:, block_idx, :]  # [kv_heads, head_dim]
+        zp = cache.keys_zero_points[:, block_idx, :]
 
         for i in range(16):
             pos = 256 + i
             int8_val = cache.keys_int8[:, pos, :]
-            deq = int8_val.float() * scale  # per-channel dequant
+            deq = int8_val.float() * scale + zp  # paper §2.3: q*s + z
             if cache._keys_deq_f32 is not None:
                 buf_deq = cache._keys_deq_f32[:, pos, :]
                 assert torch.allclose(deq, buf_deq, atol=1e-6), (

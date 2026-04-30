@@ -61,4 +61,5 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
+"dotcache.backends" = ["cuda_kernels/*.cpp", "cuda_kernels/*.cu"]
 "dotcache.backends.metal" = ["*.metal"]

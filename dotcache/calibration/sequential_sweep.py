@@ -284,10 +284,15 @@ def _evaluate_layer_epsilon(
         q_all = attn.q_proj(h).view(num_q, head_dim).to(torch.float32)
         del h
 
+    # block_epsilon is permanently pinned to 0.0 inside the kernel
+    # (see dotcache/kernels/certified_attention.py); `epsilon_candidate`
+    # is retained for legacy sweep bookkeeping but no longer affects
+    # the kernel's skip decision.
+    _ = epsilon_candidate
     out_cert, _ = certified_attention_layer(
         cache, q_all, gqa, q_scale,
-        block_epsilon=epsilon_candidate,
         collect_stats=False,
+        v_tolerance=0.5,  # legacy default for non-paper calibration
     )
 
     oracle = pdata["oracle_outputs"][layer_id].to(device)

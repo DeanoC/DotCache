@@ -1,0 +1,554 @@
+started: 2026-04-28T13:11:40.493103+00:00
+cmd: /workspace/DotCache/.venv/bin/python /workspace/DotCache/benchmarks/paper/pg19_perplexity.py --context 131072 --chunk-index 18 --telemetry-mode summary --certified-warmup-steps 128 --output runs/paper_v2_distributed_128k_pg19_slices_17_18/slice_0018/128K/pg19_slice_0018_128K.json --model NousResearch/Meta-Llama-3.1-8B --v-tolerance 0.05 --use-int4-values --group-size 16 --tau-cov 0.995 --k-min 2 --k-max 128 --ranking-fallback --ranking-r 1 --ranking-fallback-mode full --eps-guard 0.01 --exploration-rate 0.02 --rung1-threshold 0.02 --rung1-multiplier 2.0 --fp16-key-cache-blocks 9216 --fp16-value-cache-blocks 9216
+---
+Loading NousResearch/Meta-Llama-3.1-8B (INT8)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|                                 | 0/291 [00:00<?, ?it/s]Loading weights:   0%|                         | 1/291 [00:00<01:36,  2.99it/s]Loading weights:   1%|▏                        | 2/291 [00:00<01:37,  2.95it/s]Loading weights:   1%|▎                        | 4/291 [00:00<00:48,  5.89it/s]Loading weights:   2%|▍                        | 5/291 [00:00<00:46,  6.15it/s]Loading weights:   2%|▌                        | 6/291 [00:01<00:44,  6.40it/s]Loading weights:   4%|█                       | 13/291 [00:01<00:16, 16.66it/s]Loading weights:   5%|█▏                      | 15/291 [00:01<00:22, 12.50it/s]Loading weights:   8%|█▊                      | 22/291 [00:01<00:13, 19.43it/s]Loading weights:   9%|██                      | 25/291 [00:02<00:16, 16.19it/s]Loading weights:  11%|██▌                     | 31/291 [00:02<00:13, 19.59it/s]Loading weights:  12%|██▊                     | 34/291 [00:02<00:15, 16.82it/s]Loading weights:  14%|███▎                    | 40/291 [00:02<00:12, 19.51it/s]Loading weights:  15%|███▌                    | 43/291 [00:03<00:14, 16.73it/s]Loading weights:  17%|████                    | 49/291 [00:03<00:12, 19.35it/s]Loading weights:  18%|████▎                   | 52/291 [00:03<00:14, 16.65it/s]Loading weights:  20%|████▊                   | 58/291 [00:03<00:12, 19.21it/s]Loading weights:  21%|████▉                   | 60/291 [00:04<00:14, 15.40it/s]Loading weights:  23%|█████▌                  | 67/291 [00:04<00:11, 19.75it/s]Loading weights:  24%|█████▊                  | 70/291 [00:04<00:13, 16.85it/s]Loading weights:  26%|██████▎                 | 76/291 [00:04<00:11, 19.39it/s]Loading weights:  27%|██████▌                 | 79/291 [00:05<00:13, 16.25it/s]Loading weights:  29%|███████                 | 85/291 [00:05<00:10, 19.65it/s]Loading weights:  30%|███████▎                | 88/291 [00:05<00:12, 16.47it/s]Loading weights:  32%|███████▊                | 94/291 [00:05<00:10, 19.46it/s]Loading weights:  33%|████████                | 97/291 [00:06<00:11, 16.61it/s]Loading weights:  35%|████████▏              | 103/291 [00:06<00:09, 19.28it/s]Loading weights:  36%|████████▍              | 106/291 [00:06<00:11, 16.57it/s]Loading weights:  38%|████████▊              | 112/291 [00:06<00:09, 19.60it/s]Loading weights:  40%|█████████              | 115/291 [00:07<00:10, 16.44it/s]Loading weights:  42%|█████████▌             | 121/291 [00:07<00:08, 19.62it/s]Loading weights:  43%|█████████▊             | 124/291 [00:07<00:09, 16.85it/s]Loading weights:  45%|██████████▎            | 130/291 [00:07<00:08, 19.76it/s]Loading weights:  46%|██████████▌            | 133/291 [00:08<00:09, 16.82it/s]Loading weights:  48%|██████████▉            | 139/291 [00:08<00:07, 19.27it/s]Loading weights:  49%|███████████▏           | 142/291 [00:08<00:09, 16.23it/s]Loading weights:  51%|███████████▋           | 148/291 [00:08<00:07, 19.50it/s]Loading weights:  52%|███████████▉           | 151/291 [00:09<00:08, 16.44it/s]Loading weights:  54%|████████████▍          | 157/291 [00:09<00:06, 19.86it/s]Loading weights:  55%|████████████▋          | 160/291 [00:09<00:07, 16.91it/s]Loading weights:  57%|█████████████          | 166/291 [00:09<00:06, 19.54it/s]Loading weights:  58%|█████████████▎         | 169/291 [00:10<00:07, 16.75it/s]Loading weights:  60%|█████████████▊         | 175/291 [00:10<00:06, 19.27it/s]Loading weights:  61%|██████████████         | 178/291 [00:10<00:07, 15.71it/s]Loading weights:  63%|██████████████▌        | 184/291 [00:10<00:05, 19.91it/s]Loading weights:  64%|██████████████▊        | 187/291 [00:11<00:06, 16.63it/s]Loading weights:  66%|███████████████▎       | 193/291 [00:11<00:05, 19.20it/s]Loading weights:  67%|███████████████▍       | 196/291 [00:11<00:05, 16.26it/s]Loading weights:  69%|███████████████▉       | 202/291 [00:11<00:04, 19.76it/s]Loading weights:  70%|████████████████▏      | 205/291 [00:12<00:05, 16.51it/s]Loading weights:  73%|████████████████▋      | 211/291 [00:12<00:04, 19.68it/s]Loading weights:  74%|████████████████▉      | 214/291 [00:12<00:04, 16.53it/s]Loading weights:  76%|█████████████████▍     | 220/291 [00:12<00:03, 19.36it/s]Loading weights:  77%|█████████████████▋     | 223/291 [00:13<00:04, 16.33it/s]Loading weights:  79%|██████████████████     | 229/291 [00:13<00:03, 19.33it/s]Loading weights:  80%|██████████████████▎    | 232/291 [00:13<00:03, 16.46it/s]Loading weights:  82%|██████████████████▊    | 238/291 [00:13<00:02, 19.93it/s]Loading weights:  83%|███████████████████    | 241/291 [00:14<00:02, 16.93it/s]Loading weights:  85%|███████████████████▌   | 247/291 [00:14<00:02, 19.66it/s]Loading weights:  86%|███████████████████▊   | 250/291 [00:14<00:02, 16.78it/s]Loading weights:  88%|████████████████████▏  | 256/291 [00:14<00:01, 19.54it/s]Loading weights:  89%|████████████████████▍  | 259/291 [00:15<00:01, 16.62it/s]Loading weights:  91%|████████████████████▉  | 265/291 [00:15<00:01, 19.48it/s]Loading weights:  92%|█████████████████████▏ | 268/291 [00:15<00:01, 16.53it/s]Loading weights:  94%|█████████████████████▋ | 274/291 [00:15<00:00, 19.39it/s]Loading weights:  95%|█████████████████████▉ | 277/291 [00:16<00:00, 16.50it/s]Loading weights:  97%|██████████████████████▎| 283/291 [00:16<00:00, 19.55it/s]Loading weights:  98%|██████████████████████▌| 286/291 [00:16<00:00, 16.61it/s]Loading weights: 100%|███████████████████████| 291/291 [00:16<00:00, 17.53it/s]
+Model: 9.09 GB
+
+Loading PG-19 test set: 1 chunks × 131072 tokens (start=18)...
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (133585 > 131072). Running this sequence through the model will result in indexing errors
+Loaded 1 chunks in 19.6s
+
+==================================================
+Dense perplexity
+==================================================
+  Dense [1/1]: ppl=6.60
+Dense: ppl=6.60 (131071 tokens, 24.9s)
+  bits/token: 2.7233 (95% bootstrap CI [2.7233, 2.7233], n=1 chunks)
+
+==================================================
+Certified perplexity
+==================================================
+  Certified [1/1] prefill_ms=8000.9
+  Certified [1/1] prefix_nll_ms=402.7
+  Certified [1/1] warmup_steps=128 warmup_ms=70170.4
+  Certified [1/1] cache_build_ms=9611.2
+  Certified [1/1] cache_cleanup_ms=9863.1
+    certified progress chunk=1/1 tokens=128/65535 tok/s=3.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=256/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=384/65535 tok/s=3.76 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=512/65535 tok/s=3.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=640/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=768/65535 tok/s=3.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=896/65535 tok/s=3.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1024/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1152/65535 tok/s=3.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1280/65535 tok/s=3.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1408/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1536/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1664/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1792/65535 tok/s=3.83 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=1920/65535 tok/s=3.83 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2048/65535 tok/s=3.83 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2176/65535 tok/s=3.83 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2304/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2432/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2560/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2688/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2816/65535 tok/s=3.82 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=2944/65535 tok/s=3.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3072/65535 tok/s=3.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3200/65535 tok/s=3.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3328/65535 tok/s=3.81 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3456/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3584/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3712/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3840/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=3968/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4096/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4224/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4352/65535 tok/s=3.80 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4480/65535 tok/s=3.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4608/65535 tok/s=3.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4736/65535 tok/s=3.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4864/65535 tok/s=3.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=4992/65535 tok/s=3.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5120/65535 tok/s=3.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5248/65535 tok/s=3.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5376/65535 tok/s=3.79 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5504/65535 tok/s=3.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5632/65535 tok/s=3.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5760/65535 tok/s=3.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=5888/65535 tok/s=3.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6016/65535 tok/s=3.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6144/65535 tok/s=3.78 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6272/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6400/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6528/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6656/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6784/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=6912/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7040/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7168/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7296/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7424/65535 tok/s=3.77 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7552/65535 tok/s=3.76 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7680/65535 tok/s=3.76 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7808/65535 tok/s=3.76 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=7936/65535 tok/s=3.76 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8064/65535 tok/s=3.76 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8192/65535 tok/s=3.75 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8320/65535 tok/s=3.75 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8448/65535 tok/s=3.75 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8576/65535 tok/s=3.75 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8704/65535 tok/s=3.75 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8832/65535 tok/s=3.75 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=8960/65535 tok/s=3.75 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9088/65535 tok/s=3.74 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9216/65535 tok/s=3.74 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9344/65535 tok/s=3.74 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9472/65535 tok/s=3.74 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9600/65535 tok/s=3.74 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9728/65535 tok/s=3.74 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9856/65535 tok/s=3.74 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=9984/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10112/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10240/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10368/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10496/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10624/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10752/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=10880/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11008/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11136/65535 tok/s=3.73 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11264/65535 tok/s=3.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11392/65535 tok/s=3.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11520/65535 tok/s=3.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11648/65535 tok/s=3.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11776/65535 tok/s=3.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=11904/65535 tok/s=3.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12032/65535 tok/s=3.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12160/65535 tok/s=3.72 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12288/65535 tok/s=3.71 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12416/65535 tok/s=3.71 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12544/65535 tok/s=3.71 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12672/65535 tok/s=3.71 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12800/65535 tok/s=3.71 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=12928/65535 tok/s=3.71 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13056/65535 tok/s=3.71 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13184/65535 tok/s=3.70 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13312/65535 tok/s=3.70 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13440/65535 tok/s=3.70 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13568/65535 tok/s=3.70 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13696/65535 tok/s=3.70 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13824/65535 tok/s=3.70 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=13952/65535 tok/s=3.69 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14080/65535 tok/s=3.69 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14208/65535 tok/s=3.68 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14336/65535 tok/s=3.67 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14464/65535 tok/s=3.67 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14592/65535 tok/s=3.66 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14720/65535 tok/s=3.66 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14848/65535 tok/s=3.65 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=14976/65535 tok/s=3.65 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15104/65535 tok/s=3.64 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15232/65535 tok/s=3.64 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15360/65535 tok/s=3.63 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15488/65535 tok/s=3.62 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15616/65535 tok/s=3.62 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15744/65535 tok/s=3.61 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=15872/65535 tok/s=3.61 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16000/65535 tok/s=3.60 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16128/65535 tok/s=3.60 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16256/65535 tok/s=3.59 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16384/65535 tok/s=3.59 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16512/65535 tok/s=3.58 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16640/65535 tok/s=3.58 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16768/65535 tok/s=3.57 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=16896/65535 tok/s=3.57 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=17024/65535 tok/s=3.56 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=17152/65535 tok/s=3.56 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=17280/65535 tok/s=3.55 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=17408/65535 tok/s=3.55 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=17536/65535 tok/s=3.54 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=17664/65535 tok/s=3.54 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=17792/65535 tok/s=3.54 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=17920/65535 tok/s=3.53 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=18048/65535 tok/s=3.51 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=18176/65535 tok/s=3.48 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=18304/65535 tok/s=3.46 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=18432/65535 tok/s=3.44 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=18560/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=18688/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=18816/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=18944/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=19072/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=19200/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=19328/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=19456/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=19584/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=19712/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=19840/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=19968/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=20096/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=20224/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=20352/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=20480/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=20608/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=20736/65535 tok/s=3.42 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=20864/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=20992/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=21120/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=21248/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=21376/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=21504/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=21632/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=21760/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=21888/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=22016/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=22144/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=22272/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=22400/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=22528/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=22656/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=22784/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=22912/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=23040/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=23168/65535 tok/s=3.41 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=23296/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=23424/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=23552/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=23680/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=23808/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=23936/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=24064/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=24192/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=24320/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=24448/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=24576/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=24704/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=24832/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=24960/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=25088/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=25216/65535 tok/s=3.40 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=25344/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=25472/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=25600/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=25728/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=25856/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=25984/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=26112/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=26240/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=26368/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=26496/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=26624/65535 tok/s=3.39 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=26752/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=26880/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=27008/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=27136/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=27264/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=27392/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=27520/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=27648/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=27776/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=27904/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=28032/65535 tok/s=3.38 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=28160/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=28288/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=28416/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=28544/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=28672/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=28800/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=28928/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=29056/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=29184/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=29312/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=29440/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=29568/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=29696/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=29824/65535 tok/s=3.37 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=29952/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=30080/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=30208/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=30336/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=30464/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=30592/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=30720/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=30848/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=30976/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=31104/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=31232/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=31360/65535 tok/s=3.36 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=31488/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=31616/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=31744/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=31872/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=32000/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=32128/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=32256/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=32384/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=32512/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=32640/65535 tok/s=3.35 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=32768/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=32896/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=33024/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=33152/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=33280/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=33408/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=33536/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=33664/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=33792/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=33920/65535 tok/s=3.34 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=34048/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=34176/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=34304/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=34432/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=34560/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=34688/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=34816/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=34944/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=35072/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=35200/65535 tok/s=3.33 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=35328/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=35456/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=35584/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=35712/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=35840/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=35968/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=36096/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=36224/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=36352/65535 tok/s=3.32 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=36480/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=36608/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=36736/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=36864/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=36992/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=37120/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=37248/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=37376/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=37504/65535 tok/s=3.31 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=37632/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=37760/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=37888/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=38016/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=38144/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=38272/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=38400/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=38528/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=38656/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=38784/65535 tok/s=3.30 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=38912/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=39040/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=39168/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=39296/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=39424/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=39552/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=39680/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=39808/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=39936/65535 tok/s=3.29 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=40064/65535 tok/s=3.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=40192/65535 tok/s=3.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=40320/65535 tok/s=3.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=40448/65535 tok/s=3.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=40576/65535 tok/s=3.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=40704/65535 tok/s=3.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=40832/65535 tok/s=3.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=40960/65535 tok/s=3.28 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=41088/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=41216/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=41344/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=41472/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=41600/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=41728/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=41856/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=41984/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=42112/65535 tok/s=3.27 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=42240/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=42368/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=42496/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=42624/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=42752/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=42880/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=43008/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=43136/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=43264/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=43392/65535 tok/s=3.26 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=43520/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=43648/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=43776/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=43904/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=44032/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=44160/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=44288/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=44416/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=44544/65535 tok/s=3.25 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=44672/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=44800/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=44928/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=45056/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=45184/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=45312/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=45440/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=45568/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=45696/65535 tok/s=3.24 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=45824/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=45952/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=46080/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=46208/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=46336/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=46464/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=46592/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=46720/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=46848/65535 tok/s=3.23 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=46976/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=47104/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=47232/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=47360/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=47488/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=47616/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=47744/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=47872/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=48000/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=48128/65535 tok/s=3.22 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=48256/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=48384/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=48512/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=48640/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=48768/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=48896/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=49024/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=49152/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=49280/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=49408/65535 tok/s=3.21 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=49536/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=49664/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=49792/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=49920/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=50048/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=50176/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=50304/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=50432/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=50560/65535 tok/s=3.20 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=50688/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=50816/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=50944/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=51072/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=51200/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=51328/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=51456/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=51584/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=51712/65535 tok/s=3.19 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=51840/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=51968/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=52096/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=52224/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=52352/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=52480/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=52608/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=52736/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=52864/65535 tok/s=3.18 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=52992/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=53120/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=53248/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=53376/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=53504/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=53632/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=53760/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=53888/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=54016/65535 tok/s=3.17 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=54144/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=54272/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=54400/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=54528/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=54656/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=54784/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=54912/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=55040/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=55168/65535 tok/s=3.16 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=55296/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=55424/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=55552/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=55680/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=55808/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=55936/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=56064/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=56192/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=56320/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=56448/65535 tok/s=3.15 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=56576/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=56704/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=56832/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=56960/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=57088/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=57216/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=57344/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=57472/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=57600/65535 tok/s=3.14 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=57728/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=57856/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=57984/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=58112/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=58240/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=58368/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=58496/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=58624/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=58752/65535 tok/s=3.13 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=58880/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=59008/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=59136/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=59264/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=59392/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=59520/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=59648/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=59776/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=59904/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=60032/65535 tok/s=3.12 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=60160/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=60288/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=60416/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=60544/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=60672/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=60800/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=60928/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=61056/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=61184/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=61312/65535 tok/s=3.11 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=61440/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=61568/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=61696/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=61824/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=61952/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=62080/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=62208/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=62336/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=62464/65535 tok/s=3.10 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=62592/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=62720/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=62848/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=62976/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=63104/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=63232/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=63360/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=63488/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=63616/65535 tok/s=3.09 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=63744/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=63872/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=64000/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=64128/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=64256/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=64384/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=64512/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=64640/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=64768/65535 tok/s=3.08 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=64896/65535 tok/s=3.07 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=65024/65535 tok/s=3.07 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=65152/65535 tok/s=3.07 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=65280/65535 tok/s=3.07 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+    certified progress chunk=1/1 tokens=65408/65535 tok/s=3.07 qkv_ms/layer=0.000 append_ms/layer=0.000 attn_ms/layer=0.000 out_ms/layer=0.000
+  Certified [1/1]: chunk_ppl=6.60, suffix_ppl=6.45, running_ppl=6.60, skip=0.000 (overall 0.000)
+Certified: ppl=6.60 (131070 tokens, 21443.8s)
+  bits/token (full): 2.7232 (95% CI [2.7232, 2.7232])
+  bits/token (certified suffix only): 2.6898 (95% CI [2.6898, 2.6898])
+
+==================================================
+Summary
+==================================================
+Context: 131072 tokens, 1 chunks
+Dense perplexity:     6.6040
+Certified perplexity: 6.6034
+Ratio (cert/dense):   0.999914
+Delta:                -0.0006
+Per-chunk Δppl:       -0.0006 (95% CI [-0.0006, -0.0006], n=1)
+
+JSON -> runs/paper_v2_distributed_128k_pg19_slices_17_18/slice_0018/128K/pg19_slice_0018_128K.json

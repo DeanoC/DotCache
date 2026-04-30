@@ -98,12 +98,14 @@ def measure_execution_floor(
                     out_oracle[qh] = w @ vf
                 del kf, vf
 
-            # Certified at ε=0 (no skip, but INT8 keys + top-K FP16 fallback)
+            # Certified (no skip; block_epsilon is permanently pinned to 0.0
+            # inside the kernel — see dotcache/kernels/certified_attention.py).
+            # INT8 keys + top-K FP16 fallback.
             out_cert, _ = certified_attention_layer(
                 cache, q_all, gqa, q_scale,
-                block_epsilon=0.0,  # disable all skipping
                 collect_stats=False,
                 top_k_fp16_keys=4,  # match production configuration
+                v_tolerance=0.5,  # legacy default for non-paper calibration
             )
 
             # Per-head cosine

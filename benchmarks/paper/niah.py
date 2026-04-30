@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import gc
 import json
+import math
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -95,15 +97,176 @@ def check_retrieval(generated_text: str, expected_answer: str) -> bool:
     return expected_answer.lower() in generated_text.lower()
 
 
-def run_niah_cell(
+def _binomial_two_sided_p_value(k: int, n: int, p: float = 0.5) -> float:
+    """Exact two-sided binomial p-value for McNemar's discordant pairs.
+
+    For McNemar, only discordant pairs matter. Under the null, dense-only and
+    certified-only wins are equally likely, so this is Binomial(n=b+c, p=0.5).
+    """
+    if n <= 0:
+        return 1.0
+    k = max(0, min(int(k), int(n)))
+    observed = math.comb(n, k) * (p ** k) * ((1.0 - p) ** (n - k))
+    prob = 0.0
+    for i in range(n + 1):
+        pi = math.comb(n, i) * (p ** i) * ((1.0 - p) ** (n - i))
+        if pi <= observed + 1e-15:
+            prob += pi
+    return float(min(1.0, prob))
+
+
+def paired_niah_stats(
+    dense_results: list[dict],
+    certified_results: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict:
+    """Paired NIAH delta, bootstrap CI, and exact McNemar test.
+
+    Returns statistics for Certified - Dense accuracy. Pairing key is the
+    benchmark unit: (target_context, depth, needle_idx).
+    """
+    dense_map = {
+        (r["target_context"], r["depth"], r["needle_idx"]): bool(r["correct"])
+        for r in dense_results
+    }
+    pairs: list[tuple[bool, bool]] = []
+    for r in certified_results:
+        key = (r["target_context"], r["depth"], r["needle_idx"])
+        if key in dense_map:
+            pairs.append((dense_map[key], bool(r["correct"])))
+
+    n = len(pairs)
+    if n == 0:
+        return {
+            "n": 0,
+            "dense_accuracy": None,
+            "certified_accuracy": None,
+            "delta_accuracy": None,
+            "delta_pp": None,
+            "bootstrap_ci_lo": None,
+            "bootstrap_ci_hi": None,
+            "bootstrap_ci_pp_lo": None,
+            "bootstrap_ci_pp_hi": None,
+            "bootstrap_iters": int(bootstrap_iters),
+            "mcnemar_p": None,
+            "paired_table": {"both_correct": 0, "dense_only": 0, "certified_only": 0, "both_wrong": 0},
+        }
+
+    both_correct = sum(1 for d, c in pairs if d and c)
+    dense_only = sum(1 for d, c in pairs if d and not c)
+    certified_only = sum(1 for d, c in pairs if (not d) and c)
+    both_wrong = sum(1 for d, c in pairs if (not d) and (not c))
+    dense_correct = both_correct + dense_only
+    cert_correct = both_correct + certified_only
+    delta = (certified_only - dense_only) / n
+
+    diffs = np.asarray([(1 if c else 0) - (1 if d else 0) for d, c in pairs], dtype=np.float64)
+    if n > 1 and bootstrap_iters > 0:
+        rng = np.random.default_rng(seed)
+        boot = diffs[rng.integers(0, n, size=(int(bootstrap_iters), n))].mean(axis=1)
+        ci_lo = float(np.quantile(boot, 0.025))
+        ci_hi = float(np.quantile(boot, 0.975))
+    else:
+        ci_lo = ci_hi = float(delta)
+
+    discordant = dense_only + certified_only
+    p_value = _binomial_two_sided_p_value(min(dense_only, certified_only), discordant)
+    return {
+        "n": int(n),
+        "dense_correct": int(dense_correct),
+        "certified_correct": int(cert_correct),
+        "dense_accuracy": dense_correct / n,
+        "certified_accuracy": cert_correct / n,
+        "delta_accuracy": float(delta),
+        "delta_pp": float(delta * 100.0),
+        "bootstrap_ci_lo": ci_lo,
+        "bootstrap_ci_hi": ci_hi,
+        "bootstrap_ci_pp_lo": float(ci_lo * 100.0),
+        "bootstrap_ci_pp_hi": float(ci_hi * 100.0),
+        "bootstrap_iters": int(bootstrap_iters),
+        "bootstrap_seed": int(seed),
+        "mcnemar_p": p_value,
+        "mcnemar": {
+            "test": "exact_two_sided_binomial",
+            "p_value": p_value,
+            "discordant": int(discordant),
+            "dense_only": int(dense_only),
+            "certified_only": int(certified_only),
+        },
+        "paired_table": {
+            "both_correct": int(both_correct),
+            "dense_only": int(dense_only),
+            "certified_only": int(certified_only),
+            "both_wrong": int(both_wrong),
+        },
+    }
+
+
+def paired_niah_stats_by_context(
+    dense_results: list[dict],
+    certified_results: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict[str, dict]:
+    contexts = sorted({int(r["target_context"]) for r in dense_results + certified_results})
+    out: dict[str, dict] = {}
+    for idx, ctx in enumerate(contexts):
+        dense_ctx = [r for r in dense_results if int(r["target_context"]) == ctx]
+        cert_ctx = [r for r in certified_results if int(r["target_context"]) == ctx]
+        out[f"{ctx // 1024}K"] = paired_niah_stats(
+            dense_ctx,
+            cert_ctx,
+            bootstrap_iters=bootstrap_iters,
+            seed=seed + idx,
+        )
+    return out
+
+
+def paired_niah_stats_by_needle_group(
+    dense_results: list[dict],
+    certified_results: list[dict],
+    *,
+    bootstrap_iters: int = 10_000,
+    seed: int = 20260425,
+) -> dict[str, dict]:
+    """Stats for the paper's original-vs-harder 8K NIAH follow-up.
+
+    Needles 0-4 are the original five; needles 5+ are the harder follow-up
+    set. Groups with no rows are omitted so smaller 30-trial cells stay clean.
+    """
+    groups = {
+        "original": lambda r: int(r["needle_idx"]) < 5,
+        "harder": lambda r: int(r["needle_idx"]) >= 5,
+    }
+    out: dict[str, dict] = {}
+    for idx, (name, pred) in enumerate(groups.items()):
+        dense_group = [r for r in dense_results if pred(r)]
+        cert_group = [r for r in certified_results if pred(r)]
+        if dense_group or cert_group:
+            out[name] = paired_niah_stats(
+                dense_group,
+                cert_group,
+                bootstrap_iters=bootstrap_iters,
+                seed=seed + idx,
+            )
+    return out
+
+
+def run_niah_cell(  # noqa: C901  # large signature is the consequence of paper-§7 plumbing
     model, tokenizer, adapter, mode: str,
     context_tokens: int, depth: float, needle_idx: int,
-    calibrated_profile=None,
+    *,
+    v_tolerance: float,
     max_new_tokens: int = 50,
     device: str = "cuda",
-    default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4,
-    concentration_threshold: float = 0.0,
+    use_int4_values: bool = False,
+    group_size: int = 16,
+    fp16_key_cache_blocks: int | str | None = None,
+    fp16_value_cache_blocks: int | str | None = None,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -113,6 +276,7 @@ def run_niah_cell(
     rung1_threshold: float = 0.02,
     rung1_multiplier: float = 2.0,
     score_consistency_check: bool = False,
+    score_consistency_interval: int = 1,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     telemetry_collector=None,
@@ -147,7 +311,10 @@ def run_niah_cell(
     elif mode == "certified":
         # Certified: prefill dense, then decode certified
         from dotcache.integrations.llama import _ensure_certified_imports, CertifiedAttentionState
-        from dotcache.kernels.tiered_kv_cache import create_tiered_cache_from_model
+        from dotcache.kernels.tiered_kv_cache import (
+            create_tiered_cache_from_model,
+            create_tiered_cache_int4v_from_model,
+        )
 
         adapter.set_mode("dense")
         with torch.inference_mode():
@@ -156,26 +323,30 @@ def run_niah_cell(
         first_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         del outputs
 
-        # Build tiered cache. Honor DOTCACHE_FP16_CACHE_BLOCKS so the paper's
-        # bounded transparent VRAM cache can be enabled without plumbing a
-        # new kwarg through every harness signature. Unset (or 0) → legacy
-        # full-mirror behaviour.
+        # Build tiered cache. Value fallback defaults to bounded scratch so
+        # paper runs do not allocate a persistent full FP16 value mirror.
         _ensure_certified_imports()
         layer_ids = list(range(model.config.num_hidden_layers))
-        _env_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
-        _cap = None if _env_cap is None or _env_cap == "" else int(_env_cap)
-        tiered_caches = create_tiered_cache_from_model(
-            past_kv, layer_ids, fp16_key_cache_capacity=_cap,
-        )
+        _env_key_cap = os.environ.get("DOTCACHE_FP16_CACHE_BLOCKS")
+        _env_value_cap = os.environ.get("DOTCACHE_FP16_VALUE_CACHE_BLOCKS")
+        from _provenance import resolve_fp16_key_cache_blocks, resolve_fp16_value_cache_blocks
+        _key_cap = resolve_fp16_key_cache_blocks(fp16_key_cache_blocks, _env_key_cap)
+        _value_cap = resolve_fp16_value_cache_blocks(fp16_value_cache_blocks, _env_value_cap)
+        if use_int4_values:
+            tiered_caches = create_tiered_cache_int4v_from_model(
+                past_kv, layer_ids, group_size=group_size,
+                max_new_tokens=max_new_tokens + 8,
+                fp16_key_cache_capacity=_key_cap,
+                fp16_value_cache_capacity=_value_cap,
+            )
+        else:
+            tiered_caches = create_tiered_cache_from_model(
+                past_kv, layer_ids, max_new_tokens=max_new_tokens + 8,
+                fp16_key_cache_capacity=None,
+            )
         del past_kv
         gc.collect()
         torch.cuda.empty_cache()
-
-        # Get layer epsilons from calibrated profile or default
-        if calibrated_profile is not None:
-            layer_epsilons = calibrated_profile.get_layer_epsilons_min(seq_len)
-        else:
-            layer_epsilons = {}
 
         # Enable stats whenever a diagnostic feature is on (ranking fallback,
         # adaptive K*, score-consistency, or exploration) so the aggregator
@@ -189,12 +360,10 @@ def run_niah_cell(
         )
         adapter.certified_state = CertifiedAttentionState(
             tiered_caches=tiered_caches,
-            layer_epsilons=layer_epsilons,
-            default_epsilon=default_epsilon,
             collect_stats=collect_stats,
             append_kv=True,  # Append new K/V tokens during decode
             top_k_fp16_keys=top_k_fp16_keys,
-            concentration_threshold=concentration_threshold,
+            v_tolerance=v_tolerance,
             ranking_fallback=ranking_fallback,
             ranking_r=ranking_r,
             ranking_fallback_mode=ranking_fallback_mode,
@@ -204,6 +373,7 @@ def run_niah_cell(
             rung1_threshold=rung1_threshold,
             rung1_multiplier=rung1_multiplier,
             score_consistency_check=score_consistency_check,
+            score_consistency_interval=score_consistency_interval,
             eps_guard=eps_guard,
             exploration_rate=exploration_rate,
         )
@@ -212,9 +382,9 @@ def run_niah_cell(
         # Generate tokens
         cache_position = torch.tensor([seq_len], dtype=torch.long, device=device)
         current_input = first_token
-        gen_ids = []
+        gen_token_tensors = [first_token]
 
-        for _ in range(max_new_tokens):
+        for _ in range(max(0, max_new_tokens - 1)):
             with torch.inference_mode():
                 out = model(
                     input_ids=current_input, use_cache=False,
@@ -223,13 +393,14 @@ def run_niah_cell(
                 )
             if telemetry_collector is not None:
                 telemetry_collector.record_step()
-            tid = out.logits[:, -1, :].argmax(dim=-1).item()
-            gen_ids.append(tid)
-            if tid == tokenizer.eos_token_id:
-                break
-            current_input = torch.tensor([[tid]], dtype=torch.long, device=device)
-            cache_position = cache_position + 1
+            tid = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            gen_token_tensors.append(tid)
+            current_input = tid
+            cache_position.add_(1)
 
+        gen_ids = torch.cat(gen_token_tensors, dim=1)[0].tolist()
+        if tokenizer.eos_token_id is not None and tokenizer.eos_token_id in gen_ids:
+            gen_ids = gen_ids[:gen_ids.index(tokenizer.eos_token_id) + 1]
         generated_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
 
         cell_agg = adapter.certified_state.aggregate_step_stats() if collect_stats else {}
@@ -262,19 +433,47 @@ def run_niah_cell(
     ):
         if key in cell_agg:
             result[key] = int(cell_agg[key])
+    # Paper §8.6 hard-STOP triggers + §4.5 bound scalars. Previously
+    # dropped (only ranking_* fields were persisted). See
+    # docs/paper_v1_run_handoff.md §5.
+    for key in (
+        "score_consistency_violation_heads_total",
+        "rung1_fired", "rung2_fired", "rung3_fired", "rung4_fired",
+        "rung1_fired_layers", "rung2_fired_layers",
+        "rung3_fired_layers", "rung4_fired_layers",
+        "boundary_check_fired", "boundary_check_fired_layers",
+        "boundary_check_triggered_heads_total",
+        "e_key_step_mean", "e_key_step_max", "v_max_global",
+        "e_val_max", "e_val_mean", "e_val_pre_rung2_max",
+        "e_val_pre_rung2_mean", "value_error_mode",
+        "value_fallback_blocks", "value_fallback_head_blocks",
+        "delta_bound_step_mean",
+        "tail_mass_int8_est_step_mean", "tail_mass_int8_est_step_max",
+        "k_star_mean", "k_star_max",
+        "h2d_key_bytes", "h2d_value_bytes", "h2d_total_bytes",
+        "vram_fp16_key_cache_bytes", "vram_fp16_value_cache_bytes",
+        "fp16_value_cache_hits_step", "fp16_value_cache_misses_step",
+        "fp16_value_cache_evictions_step", "fp16_value_cache_needed_blocks_step",
+        "fp16_value_cache_overflow_step",
+    ):
+        if key in cell_agg:
+            result[key] = cell_agg[key]
     return result
 
 
 def run_niah_sweep(
     model, tokenizer, adapter,
     context_lengths: list[int],
+    *,
+    v_tolerance: float,
     depths: list[float] = None,
     num_needles: int = 5,
-    calibrated_profile=None,
     device: str = "cuda",
-    default_epsilon: float = 1e-4,
     top_k_fp16_keys: int = 4,
-    concentration_threshold: float = 0.0,
+    use_int4_values: bool = False,
+    group_size: int = 16,
+    fp16_key_cache_blocks: int | str | None = None,
+    fp16_value_cache_blocks: int | str | None = None,
     ranking_fallback: bool = False,
     ranking_r: int = 1,
     ranking_fallback_mode: str = "full",
@@ -284,55 +483,70 @@ def run_niah_sweep(
     rung1_threshold: float = 0.02,
     rung1_multiplier: float = 2.0,
     score_consistency_check: bool = False,
+    score_consistency_interval: int = 1,
     eps_guard: float = 0.01,
     exploration_rate: float = 0.0,
     telemetry_collector=None,
+    trial_start: int = 0,
+    trial_count: int | None = None,
 ) -> dict:
     """Run full NIAH sweep across depths and context lengths."""
     if depths is None:
         depths = [i / 10 for i in range(10)]  # 0.0, 0.1, ..., 0.9
 
     results = {"dense": [], "certified": []}
-    total = len(context_lengths) * len(depths) * num_needles * 2
+    all_trials = [
+        (depth, needle_idx)
+        for depth in depths
+        for needle_idx in range(num_needles)
+    ]
+    start = max(0, int(trial_start))
+    end = len(all_trials) if trial_count is None else min(len(all_trials), start + max(0, int(trial_count)))
+    trials = all_trials[start:end]
+    total = len(context_lengths) * len(trials) * 2
     done = 0
 
     for ctx_len in context_lengths:
-        for depth in depths:
-            for needle_idx in range(num_needles):
-                for mode in ["dense", "certified"]:
-                    done += 1
-                    r = run_niah_cell(
-                        model, tokenizer, adapter, mode,
-                        ctx_len, depth, needle_idx,
-                        calibrated_profile=calibrated_profile,
-                        device=device,
-                        default_epsilon=default_epsilon,
-                        top_k_fp16_keys=top_k_fp16_keys,
-                        concentration_threshold=concentration_threshold,
-                        ranking_fallback=ranking_fallback,
-                        ranking_r=ranking_r,
-                        ranking_fallback_mode=ranking_fallback_mode,
-                        tau_cov=tau_cov,
-                        k_min=k_min,
-                        k_max=k_max,
-                        rung1_threshold=rung1_threshold,
-                        rung1_multiplier=rung1_multiplier,
-                        score_consistency_check=score_consistency_check,
-                        eps_guard=eps_guard,
-                        exploration_rate=exploration_rate,
-                        telemetry_collector=telemetry_collector if mode == "certified" else None,
-                    )
-                    results[mode].append(r)
+        for local_trial_idx, (depth, needle_idx) in enumerate(trials):
+            trial_idx = start + local_trial_idx
+            for mode in ["dense", "certified"]:
+                done += 1
+                r = run_niah_cell(
+                    model, tokenizer, adapter, mode,
+                    ctx_len, depth, needle_idx,
+                    device=device,
+                    top_k_fp16_keys=top_k_fp16_keys,
+                    v_tolerance=v_tolerance,
+                    use_int4_values=use_int4_values,
+                    group_size=group_size,
+                    fp16_key_cache_blocks=fp16_key_cache_blocks,
+                    fp16_value_cache_blocks=fp16_value_cache_blocks,
+                    ranking_fallback=ranking_fallback,
+                    ranking_r=ranking_r,
+                    ranking_fallback_mode=ranking_fallback_mode,
+                    tau_cov=tau_cov,
+                    k_min=k_min,
+                    k_max=k_max,
+                    rung1_threshold=rung1_threshold,
+                    rung1_multiplier=rung1_multiplier,
+                    score_consistency_check=score_consistency_check,
+                    score_consistency_interval=score_consistency_interval,
+                    eps_guard=eps_guard,
+                    exploration_rate=exploration_rate,
+                    telemetry_collector=telemetry_collector if mode == "certified" else None,
+                )
+                r["trial_idx"] = trial_idx
+                results[mode].append(r)
 
-                    status = "OK" if r["correct"] else "FAIL"
-                    print(f"  [{done}/{total}] {mode:>10} {ctx_len//1024}K d={depth:.1f} "
-                          f"n={needle_idx} -> {status}")
+                status = "OK" if r["correct"] else "FAIL"
+                print(f"  [{done}/{total}] {mode:>10} {ctx_len//1024}K d={depth:.1f} "
+                      f"n={needle_idx} -> {status}")
 
-                    if not r["correct"] and mode == "certified":
-                        # Check if dense also failed
-                        dense_r = results["dense"][-1] if results["dense"] else None
-                        if dense_r and dense_r["correct"]:
-                            print(f"    *** CRITICAL: dense OK but certified FAILED ***")
+                if not r["correct"] and mode == "certified":
+                    # Check if dense also failed
+                    dense_r = results["dense"][-1] if results["dense"] else None
+                    if dense_r and dense_r["correct"]:
+                        print(f"    *** CRITICAL: dense OK but certified FAILED ***")
 
     # Compute accuracy heatmaps
     heatmaps = {}
@@ -378,6 +592,13 @@ def run_niah_sweep(
         "dense_accuracy": sum(1 for r in results["dense"] if r["correct"]) / max(len(results["dense"]), 1),
         "certified_accuracy": sum(1 for r in results["certified"] if r["correct"]) / max(len(results["certified"]), 1),
     }
+    sweep_result["paired_stats"] = paired_niah_stats(results["dense"], results["certified"])
+    sweep_result["paired_stats_by_context"] = paired_niah_stats_by_context(
+        results["dense"], results["certified"]
+    )
+    sweep_result["paired_stats_by_needle_group"] = paired_niah_stats_by_needle_group(
+        results["dense"], results["certified"]
+    )
     if ranking_fallback:
         heads_total = sum(r.get("ranking_heads_total", 0) for r in results["certified"])
         disagree_r1 = sum(r.get("ranking_disagree_r1", 0) for r in results["certified"])
@@ -402,20 +623,22 @@ def main():
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     from dotcache.integrations.llama import LlamaDotCacheModelAdapter
     from dotcache.config import DotCacheConfig
-    from dotcache.calibration.calibrated_profile import CalibratedProfile
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="NousResearch/Meta-Llama-3.1-8B")
     parser.add_argument("--contexts", type=int, nargs="+", default=[4096, 8192])
+    parser.add_argument("--depths", type=float, nargs="+", default=None,
+                        help="Needle depths to run. Default is the paper sweep 0.0,0.1,...,0.9.")
     parser.add_argument("--needles", type=int, default=3)
-    parser.add_argument("--profile", default=None, help="Path to calibrated profile .npz")
+    parser.add_argument("--trial-start", type=int, default=0,
+                        help="Start paired trial index after flattening depth-major depths x needles.")
+    parser.add_argument("--trial-count", type=int, default=None,
+                        help="Number of paired trials to run from --trial-start.")
+    parser.add_argument("--trial-index", type=int, default=None,
+                        help="Alias for --trial-start with --trial-count 1.")
     parser.add_argument("--output", default="benchmarks/results/niah.json")
-    parser.add_argument("--default-epsilon", type=float, default=1e-4,
-                        help="Default epsilon when no profile epsilon available (0=no skipping)")
     parser.add_argument("--top-k-fp16", type=int, default=4,
                         help="Top-K blocks use FP16 keys (999=all FP16, 0=all INT8)")
-    parser.add_argument("--concentration-threshold", type=float, default=0.0,
-                        help="If max block mass fraction < this, disable skip for that head (0=off, 0.02=2%%)")
     parser.add_argument("--ranking-fallback", action="store_true",
                         help="Enable Rung-3 ranking-consistency fallback (detect INT8 vs FP16 top-K ranking disagreement and recompute per head)")
     parser.add_argument("--ranking-r", type=int, default=1,
@@ -435,6 +658,8 @@ def main():
                         help="Rung 1 (expand K*): k_max multiplier on trigger (default 2.0)")
     parser.add_argument("--score-consistency-check", action="store_true",
                         help="Paper §6 defence-in-depth: compare FP16 vs INT8 block scores on promoted blocks; expected 0 violations")
+    parser.add_argument("--score-consistency-interval", type=int, default=1,
+                        help="Run score-consistency canary every N decode steps (1 = exact every step).")
     parser.add_argument("--eps-guard", type=float, default=0.01,
                         help="Score-consistency tolerance above the theoretical Δ bound (default 0.01)")
     parser.add_argument("--exploration-rate", type=float, default=0.0,
@@ -443,14 +668,34 @@ def main():
                         help="Collect per-step page-in / rung / VRAM-cache telemetry during certified decode (Test 3)")
     parser.add_argument("--telemetry-output", default=None,
                         help="Path to write per-step telemetry JSON (default: <output>.pagein.json)")
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _provenance import (
+        add_paper_cache_args,
+        add_cert_profile_arg,
+        cache_config_dict,
+        configure_paper_runtime_defaults,
+    )
+    add_cert_profile_arg(parser)
+    add_paper_cache_args(parser)
     args = parser.parse_args()
+    if args.trial_index is not None:
+        args.trial_start = int(args.trial_index)
+        args.trial_count = 1
+    configure_paper_runtime_defaults()
 
     token = os.environ.get("HF_TOKEN") or None
+    warnings.filterwarnings(
+        "ignore",
+        message=r"MatMul8bitLt: inputs will be cast from .* during quantization",
+        category=UserWarning,
+    )
     print(f"Loading {args.model} (INT8)...")
     tokenizer = AutoTokenizer.from_pretrained(args.model, token=token)
     quant_config = BitsAndBytesConfig(load_in_8bit=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, quantization_config=quant_config, device_map="auto", token=token,
+        args.model, quantization_config=quant_config, device_map="auto",
+        dtype=torch.float16, token=token,
     )
     model.eval()
     print(f"Model: {torch.cuda.memory_allocated()/1e9:.2f} GB")
@@ -459,17 +704,12 @@ def main():
     config = DotCacheConfig(head_dim=head_dim)
     adapter = LlamaDotCacheModelAdapter(model, config)
 
-    profile = None
-    if args.profile:
-        profile = CalibratedProfile.load(args.profile)
-        print(f"Loaded profile: {profile.summary()[:200]}")
-
     rf_tag = "off"
     if args.ranking_fallback:
         rf_tag = f"{args.ranking_fallback_mode}(r={args.ranking_r})"
     tau_cov = args.tau_cov if args.tau_cov and args.tau_cov > 0 else None
     adaptive_tag = f"tau_cov={tau_cov} k=[{args.k_min},{args.k_max}]" if tau_cov else "fixed"
-    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, default_epsilon={args.default_epsilon}, top_k_fp16={args.top_k_fp16}, adaptive={adaptive_tag}, ranking_fallback={rf_tag}")
+    print(f"\nNIAH: contexts={[c//1024 for c in args.contexts]}K, needles={args.needles}, top_k_fp16={args.top_k_fp16}, adaptive={adaptive_tag}, ranking_fallback={rf_tag}")
 
     telemetry_collector = None
     if args.pagein_telemetry:
@@ -482,11 +722,14 @@ def main():
     result = run_niah_sweep(
         model, tokenizer, adapter,
         context_lengths=args.contexts,
+        depths=args.depths,
         num_needles=args.needles,
-        calibrated_profile=profile,
-        default_epsilon=args.default_epsilon,
         top_k_fp16_keys=args.top_k_fp16,
-        concentration_threshold=args.concentration_threshold,
+        v_tolerance=args.v_tolerance,
+        use_int4_values=args.use_int4_values,
+        group_size=args.group_size,
+        fp16_key_cache_blocks=args.fp16_key_cache_blocks,
+        fp16_value_cache_blocks=args.fp16_value_cache_blocks,
         ranking_fallback=args.ranking_fallback,
         ranking_r=args.ranking_r,
         ranking_fallback_mode=args.ranking_fallback_mode,
@@ -496,9 +739,12 @@ def main():
         rung1_threshold=args.rung1_threshold,
         rung1_multiplier=args.rung1_multiplier,
         score_consistency_check=args.score_consistency_check,
+        score_consistency_interval=args.score_consistency_interval,
         eps_guard=args.eps_guard,
         exploration_rate=args.exploration_rate,
         telemetry_collector=telemetry_collector,
+        trial_start=args.trial_start,
+        trial_count=args.trial_count,
     )
 
     if telemetry_collector is not None:
@@ -516,14 +762,28 @@ def main():
     print(f"Dense accuracy:     {result['dense_accuracy']:.1%}")
     print(f"Certified accuracy: {result['certified_accuracy']:.1%}")
     print(f"Critical failures:  {result['critical_failures']}")
+    stats = result.get("paired_stats", {})
+    if stats.get("n"):
+        print(
+            "Paired Δ: "
+            f"{stats['delta_pp']:+.1f} pp "
+            f"(95% bootstrap CI "
+            f"[{stats['bootstrap_ci_pp_lo']:+.1f}, {stats['bootstrap_ci_pp_hi']:+.1f}] pp, "
+            f"McNemar p={stats['mcnemar_p']:.4g}, n={stats['n']})"
+        )
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "results": result["results"],
         "heatmaps": result["heatmaps"],
         "dense_accuracy": result["dense_accuracy"],
         "certified_accuracy": result["certified_accuracy"],
         "critical_failures": result["critical_failures"],
+        "paired_stats": result["paired_stats"],
+        "paired_stats_by_context": result["paired_stats_by_context"],
+        "paired_stats_by_needle_group": result["paired_stats_by_needle_group"],
+        "cache_config": cache_config_dict(args),
     }
     if "ranking_fallback_summary" in result:
         payload["ranking_fallback_summary"] = result["ranking_fallback_summary"]
