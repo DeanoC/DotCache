@@ -64,3 +64,8 @@ tail -40 "$OUT_DIR/pg19_ctx131072.log" \
 
 banner "PG-19 128K done (smoke=$smoke_ec, full=$full_ec)"
 echo "Results in $OUT_DIR"
+
+# Propagate the full run's exit code so timeouts/crashes don't get
+# silently logged as success in automation. The smoke-failure branch
+# above already exits non-zero; this mirrors it for the full run.
+exit "$full_ec"
